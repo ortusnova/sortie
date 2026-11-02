@@ -46,6 +46,10 @@ type stateResponse struct {
 	// instance spend window is set.
 	SpendCeiling *spendCeilingResponse `json:"spend_ceiling,omitempty"`
 
+	// DispatchPaused is the pause of dispatch in force; null while
+	// dispatch runs.
+	DispatchPaused *dispatchPausedResponse `json:"dispatch_paused"`
+
 	Config *configResponse `json:"config,omitempty"`
 
 	Health *stateHealthResponse `json:"health,omitempty"`
@@ -1318,6 +1322,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 		resp.CostUnpricedRunning = &unpriced
 	}
 	resp.SpendCeiling = spendCeilingOf(snap.SpendCeilings)
+	resp.DispatchPaused = toDispatchPausedResponse(snap.DispatchPause)
 
 	return resp
 }

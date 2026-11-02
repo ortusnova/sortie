@@ -898,6 +898,26 @@
       ],
       "type": "object"
     },
+    "DispatchPausedResponse": {
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "since",
+        "by",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Duration": {
       "properties": {
         "mean": {
@@ -5509,6 +5529,16 @@
         "counts": {
           "$ref": "#/$defs/StateCounts"
         },
+        "dispatch_paused": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DispatchPausedResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "generated_at": {
           "format": "date-time",
           "type": "string"
@@ -5623,7 +5653,8 @@
         "held",
         "attention",
         "agent_totals",
-        "rate_limits"
+        "rate_limits",
+        "dispatch_paused"
       ],
       "type": "object"
     },

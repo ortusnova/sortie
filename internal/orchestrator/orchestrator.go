@@ -1270,7 +1270,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	sorted := SortForDispatch(dispatchable)
 	clearDispatchBlocks(o.state, sorted, time.Now(), o.logger)
 	o.once.setCandidates(sorted)
-	input := o.once.dispatchInput(sorted)
+	input := pausedDispatchInput(o.state, o.once.dispatchInput(sorted))
 
 	o.rebuildBudgetExhausted(ctx, cfg, sorted)
 	o.fillRetryIdentity(sorted)

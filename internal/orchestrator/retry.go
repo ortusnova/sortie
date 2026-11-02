@@ -305,6 +305,11 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		return
 	}
 
+	if holdRetryForDispatchPause(state, issueID, time.Duration(params.PollIntervalMS)*time.Millisecond, rearmHeld, log) {
+		setNoStateObserved(popped.noStateObserved)
+		return
+	}
+
 	// Two gates precede any fetch or dispatch, both exempt for a known
 	// reaction continuation: an already-parked issue is refused regardless
 	// of policy, and an issue whose absence count just reached the ceiling

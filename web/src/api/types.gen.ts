@@ -203,6 +203,12 @@ export interface Declaration {
   free: Free;
 }
 
+export interface DispatchPausedResponse {
+  since: string;
+  by: string;
+  reason: string;
+}
+
 export interface Duration {
   p50: number | null;
   p95: number | null;
@@ -1143,6 +1149,7 @@ export interface StateResponse {
   active_estimated_cost_usd?: number;
   cost_unpriced_running?: number;
   spend_ceiling?: SpendCeilingResponse;
+  dispatch_paused: DispatchPausedResponse | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;

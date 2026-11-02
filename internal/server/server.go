@@ -462,6 +462,11 @@ type Params struct {
 	// that route answers 503.
 	AnswerFn AnswerFunc
 
+	// DispatchPauseFn pauses and resumes dispatch. Called on POST
+	// /api/v1/dispatch/pause and /resume. When nil, those routes answer
+	// 503.
+	DispatchPauseFn DispatchPauseFunc
+
 	// PullBackFn and PlanCancelFn pull back and cancel a plan story by
 	// plan key. Called on POST /api/v1/plan/pull-back and
 	// /api/v1/plan/cancel. When nil, those routes answer 503.
@@ -545,6 +550,7 @@ type Server struct {
 	releaseFn        ReleaseFunc
 	escalateFn       EscalateFunc
 	answerFn         AnswerFunc
+	dispatchPauseFn  DispatchPauseFunc
 	pullBackFn       PlanControlFunc
 	brokerReportFn   BrokerReportFunc
 	planStatesFn     func() domain.TrackerStates
@@ -606,6 +612,7 @@ func New(params Params) *Server {
 		releaseFn:        params.ReleaseFn,
 		escalateFn:       params.EscalateFn,
 		answerFn:         params.AnswerFn,
+		dispatchPauseFn:  params.DispatchPauseFn,
 		planProjects:     params.PlanProjects,
 		terminalStatesFn: params.TerminalStatesFn,
 		runHistory:       params.RunHistory,
@@ -658,6 +665,8 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/stats", s.routeStats)
 	mux.HandleFunc("/api/v1/prices", s.routePrices)
 	mux.HandleFunc("/api/v1/refresh", s.controlRoute(scopeOperator, s.handleRefresh))
+	mux.HandleFunc("/api/v1/dispatch/pause", s.controlRoute(scopeOperator, s.handleDispatchPause))
+	mux.HandleFunc("/api/v1/dispatch/resume", s.controlRoute(scopeOperator, s.handleDispatchResume))
 	mux.HandleFunc("/api/v1/retries/{identifier}/run", s.controlRoute(scopeOperator, s.handleRetryNow))
 	mux.HandleFunc("/api/v1/attention/{id}/acknowledge", s.controlRoute(scopeOperator, s.handleAcknowledge))
 	mux.HandleFunc("/api/v1/reactions/{identifier}/{kind}/check", s.controlRoute(scopeOperator, s.handleCheckNow))

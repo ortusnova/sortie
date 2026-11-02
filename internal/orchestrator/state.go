@@ -1602,6 +1602,10 @@ type State struct {
 	// spend window, daily first. Nil while no window is configured.
 	// Written only by evaluateSpendCeiling on the event loop.
 	SpendCeilings []SpendCeilingStatus
+
+	// dispatchPause is the pause of dispatch in force; nil when dispatch
+	// runs. Owned by the event loop.
+	dispatchPause *dispatchPauseState
 }
 
 // continuationCtxKey is the context key for reaction continuation data
@@ -2148,6 +2152,10 @@ type RuntimeSnapshotResult struct {
 
 	// SpendCeilings is a copy of State.SpendCeilings.
 	SpendCeilings []SpendCeilingStatus `json:"-"`
+
+	// DispatchPause is a copy of the pause of dispatch in force; nil when
+	// dispatch runs.
+	DispatchPause *DispatchPause `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -2437,6 +2445,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.Rates = state.Rates
 	snap.AttentionAcknowledgements = maps.Clone(state.AttentionAcknowledgements)
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
+	snap.DispatchPause = state.dispatchPause.snapshot()
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
