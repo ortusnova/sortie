@@ -50,6 +50,10 @@ type stateResponse struct {
 	// dispatch runs.
 	DispatchPaused *dispatchPausedResponse `json:"dispatch_paused"`
 
+	// PlatformFaults lists every open platform fault, oldest first: its
+	// cause, the stories it holds, and the person action that clears it.
+	PlatformFaults []platformFaultResponse `json:"platform_faults"`
+
 	Config *configResponse `json:"config,omitempty"`
 
 	Health *stateHealthResponse `json:"health,omitempty"`
@@ -1323,6 +1327,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 	}
 	resp.SpendCeiling = spendCeilingOf(snap.SpendCeilings)
 	resp.DispatchPaused = toDispatchPausedResponse(snap.DispatchPause)
+	resp.PlatformFaults = toPlatformFaultResponses(snap.PlatformFaults)
 
 	return resp
 }
