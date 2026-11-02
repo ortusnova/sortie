@@ -1884,9 +1884,11 @@ Requirements and limits:
 | Field    | Type            | Required | Description |
 | -------- | --------------- | -------- | ----------- |
 | `name`   | string          | **Yes**  | The binding's name, `[A-Za-z0-9_-]+`, unique in the list. |
-| `env`    | string          | **Yes**  | The host variable that holds the secret. The guest variable of the same name holds only a placeholder. |
+| `env`    | string          | **Yes**  | The host variable that holds the secret. The guest variable of the same name holds only a placeholder. With `file` or `command`, Sortie sets the host variable itself, for smolvm only, from that source. |
 | `hosts`  | list of strings | **Yes**  | At least one host, as in `allow_hosts`. The placeholder is replaced with the secret only on HTTPS requests to these hosts. These hosts are added to the VM's allowlist. |
 | `header` | string          | No       | A request header that smolvm sets to the secret, such as `X-Api-Key`. smolvm sets it on every HTTPS request to `hosts`, whether or not the guest sends it, and replaces any value the guest sends. The placeholder is still replaced in the guest's other headers. The name must be an HTTP field name: letters, digits, and ``!#$%&'*+-.^_`\|~``. Headers that route or frame a request are refused: `connection`, `content-length`, `cookie`, `host`, `keep-alive`, `proxy-authenticate`, `proxy-authorization`, `proxy-connection`, `te`, `trailer`, `transfer-encoding`, `upgrade`. An empty string fails validation. |
+| `file`   | path string     | No       | A host file whose content is the secret, read anew each time Sortie starts the VM. `~` and `$VAR` are expanded; the path must be absolute then. Cannot be set with `command`. |
+| `command` | string         | No       | A shell command, run with `sh -c` on Sortie's host each time Sortie starts the VM, whose standard output is the secret. Cannot be set with `file`. See [A credential read at each launch](#a-credential-read-at-each-launch). |
 
 `environment.smolvm.repository` fields:
 
@@ -2047,12 +2049,30 @@ With `user` set, Sortie passes `--user <value>` to `smolvm machine create`, so t
 A credential binding keeps a secret out of the VM:
 
 - The guest variable named by `env` holds a placeholder value that smolvm generates. smolvm refuses every request that carries a placeholder, so never paste one into an issue, a comment, or a prompt: an agent that reads it sends it to its model, and its session fails with `credential_unverified`.
-- smolvm reads the real value from Sortie's environment each time it starts the VM. A variable that is not set then is logged as a warning, and requests that need it fail.
+- smolvm reads the real value each time it starts the VM. Without `file` and `command`, it reads Sortie's own variable `env`; a variable that is not set then is logged as a warning, and requests that need it fail. With either, Sortie reads the source then; see [A credential read at each launch](#a-credential-read-at-each-launch).
 - smolvm replaces the placeholder with the value only in HTTPS requests to the binding's `hosts`. A request with the placeholder in its query string is refused.
 - On the binding's hosts, requests are HTTP/1.1 only, a WebSocket upgrade is not possible, and a request body is at most 8 MiB.
 - The binding's hosts are added to the VM's allowlist. smolvm opens the whole network to a VM that has a binding and no allowlist, so Sortie always passes the hosts.
 
 The VM trusts smolvm's interception certificate through `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, and similar variables that smolvm sets. A client that ignores all of them cannot use a binding.
+
+#### A credential read at each launch
+
+A value in Sortie's environment is fixed when Sortie starts, so a token that expires, such as the access token of an opencode or Claude login, would need a restart of Sortie after each refresh. A binding with `file` or `command` instead has Sortie read the value each time it launches a run:
+
+```yaml
+credentials:
+  - name: anthropic
+    env: ANTHROPIC_API_KEY
+    hosts: [api.anthropic.com]
+    command: /usr/local/bin/anthropic-token.py   # or file: ~/.config/sortie/anthropic-token
+```
+
+- **When.** Sortie reads every such source anew when it prepares an issue's VM for a run, before it creates or starts the VM, and gives the value to that VM's start, the one moment smolvm reads it. Each run stops its VM at its end, so the next run reads the source again: a login refreshed while Sortie runs reaches the next run, and Sortie does not restart. The sessions of one run, its credential verification session included, use the value read when the run began. A VM still running from before, with other values or started by an earlier Sortie process, is stopped and started again.
+- **The value.** A file's content, or the command's standard output, with surrounding white space removed. It must be one non-empty line of at most 64 KiB. The value is set as `env` only in the environment of `smolvm machine start`, never in an argument or a log line, and is masked in Sortie's logs. The guest still sees only the placeholder.
+- **The command** runs with `sh -c` on Sortie's host, not in the VM, as Sortie's user, in Sortie's environment and working directory, with an empty standard input. It must finish within 30 seconds and exit `0`.
+- **A source that yields nothing** (a file that cannot be read, a command that fails or does not finish in time, an empty or multi-line value) fails the run's workspace preparation with `smolvm environment: credential "<name>": its source (<file path or command>) yielded no value: <reason>`, before any VM is created or started. The run is retried like any other preparation failure. Starting a stopped VM for the `before_remove` hook or reaction triage logs the failure and starts the VM without the value instead.
+- Neither key is checked by `sortie validate` beyond its form, because the file may not exist until the first login. Under `environment.kind: remote`, `file` and `command` are refused: Sortie reads no credential value there.
 
 #### Kind `remote`
 
@@ -6631,6 +6651,10 @@ These errors are raised during typed config construction from the parsed front m
 | `config: environment.smolvm.credentials[<i>].header: must not be an empty string; remove the key to set no header` | `header: ""`. | Remove the key. |
 | ``config: environment.smolvm.credentials[<i>].header: invalid header name "<h>"; use letters, digits, and !#$%&'*+-.^_`\|~`` | `header` has another character, such as a space, `:`, `,`, `=`, `/`, or `@`. | Write the header's name only. |
 | `config: environment.smolvm.credentials[<i>].header: header "<h>" routes or frames the request and cannot carry a credential` | `header` is one of the refused headers listed under `credentials[]`. | Use the header the API reads the key from. |
+| `config: environment.smolvm.credentials[<i>]: sets both file and command; a credential has one source` | A binding sets `file` and `command`. | Keep one. |
+| `config: environment.smolvm.credentials[<i>].file: must not be empty; remove the key to read the value from env` | `file: ""` (same for a blank `command`). | Name the source, or remove the key. |
+| `config: environment.smolvm.credentials[<i>].file: "<p>" is not an absolute path after ~ and $VAR expansion` | `file` is relative. | Write an absolute path or one under `~`. |
+| `config: environment.remote.credentials[<i>].file: is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it` | `file` or `command` under `remote`. | Remove the key; give the value to the worker's egress proxy. |
 | `config: environment.smolvm.repository: expected mapping, got <type>` | `repository` is not a map. | Write the block as keys. |
 | `config: environment.smolvm.repository.url: is required and must be a non-empty string` | `url` is absent or empty (same message for `base`). | Set the key. |
 | `config: environment.smolvm.repository.project: is required when repository.provider is set (provider "<p>")` | `provider` without `project`. | Set `project` to `owner/repo`, or remove `provider`. |
