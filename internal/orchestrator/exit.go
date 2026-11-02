@@ -49,6 +49,7 @@ type WorkerExitStore interface {
 	UpsertParkedIssue(ctx context.Context, entry persistence.ParkedIssue) error
 	DeleteParkedIssue(ctx context.Context, issueID string) error
 	CountWorkerRunsCompletedSince(ctx context.Context, issueID string, since time.Time) (int, error)
+	LatestRunFailureSignature(ctx context.Context, issueID string) (string, error)
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
 	RecordStageHop(ctx context.Context, hop persistence.StageHop) error
 	DeleteStageHop(ctx context.Context, issueID string) error
@@ -463,6 +464,17 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		status = "usage_limited"
 	}
 
+	// A repeated failure parks only a run that drives the issue's state, as
+	// a blocked stop does; a read-only or fix pass keeps its backoff.
+	var failureSignature failcause.Signature
+	repeatedFailure := false
+	if workerResult.ExitKind == WorkerExitError && (status == "failed" || status == "usage_limited") {
+		failureSignature = runFailureSignature(runError)
+		if dispatchPostureForReactionKind(entry.ReactionKind).DrivesIssueState() {
+			repeatedFailure = repeatsPreviousFailure(ctx, params.Store, workerResult.IssueID, failureSignature, log)
+		}
+	}
+
 	issueIdentity := issueIdentityOf(entry.Issue)
 
 	// Prefer workerResult.SessionID (authoritative from the adapter) over
@@ -497,6 +509,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		Status:           status,
 		Error:            errorStringPtr(runError),
 		ErrorDetail:      failcause.Of(runError),
+		FailureSignature: failureSignature.String(),
 		WorkflowFile:     entry.WorkflowFile,
 		TurnsCompleted:   workerResult.TurnsCompleted,
 		RuleName:         entry.RuleName,
@@ -1520,6 +1533,32 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					slog.Time("resets_at", usageHold.ResetsAt),
 				)
 				delete(state.Claimed, workerResult.IssueID)
+
+			case repeatedFailure:
+				// The run failed as the issue's previous run did, so a
+				// timer would only repeat it: park the issue for a person.
+				log.Warn("worker run failed as the previous run did, parking instead of retrying",
+					slog.Any("error", workerResult.Error),
+					slog.String("failure_signature", failureSignature.String()),
+				)
+				run := followedRun
+				run.HandOver.Statement = failureStatement(runError)
+				observed, _ := resolveTerminalObservation(entry, workerResult)
+				parkIssue(state, parkIssueParams{
+					IssueID:        workerResult.IssueID,
+					Identifier:     workerResult.Identifier,
+					DisplayID:      entry.Issue.DisplayID,
+					IssueIdentity:  issueIdentityOf(entry.Issue),
+					Run:            run,
+					ObservedState:  observed,
+					Reason:         parkReasonRepeatedFailure,
+					Label:          cmp.Or(params.HandoffParkingLabel, defaultHandoffParkingLabel),
+					Store:          params.Store,
+					TrackerAdapter: params.TrackerAdapter,
+					Metrics:        metrics,
+					Logger:         log,
+					Ctx:            ctx,
+				})
 
 			case incumbent != nil:
 				logRetrySlotDeferral(log, "error-backoff", incumbent)

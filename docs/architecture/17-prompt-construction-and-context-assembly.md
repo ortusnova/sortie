@@ -14,8 +14,8 @@ Inputs to prompt rendering:
   - `previous_outcome`: `succeeded`, or `no_change` when the previous stage's run declared that the requested outcome already held; empty whenever `previous` is empty.
   - The pair is frozen with the dispatch selection and persisted with the retry entry and the run-history row, so a retry, a reaction continuation, and a pending reaction recovered at startup render the pair their first dispatch rendered. A retry routed afresh to another rule renders the pair as a poll tick does.
 - `park` (map or nil): the hand-over of a park a person released. The key is present on every render, set to nil, so a template that references it never fails under strict `missingkey=error` evaluation; the renderer seeds it ahead of any option. It is non-nil only on turn 1 of the first run after a person releases a park, and nil on later turns and on every other run. When non-nil, it contains:
-  - `reason`: `agent_blocked` or `handoff_absence`
-  - `statement`: the stop statement stored with the run the park follows; empty when that run declared none or the park recorded no run
+  - `reason`: `agent_blocked`, `handoff_absence`, or `repeated_failure`
+  - `statement`: the stop statement stored with the run the park follows, or for `repeated_failure` the first line of the run's error; empty when that run declared none or the park recorded no run
   - `parked_at` and `released_at`: RFC 3339 times in UTC, whole seconds; empty when the stored time cannot be read
   - `gesture`: `label_removed`, `state_changed`, or `answered` for an answer posted through the HTTP API
   - `comments`: the comments created since the park, oldest first, never nil, each with `id`, `author`, `body`, and `created_at`. A comment whose time cannot be read is included, and a park time that cannot be read includes every comment

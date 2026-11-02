@@ -1748,3 +1748,7 @@ func (s *statefulFingerprintStore) ListReactionHandedOffComments(_ context.Conte
 }
 
 func (s *statefulFingerprintStore) DeleteStageHop(context.Context, string) error { return nil }
+
+func (*mcAttributionStore) LatestRunFailureSignature(context.Context, string) (string, error) {
+	return "", nil
+}

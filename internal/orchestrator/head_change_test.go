@@ -203,3 +203,7 @@ func (s *headChangeStore) ListReactionHandedOffComments(_ context.Context, _, _ 
 }
 
 func (s *headChangeStore) DeleteStageHop(context.Context, string) error { return nil }
+
+func (*headChangeStore) LatestRunFailureSignature(context.Context, string) (string, error) {
+	return "", nil
+}

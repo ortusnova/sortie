@@ -3262,3 +3262,7 @@ func (m *mockReconcileStore) ListReactionHandedOffComments(_ context.Context, _,
 }
 
 func (m *mockReconcileStore) DeleteStageHop(context.Context, string) error { return nil }
+
+func (unsupportedReactionObservationStore) LatestRunFailureSignature(context.Context, string) (string, error) {
+	return "", nil
+}

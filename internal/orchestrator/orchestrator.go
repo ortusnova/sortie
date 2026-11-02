@@ -70,6 +70,7 @@ type OrchestratorStore interface {
 	) (persistence.ReactionObservation, error)
 	MarkReactionObservationDispatched(ctx context.Context, issueID, kind, fingerprint string) error
 	CountWorkerRunsCompletedSince(ctx context.Context, issueID string, since time.Time) (int, error)
+	LatestRunFailureSignature(ctx context.Context, issueID string) (string, error)
 	LatestRunCompletionByIdentifier(ctx context.Context, identifiers []string) (map[string]string, error)
 	UpsertParkedIssue(ctx context.Context, entry persistence.ParkedIssue) error
 	DeleteParkedIssue(ctx context.Context, issueID string) error
