@@ -409,6 +409,7 @@ The reload applies the change. Each existing workspace was created by `smolvm`, 
 | The agent's model calls fail, and opencode uses `opencode/big-pickle` | `models.opencode.ai` is missing from `allow_hosts`. |
 | A hook cannot download dependencies | Its registry is missing from `allow_hosts`. Check `smolvm machine egress-events`. |
 | The run fails with `branch moved upstream` | Someone pushed to the issue branch since Sortie's last push. The next run shows the agent that commit as `origin/<branch>`; nothing is overwritten. |
+| The run fails with an export error naming `[remote rejected]` | The git host refused the push. The run's `error_detail` on `GET /api/v1/runs` and in the per-issue `history` holds the push's whole output, the host's reason included, such as a token without the `workflow` scope for a change under `.github/workflows/`. |
 | The run fails with an export error naming the bundle size | The issue branch's bundle is larger than `max_bundle_mib`. Raise it, or keep large files out of the branch. |
 | The agent's work does not reach the branch | The agent did not commit. Only committed work is exported. |
 | The session opens with a tool-server gap and the agent has no Sortie tools | The agent did not reach the tool server: the VM's `socat` listener is not running (Sortie starts it at each VM start), the runtime accepts no HTTP tool server, or the tool server did not start. Check Sortie's log for `declared tool server gap`. |

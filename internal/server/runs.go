@@ -48,6 +48,7 @@ type runResponse struct {
 	Attempt              int                 `json:"attempt"`
 	Status               string              `json:"status"`
 	Error                *string             `json:"error"`
+	ErrorDetail          *string             `json:"error_detail"`
 	DeclaredOutcome      *string             `json:"declared_outcome"`
 	AgentText            *string             `json:"agent_text"`
 	RuleName             string              `json:"rule_name,omitempty"`
@@ -302,6 +303,9 @@ func toRunResponse(e RunHistoryEntry, chains [][]string) runResponse {
 	}
 	if e.Error != nil {
 		resp.Error = new(redact.Mask(sentence.RunError(*e.Error)))
+	}
+	if e.ErrorDetail != "" {
+		resp.ErrorDetail = new(redact.Mask(e.ErrorDetail))
 	}
 	if e.DispatchedAt != "" {
 		resp.DispatchedAt = new(e.DispatchedAt)

@@ -326,7 +326,9 @@ var ErrBranchMoved = errors.New("branch moved upstream")
 // absent when expected is empty. The upstream decides that, not a
 // remote-tracking ref, so a replacement that is not a fast-forward is
 // allowed when the lease holds. A push refused because the branch holds
-// something else fails with [ErrBranchMoved].
+// something else fails with [ErrBranchMoved]. Any other refusal names
+// the remote's reason for it, and the [*Error] it wraps keeps the push's
+// porcelain output and standard error.
 func (l *Locked) Push(ctx context.Context, src, branch, expected string) error {
 	dst := "refs/heads/" + branch
 	out, err := l.m.git.run(ctx, "push", "--porcelain", "--no-follow-tags",
@@ -337,23 +339,33 @@ func (l *Locked) Push(ctx context.Context, src, branch, expected string) error {
 	if leaseRejected(string(out), dst) {
 		return fmt.Errorf("push %s to %s: %w", branch, l.m.displayURL(), ErrBranchMoved)
 	}
+	if summary := refusal(string(out), dst); summary != "" {
+		return fmt.Errorf("push %s to %s: %s: %w", branch, l.m.displayURL(), summary, err)
+	}
 	return fmt.Errorf("push %s to %s: %w", branch, l.m.displayURL(), err)
 }
 
 // leaseRejected reports whether the porcelain output of a push shows dst
 // refused for a lease that no longer holds.
 func leaseRejected(porcelain, dst string) bool {
+	return strings.Contains(refusal(porcelain, dst), "(stale info)")
+}
+
+// refusal returns the summary the porcelain output of a push gives for
+// dst refused, such as "[remote rejected] (pre-receive hook declined)",
+// or "" when it shows no refusal of dst.
+func refusal(porcelain, dst string) string {
 	for line := range strings.Lines(porcelain) {
-		flag, rest, ok := strings.Cut(strings.TrimRight(line, "\n"), "\t")
+		flag, rest, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
 		if !ok || flag != "!" {
 			continue
 		}
 		refs, summary, _ := strings.Cut(rest, "\t")
-		if strings.HasSuffix(refs, ":"+dst) && strings.Contains(summary, "(stale info)") {
-			return true
+		if strings.HasSuffix(refs, ":"+dst) {
+			return strings.TrimSpace(summary)
 		}
 	}
-	return false
+	return ""
 }
 
 // CreateBundle writes a bundle of refs/heads/<branch> for each branch to

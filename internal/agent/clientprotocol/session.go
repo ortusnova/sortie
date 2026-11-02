@@ -607,10 +607,8 @@ func doInitialize(ctx context.Context, state *sessionState) (*initializeResponse
 		if resp.Error.Code == errorCodeAuthRequired {
 			return nil, agentcore.CredentialRefusedError(quoteJSONRPCError(resp.Error), nil)
 		}
-		return nil, &domain.AgentError{
-			Kind:    domain.ErrResponseError,
-			Message: fmt.Sprintf("initialize error %d: %s", resp.Error.Code, quoteJSONRPCError(resp.Error)),
-		}
+		cause := newErrorObjectError(methodInitialize, resp.Error)
+		return nil, &domain.AgentError{Kind: domain.ErrResponseError, Message: cause.Error(), Err: cause}
 	}
 
 	var initResp initializeResponse
@@ -641,10 +639,8 @@ func doNewSession(ctx context.Context, state *sessionState, cwd string, servers 
 		if resp.Error.Code == errorCodeAuthRequired {
 			return nil, agentcore.CredentialRefusedError(quoteJSONRPCError(resp.Error), nil)
 		}
-		return nil, &domain.AgentError{
-			Kind:    domain.ErrResponseError,
-			Message: fmt.Sprintf("session/new error %d: %s", resp.Error.Code, quoteJSONRPCError(resp.Error)),
-		}
+		cause := newErrorObjectError(methodSessionNew, resp.Error)
+		return nil, &domain.AgentError{Kind: domain.ErrResponseError, Message: cause.Error(), Err: cause}
 	}
 
 	var newResp newSessionResponse

@@ -257,6 +257,7 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"held_ms", "INTEGER", true, 0},
 				{"environment_image_sha256", "TEXT", true, 0},
 				{"exported_commit", "TEXT", true, 0},
+				{"error_detail", "TEXT", true, 0},
 			},
 		},
 		{
@@ -1336,5 +1337,52 @@ func TestMigrate_Migration1003_FreshDBRecordsTheExportedCommit(t *testing.T) {
 	page, err := s.QueryRunHistory(ctx, RunHistoryFilter{Limit: 1, BeforeID: recent[0].ID})
 	if err != nil || len(page) != 1 || page[0].ExportedCommit != commit {
 		t.Errorf("QueryRunHistory(after %d) = %+v, %v, want the run with its commit", recent[0].ID, page, err)
+	}
+}
+
+func TestMigrate_Migration1005_ErrorDetailDefaultsToEmpty(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateToVersion(t, s, 1004)
+	insertBareRun(t, s, "rh-pre1005")
+
+	migrateOrFatal(t, s)
+
+	var detail string
+	if err := s.db.QueryRowContext(context.Background(),
+		`SELECT error_detail FROM run_history WHERE issue_id = 'rh-pre1005'`,
+	).Scan(&detail); err != nil || detail != "" {
+		t.Errorf("error_detail for a pre-migration-1005 row = %q, %v, want empty, nil", detail, err)
+	}
+}
+
+func TestMigrate_Migration1005_RecordsTheErrorDetail(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateOrFatal(t, s)
+	ctx := context.Background()
+	const detail = "git push: exit status 1\nstdout:\nTo /up.git\n!\trefs/heads/main:refs/heads/sortie/ONS-49\t[remote rejected] (pre-receive hook declined)"
+
+	for _, run := range []RunHistory{
+		{IssueID: "rh-refused", Identifier: "ONS-49", Attempt: 1, AgentAdapter: "mock", Workspace: "/tmp/ONS-49",
+			StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:01:00Z", Status: "failed",
+			Error: new("export: push refused"), ErrorDetail: detail},
+		{IssueID: "rh-ok", Identifier: "ONS-50", Attempt: 1, AgentAdapter: "mock", Workspace: "/tmp/ONS-50",
+			StartedAt: "2026-01-01T00:02:00Z", CompletedAt: "2026-01-01T00:03:00Z", Status: "succeeded"},
+	} {
+		if _, err := s.AppendRunHistory(ctx, run); err != nil {
+			t.Fatalf("AppendRunHistory(%s): %v", run.IssueID, err)
+		}
+	}
+
+	byIssue, err := s.QueryRunHistoryByIssue(ctx, "rh-refused")
+	if err != nil || len(byIssue) != 1 || byIssue[0].ErrorDetail != detail {
+		t.Errorf("QueryRunHistoryByIssue(rh-refused) = %+v, %v, want the error detail", byIssue, err)
+	}
+	recent, err := s.QueryRunHistory(ctx, RunHistoryFilter{Limit: 2})
+	if err != nil || len(recent) != 2 || recent[0].ErrorDetail != "" || recent[1].ErrorDetail != detail {
+		t.Errorf("QueryRunHistory(2) = %+v, %v, want the succeeded run without a detail and the failed run with it", recent, err)
 	}
 }
