@@ -17,7 +17,7 @@ Jobs for `environment.kind: remote` are matched to workers in `internal/worker`,
 
 ## Remote runs
 
-A remote attempt is a normal worker run (`RunRemoteAttempt` in `internal/orchestrator/remote.go`, following `agent-platform/remote-runs`): the attempt's execution environment is the job's machine, Sortie drives the agent session over the `stdio` flow through `sortie stdio-bridge`, and seeds and pushes the repository through `internal/gitsync` (`BuildSeed`, `ImportReturned`). `internal/dataplane` serves the `stdio`, `bundles` and `usage` flows under `/api/v1/flows/`, each request admitted by its flow's job token. No forge credential reaches a worker.
+A remote attempt is a normal worker run (`RunRemoteAttempt` in `internal/orchestrator/remote.go`, following `agent-platform/remote-runs`): the attempt's execution environment is the job's machine, Sortie drives the agent session over the `stdio` flow through `sortie stdio-bridge`, and seeds and pushes the repository through `internal/gitsync` (`BuildSeed`, `ImportReturned`). `internal/dataplane` serves the `stdio`, `mcp`, `bundles` and `usage` flows under `/api/v1/flows/`, each request admitted by its flow's job token. The remote attempt is a tool-channel environment whose host socket is the data plane's: the session's tool server is served there as for a VM, and the `mcp` flow forwards each admitted request to it with the bearer the channel's `Authorize` hook hands it, so a tool call acts on its own job's session. No forge credential reaches a worker.
 
 ## Plan sync from the workbench
 

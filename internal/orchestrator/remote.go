@@ -236,7 +236,8 @@ type RemoteAttemptParams struct {
 // renders the prompt, drives the agent session and its turns, and
 // applies its timeouts and stall detection as for a local run, but the
 // session's agent runs on the worker that takes the job, its standard
-// streams carried by the stdio flow. The workspace seed is served on the
+// streams carried by the stdio flow and its tool calls reaching the
+// session's tool server on this host over the mcp flow. The workspace seed is served on the
 // bundles flow, the returned issue branch comes back on it and is pushed
 // with Sortie's own credentials, and usage reports on the usage flow are
 // recorded as the run's own. deps.OnExit is called exactly once.
@@ -297,7 +298,9 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 
 // remoteAttempt is the execution environment of one remote attempt: its
 // workspace is the job's machine on a worker. It implements
-// [environment.Carrier], so the session launch is the stdio bridge.
+// [environment.Carrier], so the session launch is the stdio bridge, and
+// [environment.ToolChanneler], so the session's tool server is served on
+// the mcp flow.
 type remoteAttempt struct {
 	workers   *remoteWorkers
 	job       worker.Job
@@ -327,6 +330,7 @@ var (
 	_ environment.Environment         = (*remoteAttempt)(nil)
 	_ environment.Carrier             = (*remoteAttempt)(nil)
 	_ environment.AfterCreateFinisher = (*remoteAttempt)(nil)
+	_ environment.ToolChanneler       = (*remoteAttempt)(nil)
 )
 
 func (*remoteAttempt) Kind() string { return config.EnvironmentKindRemote }
@@ -446,6 +450,25 @@ func (a *remoteAttempt) LaunchArgv(_ environment.Workspace, _ domain.CarrierLaun
 }
 
 func (*remoteAttempt) ConnectionFailed(environment.Workspace, int, []string) bool { return false }
+
+// remoteToolPort is the loopback port in a remote job's machine at
+// which the agent reaches Sortie's tool server; the worker forwards each
+// request there to the mcp flow.
+const remoteToolPort = 47800
+
+// ToolChannel names the attempt's tool channel: the session's tool
+// server is reached at the data plane's tool socket of the attempt, and
+// the mcp flow forwards the agent's requests to it with the bearer the
+// channel hands it.
+func (a *remoteAttempt) ToolChannel(environment.Workspace) (domain.ToolChannel, error) {
+	a.mu.Lock()
+	dp := a.dp
+	a.mu.Unlock()
+	if dp == nil {
+		return domain.ToolChannel{}, errors.New("the remote job has no data plane attempt")
+	}
+	return domain.ToolChannel{HostSocket: dp.ToolSocket(), GuestPort: remoteToolPort, Authorize: dp.AuthorizeTools}, nil
+}
 
 // Release ends the attempt on the host: the data plane stops serving it,
 // and a job the worker has not reported is withdrawn.

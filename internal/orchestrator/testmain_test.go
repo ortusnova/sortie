@@ -2,24 +2,30 @@ package orchestrator
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-
+	"slices"
 	"testing"
 
+	"github.com/sortie-ai/sortie/internal/agent/mcpconfig"
 	"github.com/sortie-ai/sortie/internal/dataplane"
+	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/tool/mcpserver"
 )
 
 // fakeAgentCommand makes the test binary run [fakeAgent] as a process:
 // `<test binary> fake-agent <workspace> <prompts file>`.
 const fakeAgentCommand = "fake-agent"
 
-// TestMain runs the test binary as the stdio bridge or as a fake agent
-// when a test launches it as one, and runs the tests otherwise.
+// TestMain runs the test binary as the stdio bridge, as a fake agent, or
+// as a session's tool server when a test launches it as one, and runs
+// the tests otherwise.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -27,6 +33,8 @@ func TestMain(m *testing.M) {
 			os.Exit(dataplane.RunBridge(os.Args[2], os.Stdin, os.Stdout, os.Stderr))
 		case fakeAgentCommand:
 			os.Exit(runFakeAgentProcess(os.Args[2], os.Args[3]))
+		case toolServerCommand:
+			os.Exit(runStandInToolServer(os.Args[2:]))
 		}
 	}
 	os.Exit(m.Run())
@@ -129,4 +137,57 @@ func agentGit(dir string, args ...string) error {
 		return fmt.Errorf("git %v: %w: %s", args, err, out)
 	}
 	return nil
+}
+
+// toolServerCommand makes the test binary stand in for `sortie
+// mcp-server`, the command a generated MCP configuration names.
+const toolServerCommand = "mcp-server"
+
+// sessionIdentityTool is the stand-in tool server's one tool. It answers
+// with the issue of the session whose tool server runs it, read from the
+// server's environment as Sortie's own tools read it.
+type sessionIdentityTool struct{}
+
+const sessionIdentityToolName = "session_identity"
+
+func (sessionIdentityTool) Name() string                 { return sessionIdentityToolName }
+func (sessionIdentityTool) Description() string          { return "Returns the session's issue." }
+func (sessionIdentityTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func (sessionIdentityTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return json.Marshal(map[string]string{
+		"issue_id": os.Getenv("SORTIE_ISSUE_ID"), "issue_identifier": os.Getenv("SORTIE_ISSUE_IDENTIFIER"),
+	})
+}
+
+// runStandInToolServer serves [sessionIdentityTool] as `sortie mcp-server
+// --http` serves Sortie's tools: on a loopback port it announces, behind
+// the bearer the relay hands it, until its standard input closes.
+func runStandInToolServer(args []string) int {
+	if !slices.Contains(args, "--http") {
+		fmt.Fprintln(os.Stderr, "stand-in tool server: --http is required") //nolint:errcheck // test diagnostics
+		return 2
+	}
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stand-in tool server:", err) //nolint:errcheck // test diagnostics
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(mcpserver.HTTPEvent{Listening: ln.Addr().String()}); err != nil {
+		return 1
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		cancel()
+	}()
+	registry := domain.NewToolRegistry()
+	registry.Register(sessionIdentityTool{})
+	err = mcpserver.NewServer(registry, nil, "test").ServeStreamableHTTP(ctx, ln,
+		mcpserver.HTTPOptions{Bearer: os.Getenv(mcpconfig.BearerEnv), Events: os.Stdout})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "stand-in tool server:", err) //nolint:errcheck // test diagnostics
+		return 1
+	}
+	return 0
 }

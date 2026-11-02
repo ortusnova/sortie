@@ -1,7 +1,8 @@
 // Package dataplane serves the data-plane flows Sortie itself answers for
 // a remote job: the workspace seed and the returned issue branch on the
-// bundles flow, the agent's standard streams on the stdio flow, and the
-// run's token usage on the usage flow. Every request carries the job
+// bundles flow, the agent's standard streams on the stdio flow, the run's
+// token usage on the usage flow, and the agent's requests to its own
+// session's tool server on the mcp flow. Every request carries the job
 // token of its flow, for that job and attempt; any other request is
 // answered 401 and served nothing.
 package dataplane
@@ -16,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,6 +33,7 @@ const (
 	FlowStdio   jobtoken.Flow = "stdio"
 	FlowBundles jobtoken.Flow = "bundles"
 	FlowUsage   jobtoken.Flow = "usage"
+	FlowMCP     jobtoken.Flow = "mcp"
 )
 
 // Prefix is the path every data-plane route sits under, followed by the
@@ -45,6 +48,7 @@ var Routes = []string{
 	Prefix + "bundles/jobs/{job}/attempts/{attempt}/result",
 	Prefix + "stdio/jobs/{job}/attempts/{attempt}",
 	Prefix + "usage/jobs/{job}/attempts/{attempt}",
+	Prefix + "mcp/jobs/{job}/attempts/{attempt}",
 }
 
 // StdioProtocol is the Upgrade token of the stdio flow.
@@ -132,6 +136,7 @@ type Attempt struct {
 
 	listener net.Listener
 	sockDir  string
+	tools    *http.Transport
 
 	mu         sync.Mutex
 	result     *Result
@@ -141,6 +146,7 @@ type Attempt struct {
 	workerSet  chan struct{}
 	session    net.Conn
 	relaying   bool
+	toolBearer string
 	brokenOnce sync.Once
 	closed     chan struct{}
 	closeOnce  sync.Once
@@ -171,6 +177,11 @@ func (p *Plane) Open(job string, attempt int, opts Options) (*Attempt, error) {
 		listener: ln, sockDir: dir,
 		resultSet: make(chan struct{}), workerSet: make(chan struct{}), closed: make(chan struct{}),
 	}
+	a.tools = &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", a.ToolSocket())
+		},
+	}
 	p.mu.Lock()
 	var earlier []*Attempt
 	for k, old := range p.attempts {
@@ -189,6 +200,24 @@ func (p *Plane) Open(job string, attempt int, opts Options) (*Attempt, error) {
 
 // Socket returns the path of the session socket.
 func (a *Attempt) Socket() string { return a.listener.Addr().String() }
+
+// ToolSocketName is the file name of [Attempt.ToolSocket].
+const ToolSocketName = "tools.sock"
+
+// ToolSocket returns the path of the tool socket: the session's tool
+// server is reached there, and the mcp flow forwards each request it
+// admits to it. Its directory belongs to the attempt alone.
+func (a *Attempt) ToolSocket() string { return filepath.Join(a.sockDir, ToolSocketName) }
+
+// AuthorizeTools records the bearer the tool server behind
+// [Attempt.ToolSocket] accepts. The mcp flow presents it in place of the
+// job token of each request it admits; until it is recorded the flow
+// answers 503.
+func (a *Attempt) AuthorizeTools(bearer string) {
+	a.mu.Lock()
+	a.toolBearer = bearer
+	a.mu.Unlock()
+}
 
 // Done is closed when the attempt is closed.
 func (a *Attempt) Done() <-chan struct{} { return a.closed }
@@ -212,7 +241,9 @@ func (a *Attempt) Close() {
 				_ = c.Close() //nolint:errcheck // closing
 			}
 		}
+		a.toolBearer = ""
 		a.mu.Unlock()
+		a.tools.CloseIdleConnections()
 		_ = os.RemoveAll(a.sockDir) //nolint:errcheck // a leftover socket directory only costs an inode
 	})
 }
@@ -368,12 +399,14 @@ func (a *Attempt) broken(err error) {
 //	POST /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/result  multipart: bundle, pr; 204
 //	GET  /api/v1/flows/stdio/jobs/{job}/attempts/{attempt}           Upgrade: sortie-stdio/1; 101
 //	POST /api/v1/flows/usage/jobs/{job}/attempts/{attempt}           body Usage; 204
+//	*    /api/v1/flows/mcp/jobs/{job}/attempts/{attempt}             the session's tool server, as at /mcp
 func (p *Plane) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+Routes[0], p.flow(FlowBundles, serveSeed))
 	mux.HandleFunc("POST "+Routes[1], p.flow(FlowBundles, receiveResult))
 	mux.HandleFunc("GET "+Routes[2], p.flow(FlowStdio, serveStdio))
 	mux.HandleFunc("POST "+Routes[3], p.flow(FlowUsage, receiveUsage))
+	mux.HandleFunc(Routes[4], p.flow(FlowMCP, serveTools))
 	return mux
 }
 
@@ -601,4 +634,40 @@ func receiveUsage(a *Attempt, w http.ResponseWriter, r *http.Request) {
 		a.opts.OnUsage(u)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// toolHost is the loopback host the tool server sees in every forwarded
+// request, as in a request from an agent on Sortie's host.
+const toolHost = "127.0.0.1"
+
+// serveTools forwards an admitted request of the mcp flow to the tool
+// server of the attempt's session as a request to its /mcp: the job
+// token is replaced with the tool server's bearer, and the answer streams
+// back as it arrives.
+func serveTools(a *Attempt, w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	bearer := a.toolBearer
+	a.mu.Unlock()
+	if bearer == "" {
+		problem(w, http.StatusServiceUnavailable, "no_tool_server", "the attempt's session has no tool server")
+		return
+	}
+	unbounded(w)
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = "http"
+			pr.Out.URL.Host = toolHost
+			pr.Out.URL.Path, pr.Out.URL.RawPath = "/mcp", ""
+			pr.Out.Host = toolHost
+			pr.Out.Header.Set("Authorization", "Bearer "+bearer)
+		},
+		Transport:     a.tools,
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			a.logger.Warn("remote job tool request did not reach the session's tool server",
+				slog.String("job", a.key.job), slog.Uint64("attempt", a.key.attempt), slog.Any("error", err))
+			problem(w, http.StatusBadGateway, "tool_server_unreachable", "the session's tool server cannot be reached")
+		},
+	}
+	proxy.ServeHTTP(w, r)
 }
