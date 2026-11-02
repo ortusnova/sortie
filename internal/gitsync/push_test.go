@@ -168,6 +168,52 @@ func TestExport_HumanCreatedTheBranchBeforeSortiesFirstPush(t *testing.T) {
 	}
 }
 
+func TestPushIncoming_PushesWhatARefusedExportImported(t *testing.T) {
+	f := seeded(t, "ENG-74", config.SmolvmRepository{})
+	ctx := context.Background()
+
+	if pushed, err := f.syncer.PushIncoming(ctx, "ENG-74"); pushed || err != nil {
+		t.Fatalf("PushIncoming() before any export = %v, %v, want nothing to push", pushed, err)
+	}
+
+	// The upstream refuses every push while the marker file exists.
+	marker := filepath.Join(t.TempDir(), "refuse")
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\nif [ -e '" + marker + "' ]; then echo '" + workflowScopeRefusal + "' >&2; exit 1; fi\nexit 0\n"
+	if err := os.MkdirAll(filepath.Join(f.up.dir, ".git", "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.up.dir, ".git", "hooks", "pre-receive"), []byte(hook), 0o700); err != nil { //nolint:gosec // G306: a hook must be executable
+		t.Fatal(err)
+	}
+	head := f.agentCommit("feature.txt", []byte("feature\n"))
+	if _, err := f.export(); err == nil {
+		t.Fatal("Export() error = nil, want the upstream's refusal")
+	}
+
+	if pushed, err := f.syncer.PushIncoming(ctx, "ENG-74"); !pushed || err == nil {
+		t.Fatalf("PushIncoming() while the upstream refuses = %v, %v, want a refused push", pushed, err)
+	}
+
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if pushed, err := f.syncer.PushIncoming(ctx, "ENG-74"); !pushed || err != nil {
+		t.Fatalf("PushIncoming() once the upstream accepts = %v, %v, want a push", pushed, err)
+	}
+	if got := f.upstreamBranch("sortie/ENG-74"); got != head {
+		t.Errorf("upstream sortie/ENG-74 = %q, want %s", got, head)
+	}
+	if got := f.mirrorRef(PushedRef("ENG-74")); got != head {
+		t.Errorf("%s = %q, want %s", PushedRef("ENG-74"), got, head)
+	}
+	if pushed, err := f.syncer.PushIncoming(ctx, "ENG-74"); pushed || err != nil {
+		t.Errorf("PushIncoming() after the push = %v, %v, want nothing to push", pushed, err)
+	}
+}
+
 // workflowScopeRefusal is the line GitHub gives for a push its token's
 // scopes do not allow.
 const workflowScopeRefusal = "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/talos-installer.yml` without `workflow` scope"

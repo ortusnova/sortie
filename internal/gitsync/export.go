@@ -130,6 +130,34 @@ func (s *Syncer) importAndPush(ctx context.Context, key, bundlePath, onTopOf str
 	return res, nil
 }
 
+// PushIncoming pushes again what an earlier export of key imported into
+// [IncomingRef] and could not push, as that export would have. It
+// reports false, and pushes nothing, when the mirror holds no such
+// import: no incoming ref, or one equal to [PushedRef].
+func (s *Syncer) PushIncoming(ctx context.Context, key string) (bool, error) {
+	branch := s.IssueBranch(key)
+	if err := s.checkExportRefs(ctx, key, branch); err != nil {
+		return false, err
+	}
+	l, err := s.mirror.Lock(ctx)
+	if err != nil {
+		return false, fmt.Errorf("lock the repository mirror: %w", err)
+	}
+	defer l.Unlock()
+	commit, ok, err := l.RefValue(ctx, IncomingRef(key))
+	if err != nil || !ok {
+		return false, err
+	}
+	pushed, _, err := l.RefValue(ctx, PushedRef(key))
+	if err != nil {
+		return false, err
+	}
+	if pushed == commit {
+		return false, nil
+	}
+	return true, s.push(ctx, l, key, branch, commit)
+}
+
 // push pushes the incoming ref of key to the upstream's branch with a
 // lease on [PushedRef], then records commit as Sortie's last push and
 // as the mirror's copy of the upstream branch.
