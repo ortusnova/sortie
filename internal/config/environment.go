@@ -231,7 +231,21 @@ type SmolvmCredential struct {
 	// value on every HTTPS request to Hosts, replacing any value the
 	// guest sent in it.
 	Header string
+
+	// File optionally names a host file, with ~ and $VAR expanded, whose
+	// content is the value. It is read each time a VM starts. Excludes
+	// Command.
+	File string
+
+	// Command optionally holds a shell command run on the host whose
+	// standard output is the value. It runs each time a VM starts.
+	// Excludes File.
+	Command string
 }
+
+// Sourced reports whether the binding's value comes from File or
+// Command rather than from Sortie's own environment variable Env.
+func (c SmolvmCredential) Sourced() bool { return c.File != "" || c.Command != "" }
 
 // SmolvmRepository configures the host-owned repository mirror.
 type SmolvmRepository struct {
@@ -831,12 +845,52 @@ func parseSmolvmCredentials(m map[string]any) ([]SmolvmCredential, error) {
 			}
 		}
 
-		creds = append(creds, SmolvmCredential{Name: name, Env: env, Hosts: hosts, Header: header})
+		file, command, err := parseCredentialSource(entry, field)
+		if err != nil {
+			return nil, err
+		}
+
+		creds = append(creds, SmolvmCredential{Name: name, Env: env, Hosts: hosts, Header: header, File: file, Command: command})
 	}
 	if len(creds) == 0 {
 		return nil, nil
 	}
 	return creds, nil
+}
+
+// parseCredentialSource reads the optional file and command keys of the
+// credential binding entry at field. At most one may be set; the file is
+// expanded and must be absolute. Neither is read here: the value is read
+// each time a VM starts.
+func parseCredentialSource(entry map[string]any, field string) (file, command string, err error) {
+	rawFile, filePresent, err := requireStringField(entry, "file", field+".file")
+	if err != nil {
+		return "", "", err
+	}
+	command, commandPresent, err := requireStringField(entry, "command", field+".command")
+	if err != nil {
+		return "", "", err
+	}
+	if filePresent && commandPresent {
+		return "", "", &ConfigError{Field: field, Message: "sets both file and command; a credential has one source"}
+	}
+	if commandPresent && strings.TrimSpace(command) == "" {
+		return "", "", &ConfigError{Field: field + ".command", Message: "must not be empty; remove the key to read the value from env"}
+	}
+	if filePresent {
+		if rawFile == "" {
+			return "", "", &ConfigError{Field: field + ".file", Message: "must not be empty; remove the key to read the value from env"}
+		}
+		file, err = ExpandPath(rawFile, true)
+		if err != nil {
+			return "", "", &ConfigError{Field: field + ".file", Message: err.Error()}
+		}
+		if !filepath.IsAbs(file) {
+			return "", "", &ConfigError{Field: field + ".file", Message: fmt.Sprintf("%q is not an absolute path after ~ and $VAR expansion", file)}
+		}
+		file = filepath.Clean(file)
+	}
+	return file, command, nil
 }
 
 // checkCredentialHeader refuses a header name that is not an HTTP field

@@ -110,6 +110,8 @@ func TestEnvironmentConfig_RemoteRejects(t *testing.T) {
 		"empty backend":       {remoteRaw(map[string]any{"backend": ""}), "environment.remote.backend"},
 		"zero lease":          {remoteRaw(map[string]any{"lease_ttl_ms": 0}), "environment.remote.lease_ttl_ms"},
 		"credential no hosts": {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A"}}}), "environment.remote.credentials[0].hosts"},
+		"credential file":     {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A", "hosts": []any{"h.example"}, "file": "/t"}}}), "environment.remote.credentials[0].file"},
+		"credential command":  {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A", "hosts": []any{"h.example"}, "command": "t"}}}), "environment.remote.credentials[0].command"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
