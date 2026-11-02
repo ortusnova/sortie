@@ -372,6 +372,12 @@ func (colocatedEnv) ConnectionFailed(environment.Workspace, int, []string) bool 
 func runColocated(t *testing.T, f *gitFixture) (runCapture, string) {
 	t.Helper()
 	upstream := f.upstream()
+	return runColocatedOn(t, upstream), upstream
+}
+
+// runColocatedOn runs ONS-30 as runColocated does, against upstream.
+func runColocatedOn(t *testing.T, upstream string) runCapture {
+	t.Helper()
 	cfg := baseRunConfig(t)
 	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, HostPrefix: []string{envPath(t)},
 		Smolvm: config.SmolvmConfig{Repository: runRepository(upstream)}}
@@ -396,7 +402,7 @@ func runColocated(t *testing.T, f *gitFixture) (runCapture, string) {
 		}
 		c.received = append(c.received, p)
 	}
-	return c, upstream
+	return c
 }
 
 // fakeWorker is a worker that speaks worker API protocol 1 and carries

@@ -3470,6 +3470,16 @@
             }
           ]
         },
+        "error_detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "estimated_cost_usd": {
           "anyOf": [
             {
@@ -3670,6 +3680,7 @@
         "attempt",
         "status",
         "error",
+        "error_detail",
         "declared_outcome",
         "agent_text",
         "started_at",

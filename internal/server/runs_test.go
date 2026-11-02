@@ -116,6 +116,7 @@ func TestRunsMaskRegisteredValues(t *testing.T) {
 		IssueURL:       "https://tracker.example/" + secret,
 		Status:         "failed",
 		Error:          &failure,
+		ErrorDetail:    "git push: exit status 1\nstderr:\nremote: token " + secret,
 		ReviewMetadata: &review,
 		AgentText:      "Need " + secret,
 	}}})
@@ -126,13 +127,14 @@ func TestRunsMaskRegisteredValues(t *testing.T) {
 		t.Fatalf("GET /api/v1/runs = status %d with %d runs, want 200 with 1", status, len(got.Runs))
 	}
 	run := got.Runs[0]
-	if run.Error == nil || run.SelfReview == nil || run.AgentText == nil {
-		t.Fatalf("GET /api/v1/runs run error, self_review, agent_text = %v, %v, %v, want all present", run.Error, run.SelfReview, run.AgentText)
+	if run.Error == nil || run.ErrorDetail == nil || run.SelfReview == nil || run.AgentText == nil {
+		t.Fatalf("GET /api/v1/runs run error, error_detail, self_review, agent_text = %v, %v, %v, %v, want all present", run.Error, run.ErrorDetail, run.SelfReview, run.AgentText)
 	}
 	served := map[string]string{
 		"issue_title":               run.IssueTitle,
 		"issue_url":                 run.IssueURL,
 		"error":                     *run.Error,
+		"error_detail":              *run.ErrorDetail,
 		"agent_text":                *run.AgentText,
 		"self_review.final_verdict": run.SelfReview.FinalVerdict,
 	}
@@ -143,6 +145,30 @@ func TestRunsMaskRegisteredValues(t *testing.T) {
 		if !strings.Contains(value, redact.Marker) {
 			t.Errorf("GET /api/v1/runs %s = %q, want it to hold %q", field, value, redact.Marker)
 		}
+	}
+}
+
+func TestIssueDetailServesTheErrorDetail(t *testing.T) {
+	t.Parallel()
+
+	const refusal = "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/talos-installer.yml` without `workflow` scope"
+	failure := "export issue branch \"sortie/ONS-49\": push sortie/ONS-49 to https://github.com/org/app.git: [remote rejected] (" + refusal + "): git push: exit status 1: error: failed to push some refs"
+	detail := "git push: exit status 1\nstdout:\nTo https://github.com/org/app.git\n!\trefs/sortie/incoming/ONS-49:refs/heads/sortie/ONS-49\t[remote rejected] (" + refusal + ")\nDone\nstderr:\nerror: failed to push some refs"
+	ts := historyServer(t, orchestrator.RuntimeSnapshotResult{}, &fakeRunHistory{rows: []RunHistoryEntry{
+		{ID: 9, IssueID: "id-49", Identifier: "ONS-49", Attempt: 2, Status: "failed", Error: &failure, ErrorDetail: detail},
+		{ID: 8, IssueID: "id-49", Identifier: "ONS-49", Attempt: 1, Status: "succeeded"},
+	}})
+
+	status, body := getJSON[issueDetailResponse](t, ts, "/api/v1/ONS-49")
+
+	if status != http.StatusOK || body.History == nil || len(body.History.Runs) != 2 {
+		t.Fatalf("GET /api/v1/ONS-49 = status %d, history %+v; want 200 with both runs", status, body.History)
+	}
+	if got := body.History.Runs[0].ErrorDetail; got == nil || *got != detail {
+		t.Errorf("history.runs[0].error_detail = %v, want %q", got, detail)
+	}
+	if got := body.History.Runs[1].ErrorDetail; got != nil {
+		t.Errorf("history.runs[1].error_detail = %q, want null", *got)
 	}
 }
 

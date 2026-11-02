@@ -75,6 +75,9 @@ type RunHistoryEntry struct {
 	// Error holds the error message when Status indicates failure.
 	// Nil when no error occurred.
 	Error *string
+	// ErrorDetail is the full output of the step that failed the run, as
+	// recorded; empty when none was recorded.
+	ErrorDetail string
 	// TurnsCompleted is the number of agent turns completed before exit.
 	TurnsCompleted int
 	// RuleName is the dispatch rule that routed the run; empty when none did.

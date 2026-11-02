@@ -720,6 +720,7 @@ export interface RunResponse {
   attempt: number;
   status: string;
   error: string | null;
+  error_detail: string | null;
   declared_outcome: string | null;
   agent_text: string | null;
   rule_name?: string;
