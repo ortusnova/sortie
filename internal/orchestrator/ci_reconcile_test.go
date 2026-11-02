@@ -3106,3 +3106,7 @@ func (s *ciReconcileStore) ListReactionHandedOffComments(_ context.Context, _, _
 }
 
 func (s *ciReconcileStore) DeleteStageHop(context.Context, string) error { return nil }
+
+func (*ciReconcileStore) LatestRunFailureSignature(context.Context, string) (string, error) {
+	return "", nil
+}

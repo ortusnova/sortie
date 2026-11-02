@@ -77,11 +77,12 @@ const (
 )
 
 const (
-	parkReasonHandoffAbsence = "handoff_absence"
-	budgetReasonTokens       = "token_budget"
-	budgetReasonMoney        = "money_budget"
-	checkVerdictFailing      = "failing"
-	checkVerdictPending      = "pending"
+	parkReasonHandoffAbsence  = "handoff_absence"
+	parkReasonRepeatedFailure = "repeated_failure"
+	budgetReasonTokens        = "token_budget"
+	budgetReasonMoney         = "money_budget"
+	checkVerdictFailing       = "failing"
+	checkVerdictPending       = "pending"
 )
 
 // escalatedTemplates names the attention template of each escalating reaction
@@ -137,8 +138,11 @@ func attentionItem(cause orchestrator.AttentionCause, c Context) AttentionItem {
 func parkedItem(cause orchestrator.AttentionCause) AttentionItem {
 	e := cause.Parked
 	template := "attn_parked_agent_blocked"
-	if e.Reason == parkReasonHandoffAbsence {
+	switch e.Reason {
+	case parkReasonHandoffAbsence:
 		template = "attn_parked_handoff_absence"
+	case parkReasonRepeatedFailure:
+		template = "attn_parked_repeated_failure"
 	}
 	reason, why, clears := attentionTexts(template, map[string]any{
 		"Label":  strings.TrimSpace(e.Label),

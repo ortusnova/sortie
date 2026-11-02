@@ -474,8 +474,11 @@ func selectParked(e *orchestrator.SnapshotParkedEntry) (string, map[string]any) 
 		"Label":  strings.TrimSpace(e.Label),
 		"Unseen": !e.LabelApplied,
 	}
-	if e.Reason == "handoff_absence" {
+	switch e.Reason {
+	case "handoff_absence":
 		return "parked_handoff_absence", data
+	case "repeated_failure":
+		return "parked_repeated_failure", data
 	}
 	return "parked_agent_blocked", data
 }
