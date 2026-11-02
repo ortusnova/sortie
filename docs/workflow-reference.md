@@ -2505,7 +2505,7 @@ server:
 
 Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observability and operational control. `server.port` overrides the default port; `server.host` overrides the default bind address. CLI `--port` and `--host` flags take precedence over their extension counterparts. Port `0` disables the server entirely (no TCP listener, no Prometheus metrics).
 
-**Control authentication.** The endpoints that change Sortie's runtime state, `POST /api/v1/refresh`, `POST /api/v1/retries/{identifier}/run`, `POST /api/v1/attention/{id}/acknowledge`, `POST /api/v1/reactions/{identifier}/{kind}/check`, and the per-issue control routes below, require `Authorization: Bearer <token>` once `server.control_token` is set. A missing or unknown token receives `401` and Sortie takes no action. Without a control token, those endpoints accept requests with no token, and Sortie refuses to start when the bind address (`server.host` or `--host`) is not a loopback address, with a configuration error that names `server.control_token`. The plan routes, `POST /api/v1/plan/sync`, `GET /api/v1/plan/graph`, `GET /api/v1/plan/capabilities`, and `GET` and `PUT /api/v1/plan/projects/{key}`, take the control token too, the reads included, because they reach the tracker with Sortie's credentials. The other read-only endpoints, the dashboard, `/api/v1/state`, the per-issue detail, `/livez`, `/readyz`, and `/metrics`, never require a token. Sortie removes every variable of its own environment that holds the control token's value at startup, so agents, hooks, and the tool server never inherit it.
+**Control authentication.** The endpoints that change Sortie's runtime state, `POST /api/v1/refresh`, `POST /api/v1/dispatch/pause` and `/resume`, `POST /api/v1/retries/{identifier}/run`, `POST /api/v1/attention/{id}/acknowledge`, `POST /api/v1/reactions/{identifier}/{kind}/check`, and the per-issue control routes below, require `Authorization: Bearer <token>` once `server.control_token` is set. A missing or unknown token receives `401` and Sortie takes no action. Without a control token, those endpoints accept requests with no token, and Sortie refuses to start when the bind address (`server.host` or `--host`) is not a loopback address, with a configuration error that names `server.control_token`. The plan routes, `POST /api/v1/plan/sync`, `GET /api/v1/plan/graph`, `GET /api/v1/plan/capabilities`, and `GET` and `PUT /api/v1/plan/projects/{key}`, take the control token too, the reads included, because they reach the tracker with Sortie's credentials. The other read-only endpoints, the dashboard, `/api/v1/state`, the per-issue detail, `/livez`, `/readyz`, and `/metrics`, never require a token. Sortie removes every variable of its own environment that holds the control token's value at startup, so agents, hooks, and the tool server never inherit it.
 
 **Session tokens.** Each working session receives its own token in `SORTIE_SESSION_TOKEN` (see [Section 2.6](#26-agent--coding-agent-configuration)); the credential verification receives none. A session token is accepted only on the per-issue control routes of its own issue, so a wrapper such as an ACP broker in `agent.command` can call them with no operator setup. It receives `403` on any other route, refresh included, or for another issue, and `401` once its run has ended. Session tokens live only in memory, are masked in logs, and are never stored.
 
@@ -2529,6 +2529,8 @@ A reverse proxy in front of Sortie must pass on the `Host` header the browser se
 | GET    | `/api/v1/prices`         | The rates in force when the request is served, per agent kind and model, with the layer each rate comes from and whether that run is priced in full, in part, or not at all, and the state of every price source: your `token_rates`, your own price table, the downloaded table, and the embedded table. It is what the dashboard's Prices screen shows. See [`GET /api/v1/prices`: prices in force](#get-apiv1prices-prices-in-force). |
 | GET    | `/api/v1/{identifier}`   | Per-issue detail for a specific issue identifier, including a parked one, one that only waits on a pending pull request reaction, and one known only through run history, with its runs. Carries a plain English status sentence for the issue, lists what Sortie does next for it as condition and sentence pairs, and lists the latest 50 agent events of its running or latest run as `recent_events`. Returns 404 only when neither the current state nor run history knows the identifier. |
 | POST   | `/api/v1/refresh`        | Trigger an immediate poll+reconciliation cycle. Returns 202 Accepted normally, 409 Conflict during graceful shutdown. Best-effort; repeated requests are coalesced. Every response says in one sentence what it queued. |
+| POST   | `/api/v1/dispatch/pause` | Stop dispatching: Sortie starts no new run (no first dispatch, retry, continuation, or stage hop) and lets the running ones finish. Optional body `{"by": "...", "reason": "..."}`. 200 with `dispatch_paused`, also when dispatch was already paused (the first pause is kept). Lasts until resume or a restart. Control token only; a session token gets 403. See [`POST /api/v1/dispatch/pause` and `/resume`](#post-apiv1dispatchpause-and-resume--drain-the-host). |
+| POST   | `/api/v1/dispatch/resume` | Dispatch again, from the next poll tick, which the request queues. 200 with `dispatch_paused` null, also when dispatch was not paused. Control token only. |
 | POST   | `/api/v1/retries/{identifier}/run` | Make an issue's scheduled retry due now; the retry then goes through the same checks as a retry whose time came, and one that still cannot start keeps the time it was due before. Returns 202 Accepted, 404 when no retry is scheduled for the identifier, and 409 Conflict during graceful shutdown. Every 202 and 409 response says in one sentence what it did. |
 | POST   | `/api/v1/attention/{id}/acknowledge` | Record that a person has seen an item that needs a person: it leaves the attention count and stays listed with the time it was acknowledged until its cause clears, and a new cause shows as a new item. Changes nothing in the tracker or the pull request. Returns 200 OK, 404 when no current item has the ID, and 409 Conflict during graceful shutdown. Every 200 and 409 response says in one sentence what it did. |
 | POST   | `/api/v1/reactions/{identifier}/{kind}/check` | Make a pending pull request reaction check its pull request on the next poll tick instead of at its scheduled time. The check follows every rule of the reaction, and the request itself starts no agent and changes nothing in the tracker or the pull request. A reaction still waiting after that check keeps the time its next check was due before, so asking early never makes it wait longer. Returns 202 Accepted, 404 when the issue has no pending reaction of that kind, and 409 Conflict during graceful shutdown. Every 202 and 409 response says in one sentence what it did. |
@@ -3658,6 +3660,8 @@ A session whose `usage_arrival` is `none` contributes nothing to the token total
 `cost_unpriced_running` is a top-level field, present, zero included, whenever a rate source is available (any `token_rates` entry, an operator price table, a downloaded table, or the embedded table), and omitted otherwise, so its presence alone tells a client whether Sortie can price at all. It counts the running, measured sessions that `active_estimated_cost_usd` leaves out because no rate prices any of their spend. `active_estimated_cost_usd` sums the live estimates of the running, measured sessions that price, in full or in part, and is omitted when none of them prices.
 
 `spend_ceiling` is a top-level object, present while `agent.max_daily_cost_usd`, `agent.max_weekly_cost_usd`, or `agent.max_monthly_cost_usd` is above `0` and omitted otherwise, so a workflow with none of them serves the response it served before. Its members `daily`, `weekly`, and `monthly` are always present: an object while the matching setting is above `0`, and `null` otherwise. Each object carries `budget_usd` (the setting, above `0`), `used_usd` (the window's estimated cost: the cost recorded with each run that ended in the window plus the live estimate of the sessions running now), `used_usd_complete` (`false` exactly when `used_usd` is a lower bound because a run or session could not be fully priced or its usage was not fully reported), `holds_dispatch` (`true` while the window has reached its ceiling and Sortie starts no new agent session), and `resets_at` (the end of the window, in UTC). The route serves the latest evaluation and computes nothing, so `holds_dispatch` equals the decision the poll tick and the retry timer last applied, and the figures are at most one `polling.interval_ms` old. The windows are the UTC calendar day, the UTC week from Monday, and the UTC calendar month. Under `sortie --once`, a candidate or retry that a window holds ends that issue's work as not succeeded, and the retry is not checked again. The dashboard's "today" starts at midnight in the browser's time zone, so for a viewer off UTC its today total and the daily window cover different spans.
+
+`dispatch_paused` is a top-level field, always present: `null` while Sortie dispatches, and while an operator has paused dispatch an object with `since` (when the pause began, in UTC), `by` (who paused it), and `reason` (empty when none was given). See [`POST /api/v1/dispatch/pause` and `/resume`](#post-apiv1dispatchpause-and-resume--drain-the-host).
 
 **Workflow shape (`config`):**
 
@@ -4866,6 +4870,42 @@ Every response carries `outcome_text`, one sentence that states what the respons
 HTTP/1.1 401 Unauthorized
 {"error": {"code": "unauthorized", "message": "a bearer token is required"}}
 ```
+
+#### `POST /api/v1/dispatch/pause` and `/resume` — Drain the Host
+
+A pause drains the host: Sortie starts no new run and lets the runs already going finish. A deploy or a host setup change that must not land under a running agent pauses dispatch, waits until `running` on `/api/v1/state` is empty, applies, and resumes. It waits only for the runs that were going, never behind the queue of issues.
+
+While dispatch is paused:
+
+- The poll tick dispatches no candidate, a stage hop's next stage included. Polling, reconciliation, and reaction checks keep running.
+- A retry or reaction continuation that comes due is not started. It stays scheduled with its attempt unchanged and is checked again one `polling.interval_ms` later.
+- Running runs go on to their end, with all their turns. Holds, cancels, and stall detection apply to them as before.
+
+```http
+POST /api/v1/dispatch/pause
+Authorization: Bearer <token>
+
+{"by": "stage0-deploy", "reason": "kit change"}
+
+HTTP/1.1 200 OK
+{"dispatch_paused": {"since": "2026-11-02T09:00:00Z", "by": "stage0-deploy", "reason": "kit change"}}
+```
+
+The body is optional. `by` defaults to `operator`, and `reason` to empty. Pausing a paused instance answers `200` with the pause already in force: its `since`, `by`, and `reason` do not change, so a caller can repeat the request until the host drains.
+
+```http
+POST /api/v1/dispatch/resume
+Authorization: Bearer <token>
+
+HTTP/1.1 200 OK
+{"dispatch_paused": null}
+```
+
+Resume takes no body. It queues a poll, so waiting candidates start without waiting for `polling.interval_ms`, and makes each retry the pause held due now. Resuming an instance that is not paused answers `200` and changes nothing.
+
+`/api/v1/state` serves the pause as `dispatch_paused`, the same object as above, or `null` while dispatch runs. The pause lives in memory: a workflow reload keeps it, and a restart of Sortie clears it, so a restarted Sortie dispatches. A caller that drains the host for a change that restarts Sortie resumes after the change anyway; the resume then answers `200` and changes nothing.
+
+Both routes take the control token only; a session token gets `403`. A malformed pause body gets `400` (`invalid_request`), and `503` (`orchestrator_unavailable`) answers during shutdown.
 
 #### `POST /api/v1/{identifier}/hold` and `/release` — Held Runs
 

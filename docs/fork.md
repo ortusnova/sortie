@@ -27,6 +27,10 @@ A failed run keeps its whole cause in `run_history.error_detail` (migration 1005
 
 The agentic-orchestration workbench syncs the plan on its own, with no Sync step for the user. It calls `POST /api/v1/plan/sync` with `"apply": false` to preview, then applies that preview with `"apply": true` and the preview's `preview_id`. After a sync that released a story, it calls `POST /api/v1/refresh` so the released story is dispatched on the next tick instead of the next poll. Both routes take the control token. Nothing else in Sortie changes for this.
 
+## Draining a host
+
+The stage-0 kit drains a host before a deploy or a host setup change, following `agent-platform/run-supervision` ("A pending deploy drains its host"). It calls `POST /api/v1/dispatch/pause`, waits until `running` on `/api/v1/state` is empty, applies the change, and calls `POST /api/v1/dispatch/resume`; both routes take the control token. The pause lives in `internal/orchestrator/dispatch_pause.go` and `internal/server/dispatch_pause.go`, with one hook in the poll tick's dispatch pass and one in `HandleRetryTimer`. It is kept in memory, so a restart clears it: the kit resumes after every change and repeats its pause each minute while it waits, so a persisted pause would add nothing and could leave a host paused with no one to resume it.
+
 ## smolvm egress with virtio-net
 
 Answer: smolvm filters egress with `virtio-net`, and does not with TSI. Measured on smolvm 1.32.4 on 2026-11-01, on p1 (Intel, `kvm_intel nested=Y`), with throwaway Alpine 3.22 machines.
