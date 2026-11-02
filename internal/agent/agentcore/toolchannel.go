@@ -63,6 +63,11 @@ func (s *ToolSession) openChannel(ctx context.Context) {
 	s.mu.Lock()
 	s.channel = opened
 	s.mu.Unlock()
+	if channel.Authorize != nil {
+		if ep, ok := relay.LocalEndpoint(); ok {
+			channel.Authorize(ep.Bearer)
+		}
+	}
 }
 
 // channelOutcome returns the outcome a carrier session's endpoint renders

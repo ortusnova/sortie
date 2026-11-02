@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -343,5 +344,87 @@ func TestUsageReports(t *testing.T) {
 		if resp := f.do(http.MethodPost, path, tc.tok, "application/json", strings.NewReader(tc.body)); resp.StatusCode != tc.code {
 			t.Errorf("%s: %d, want %d", name, resp.StatusCode, tc.code)
 		}
+	}
+}
+
+// toolServer stands in for a session's tool server behind a's tool
+// socket: it answers every request with what it received.
+func toolServer(t *testing.T, a *Attempt) {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", a.ToolSocket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:gosec // G112: a test stand-in
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"method": r.Method, "path": r.URL.Path, "query": r.URL.RawQuery, "host": r.Host,
+			"authorization": r.Header.Get("Authorization"), "body": string(body),
+		})
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+}
+
+const mcpPath = Prefix + "mcp/jobs/ONS-30/attempts/1"
+
+// remote-runs: A tool call from taichi. A request with the attempt's
+// live mcp token reaches the tool server of the attempt's own session at
+// /mcp, carrying that server's bearer and not the job token; a token of
+// another job, attempt or flow, an ended one, or none answers 401 and
+// reaches nothing.
+func TestMCPReachesTheAttemptsOwnToolServer(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	own := f.mint("ONS-30", 1)
+	other := f.mint("ONS-31", 1)
+
+	if resp := f.do(http.MethodPost, mcpPath, own["mcp"], "application/json", strings.NewReader(`{}`)); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("before the session's tool server: %d, want 503", resp.StatusCode)
+	}
+
+	toolServer(t, a)
+	a.AuthorizeTools("session-bearer")
+	call := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sortie_status"}}`
+	resp := f.do(http.MethodPost, mcpPath+"?x=1", own["mcp"], "application/json", strings.NewReader(call))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("own mcp token: %d %s", resp.StatusCode, resp.Body)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatalf("tool server answer %s: %v", resp.Body, err)
+	}
+	want := map[string]string{"method": http.MethodPost, "path": "/mcp", "query": "x=1", "host": "127.0.0.1",
+		"authorization": "Bearer session-bearer", "body": call}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("tool server received %s = %q, want %q", k, got[k], v)
+		}
+	}
+
+	refused := map[string]string{"another job's token": other["mcp"], "another flow's token": own["stdio"], "no token": ""}
+	attempt2 := f.mint("ONS-30", 2)
+	refused["another attempt's token"], refused["an ended token"] = attempt2["mcp"], own["mcp"]
+	for name, tok := range refused {
+		resp := f.do(http.MethodPost, mcpPath, tok, "application/json", strings.NewReader(call))
+		if resp.StatusCode != http.StatusUnauthorized || bytes.Contains(resp.Body, []byte("session-bearer")) {
+			t.Errorf("%s: %d %s, want 401 reaching nothing", name, resp.StatusCode, resp.Body)
+		}
+	}
+
+	a.Close()
+	if resp := f.do(http.MethodPost, mcpPath, f.mint("ONS-30", 1)["mcp"], "application/json", strings.NewReader(call)); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("closed attempt: %d, want 404", resp.StatusCode)
+	}
+}
+
+// A tool server that is gone answers 502.
+func TestMCPWithoutAToolServerAnswersBadGateway(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	a.AuthorizeTools("session-bearer")
+	if resp := f.do(http.MethodPost, mcpPath, f.mint("ONS-30", 1)["mcp"], "application/json", strings.NewReader(`{}`)); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("no tool server: %d, want 502", resp.StatusCode)
 	}
 }

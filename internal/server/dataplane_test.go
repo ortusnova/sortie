@@ -78,6 +78,40 @@ func TestDataPlaneServedUnderTheRemoteKind(t *testing.T) {
 	}
 }
 
+// remote-runs: A tool call from taichi. The server routes the mcp flow
+// to the data plane, which takes the job's own mcp token and answers
+// another job's with 401.
+func TestDataPlaneServesTheMCPFlow(t *testing.T) {
+	t.Parallel()
+
+	issuer := jobtoken.NewIssuer()
+	plane := dataplane.New(issuer)
+	a, err := plane.Open("ONS-30", 1, dataplane.Options{Dir: t.TempDir(), MaxBundleBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.Close)
+	own, err := issuer.Mint("ONS-30", 1, []jobtoken.Flow{dataplane.FlowMCP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := issuer.Mint("ONS-31", 1, []jobtoken.Flow{dataplane.FlowMCP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := plane.Handler()
+	ts := dataPlaneTestServer(t, func() http.Handler { return handler })
+	path := dataplane.Prefix + "mcp/jobs/ONS-30/attempts/1"
+	if code, _ := getWithToken(t, ts, path, other[dataplane.FlowMCP].Reveal()); code != http.StatusUnauthorized {
+		t.Fatalf("mcp flow with another job's token = %d, want 401", code)
+	}
+	// The session has no tool server yet, so the admitted request is
+	// answered by the data plane itself.
+	if code, _ := getWithToken(t, ts, path, own[dataplane.FlowMCP].Reveal()); code != http.StatusServiceUnavailable {
+		t.Fatalf("mcp flow with the job's token before its session = %d, want 503", code)
+	}
+}
+
 func TestDataPlaneNotServedUnderOtherKinds(t *testing.T) {
 	t.Parallel()
 

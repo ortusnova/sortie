@@ -418,6 +418,13 @@ type LaunchCarrier interface {
 type ToolChannel struct {
 	HostSocket string
 	GuestPort  int
+
+	// Authorize, when set, receives the bearer the tool server behind
+	// HostSocket authorizes requests with, once the channel opens. It
+	// serves an environment that authorizes the agent's requests itself
+	// and presents that bearer on the agent's behalf. Nil hands the
+	// bearer to no one.
+	Authorize func(bearer string)
 }
 
 // CarrierLaunch describes one agent launch for

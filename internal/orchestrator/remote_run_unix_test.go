@@ -25,10 +25,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sortie-ai/sortie/internal/agent/agentcore"
+	"github.com/sortie-ai/sortie/internal/agent/sshutil"
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/dataplane"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/environment"
+	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/registry"
 	"github.com/sortie-ai/sortie/internal/waittest"
@@ -40,9 +43,10 @@ import (
 // the session through the carrier, behind the host prefix, as the
 // process-based adapters do, and records what it launched and sent.
 type lineAdapter struct {
-	mu       sync.Mutex
-	launches [][]string
-	prompts  []string
+	mu        sync.Mutex
+	launches  [][]string
+	prompts   []string
+	delivered []string
 }
 
 type lineSession struct {
@@ -51,21 +55,43 @@ type lineSession struct {
 	lines  chan []byte
 	stderr *bytes.Buffer
 	exited chan struct{}
+	tools  *agentcore.ToolSession
 	// readErr is why reading the agent's output stopped, set before lines closes.
 	readErr error
 }
 
 var _ domain.AgentAdapter = (*lineAdapter)(nil)
 
-func (a *lineAdapter) StartSession(_ context.Context, params domain.StartSessionParams) (domain.Session, error) {
+func (a *lineAdapter) StartSession(ctx context.Context, params domain.StartSessionParams) (domain.Session, error) {
 	if params.CredentialVerification {
 		return domain.Session{ID: "line-verify"}, nil
 	}
 	if params.Carrier == nil {
 		return domain.Session{}, errors.New("lineAdapter needs a carrier")
 	}
+	// The session's tool server is delivered as a process-based adapter
+	// delivers it through a carrier.
+	var tools *agentcore.ToolSession
+	if params.MCPConfigPath != "" {
+		resolved, agentErr := agentcore.ResolveToolDelivery(ctx, params,
+			agentcore.LaunchTarget{Command: "fake-agent", WorkspacePath: params.WorkspacePath, Carrier: params.Carrier},
+			registry.MCPDialectMCPServersJSON, testRunLogger())
+		if agentErr != nil {
+			return domain.Session{}, agentErr
+		}
+		tools = resolved
+		a.mu.Lock()
+		a.delivered = append(a.delivered, string(tools.Delivery(sshutil.ForwardOutcome{}).Document))
+		a.mu.Unlock()
+	}
+	closeTools := func() {
+		if tools != nil {
+			_ = tools.Close()
+		}
+	}
 	carried, err := params.Carrier.LaunchArgv(domain.CarrierLaunch{Argv: []string{"fake-agent"}})
 	if err != nil {
+		closeTools()
 		return domain.Session{}, err
 	}
 	argv := append(slices.Clone(params.HostPrefix), carried...)
@@ -75,15 +101,18 @@ func (a *lineAdapter) StartSession(_ context.Context, params domain.StartSession
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // G204: the test's own launch
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		closeTools()
 		return domain.Session{}, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		closeTools()
 		return domain.Session{}, err
 	}
-	s := &lineSession{cmd: cmd, stdin: stdin, lines: make(chan []byte, 16), stderr: &bytes.Buffer{}, exited: make(chan struct{})}
+	s := &lineSession{cmd: cmd, stdin: stdin, lines: make(chan []byte, 16), stderr: &bytes.Buffer{}, exited: make(chan struct{}), tools: tools}
 	cmd.Stderr = s.stderr
 	if err := cmd.Start(); err != nil {
+		closeTools()
 		return domain.Session{}, err
 	}
 	go func() {
@@ -153,6 +182,9 @@ func (a *lineAdapter) StopSession(ctx context.Context, session domain.Session) e
 		_ = s.cmd.Process.Kill()
 		<-s.exited
 	}
+	if s.tools != nil {
+		return s.tools.Close()
+	}
 	return nil
 }
 
@@ -160,6 +192,13 @@ func (a *lineAdapter) sent() ([][]string, []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Clone(a.launches), slices.Clone(a.prompts)
+}
+
+// deliveries returns the tool-server declaration each session received.
+func (a *lineAdapter) deliveries() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.delivered)
 }
 
 // gitFixture holds the repository both runs start from.
@@ -422,6 +461,55 @@ type fakeWorker struct {
 	unknownUsage bool
 	// ended reports that the run already ended.
 	ended func() bool
+	// callTools makes the agent call a Sortie tool on its first turn, over
+	// the mcp flow, with its own job's token and with another job's.
+	callTools bool
+	// issuer mints the other job's token.
+	issuer *jobtoken.Issuer
+	// toolCalls holds the answers to those calls, in that order.
+	toolCalls []toolCall
+}
+
+// toolCall is the answer to one tool call on the mcp flow.
+type toolCall struct {
+	status int
+	body   []byte
+}
+
+// callTool calls the stand-in tool server's tool on the mcp flow with
+// token, as the worker forwards an agent's request to its machine's tool
+// port: the agent's request goes on with the job's mcp token as its only
+// credential.
+func (w *fakeWorker) callTool(token string) (toolCall, error) {
+	target, _ := w.flow("mcp")
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + sessionIdentityToolName + `","arguments":{}}}`
+	req, _ := http.NewRequest(http.MethodPost, target, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return toolCall{}, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+	raw, err := io.ReadAll(resp.Body)
+	return toolCall{status: resp.StatusCode, body: raw}, err
+}
+
+// makeToolCalls makes the first turn's tool calls.
+func (w *fakeWorker) makeToolCalls() error {
+	foreign, err := w.issuer.Mint("ONS-31", 1, []jobtoken.Flow{dataplane.FlowMCP})
+	if err != nil {
+		return err
+	}
+	for _, token := range []string{w.offer.Flows["mcp"].Token, foreign[dataplane.FlowMCP].Reveal()} {
+		c, err := w.callTool(token)
+		if err != nil {
+			return err
+		}
+		w.toolCalls = append(w.toolCalls, c)
+	}
+	return nil
 }
 
 func (w *fakeWorker) api(method, path string, body any) *http.Response {
@@ -527,6 +615,9 @@ func (w *fakeWorker) session() {
 	out := frameWriter{conn: conn, broken: w.breakStdio}
 	err = fakeAgent(stdinR, &out, w.clone, w.reportUsage, func(p string) error {
 		w.received = append(w.received, p)
+		if w.callTools && len(w.received) == 1 {
+			return w.makeToolCalls()
+		}
 		return nil
 	})
 	if errors.Is(err, errStreamBroken) {
@@ -635,6 +726,7 @@ func remoteServer(t *testing.T, rw *remoteWorkers, header string) *httptest.Serv
 type remoteRun struct {
 	runCapture
 	upstream string
+	adapter  *lineAdapter
 	worker   *fakeWorker
 	broken   []string
 	offerRaw []byte
@@ -659,10 +751,20 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 			Flows: flows, LeaseTTLMS: 60000, Repository: runRepository(upstream)}}
 
 	adapter := &lineAdapter{}
-	run := remoteRun{upstream: upstream}
+	run := remoteRun{upstream: upstream, adapter: adapter}
 	var brokenMu sync.Mutex
 	done := make(chan WorkerResult, 1)
+	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, issuer: rw.tokens, ended: func() bool { return len(done) > 0 }}
+	if prepare != nil {
+		prepare(w)
+	}
 	deps := runDeps(t, cfg, adapter, &run.runCapture, done)
+	if w.callTools {
+		deps.WorkflowPath = filepath.Join(t.TempDir(), "WORKFLOW.md")
+		if err := os.WriteFile(deps.WorkflowPath, []byte("---\n---\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	go RunRemoteAttempt(ctx, rw, remoteRunIssue(), nil, deps, RemoteAttemptParams{
@@ -675,10 +777,6 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 		},
 	})
 
-	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, ended: func() bool { return len(done) > 0 }}
-	if prepare != nil {
-		prepare(w)
-	}
 	if drive == nil {
 		drive = func(w *fakeWorker, _ context.CancelCauseFunc) {
 			w.take()
@@ -832,6 +930,56 @@ func TestRemoteRunUsage(t *testing.T) {
 	HandleWorkerExit(o.state, result, defaultExitParams(t, store))
 	if len(store.runHistories) != 1 || store.runHistories[0].InputTokens != 12000 || store.runHistories[0].OutputTokens != 3000 {
 		t.Errorf("run history %+v, want 12000 input and 3000 output tokens", store.runHistories)
+	}
+}
+
+// remote-runs: A tool call from taichi. The agent of ONS-30 calls a
+// Sortie tool through the mcp flow, and the call acts on ONS-30's
+// session: it reaches the tool server Sortie started for that session.
+// The same call with another job's token answers 401.
+func TestRemoteRunToolCallReachesTheJobsOwnSession(t *testing.T) {
+	f := newGitFixture(t)
+	run := runRemoteONS30(t, f, func(w *fakeWorker) { w.callTools = true }, nil)
+	if run.result.ExitKind != WorkerExitNormal || run.result.Error != nil {
+		t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+	}
+
+	// The session declares Sortie's tool server at the machine's tool
+	// port, where the worker serves the mcp flow.
+	delivered := run.adapter.deliveries()
+	if len(delivered) != 1 || !strings.Contains(delivered[0], fmt.Sprintf(`"http://127.0.0.1:%d/mcp"`, remoteToolPort)) {
+		t.Errorf("tool servers delivered %q, want sortie-tools at the machine's port %d", delivered, remoteToolPort)
+	}
+
+	calls := run.worker.toolCalls
+	if len(calls) != 2 {
+		t.Fatalf("tool calls made %d, want 2", len(calls))
+	}
+	own := calls[0]
+	if own.status != http.StatusOK {
+		t.Fatalf("tool call with ONS-30's mcp token: %d %s", own.status, own.body)
+	}
+	var answer struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(own.body, &answer); err != nil || len(answer.Result.Content) != 1 || answer.Result.IsError {
+		t.Fatalf("tool call answer %s: %v", own.body, err)
+	}
+	var identity map[string]string
+	if err := json.Unmarshal([]byte(answer.Result.Content[0].Text), &identity); err != nil {
+		t.Fatalf("tool result %q: %v", answer.Result.Content[0].Text, err)
+	}
+	if identity["issue_identifier"] != "ONS-30" || identity["issue_id"] != remoteIssueID {
+		t.Errorf("the tool call acted on %v, want ONS-30's session", identity)
+	}
+
+	if foreign := calls[1]; foreign.status != http.StatusUnauthorized || bytes.Contains(foreign.body, []byte("ONS-30")) {
+		t.Errorf("tool call with another job's token: %d %s, want 401 reaching nothing", foreign.status, foreign.body)
 	}
 }
 
