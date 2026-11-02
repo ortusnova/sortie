@@ -22,6 +22,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/worker"
+	"github.com/sortie-ai/sortie/internal/workspace"
 	"github.com/sortie-ai/sortie/internal/workspacekit"
 )
 
@@ -136,13 +137,16 @@ func credentialPlaceholder(name string) string { return "sortie-credential-" + n
 
 // remoteJob builds the matcher job of one dispatched attempt of issue.
 // Its ID is the issue identifier and its attempt the run history's,
-// counting from 1. Its run descriptor holds no credential: Sortie reads
-// no credential value under the remote kind, and the machine gets each
-// credential the workflow binds only as a placeholder.
+// counting from 1. Its image and requirements are those of the
+// repository cfg's environment is set to, the issue's own. Its run
+// descriptor holds no credential: Sortie reads no credential value
+// under the remote kind, and the machine gets each credential the
+// workflow binds only as a placeholder.
 func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue, attempt *int, agentKind, defaultCommand string) worker.Job {
 	rc := cfg.Environment.Remote
 	n := normalizeAttempt(attempt) + 1
-	caps := slices.Clone(rc.Requires.Capabilities)
+	requires := rc.JobRequires(rc.Repository)
+	caps := slices.Clone(requires.Capabilities)
 	if rc.Backend != "" && !slices.Contains(caps, rc.Backend) {
 		caps = append(caps, rc.Backend)
 	}
@@ -172,11 +176,11 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 		Attempt:  n,
 		Priority: issue.Priority,
 		Issue:    worker.Issue{ID: issue.ID, Identifier: issue.Identifier, Title: issue.Title},
-		Requires: worker.Requires{Capabilities: caps, CPU: rc.Requires.CPU, MemGiB: rc.Requires.MemGiB, DiskGiB: rc.Requires.DiskGiB},
+		Requires: worker.Requires{Capabilities: caps, CPU: requires.CPU, MemGiB: requires.MemGiB, DiskGiB: requires.DiskGiB},
 		Flows:    maps.Clone(rc.Flows),
 		Run: worker.Run{
 			Backend:        rc.Backend,
-			Image:          rc.Image,
+			Image:          rc.JobImage(rc.Repository),
 			Command:        command,
 			Args:           args,
 			Env:            env,
@@ -258,6 +262,12 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 	runCtx, cancelRun := context.WithCancelCause(ctx)
 	defer cancelRun(nil)
 
+	// The job runs in the image and needs the requirements of the
+	// issue's repository. One that cannot be resolved fails the
+	// attempt's preparation before the job is queued.
+	if issueEnv, _, err := issueRepository(cfg.Environment, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
+		cfg.Environment = issueEnv
+	}
 	ra := &remoteAttempt{
 		workers:  rw,
 		job:      remoteJob(ctx, cfg, issue, attempt, agentKind, p.DefaultCommand),
@@ -294,6 +304,16 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 		onExit(issueID, ra.adjust(result))
 	}
 	RunWorkerAttempt(runCtx, issue, attempt, deps)
+}
+
+// remoteWorkspacePath returns the host workspace path of issue under
+// cfg, or "" when the identifier yields none.
+func remoteWorkspacePath(cfg config.ServiceConfig, issue domain.Issue) string {
+	path, err := workspace.ComputePath(cfg.Workspace.Root, issue.Identifier)
+	if err != nil {
+		return ""
+	}
+	return path.Path
 }
 
 // remoteAttempt is the execution environment of one remote attempt: its

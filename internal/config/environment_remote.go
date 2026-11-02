@@ -45,6 +45,14 @@ var remoteSchemaFields = []FieldDef{
 	}()},
 	{Name: "lease_ttl_ms", Type: FieldInt},
 	{Name: "repository", Type: FieldMap},
+	{Name: "repositories", Type: FieldSequence},
+	{Name: "default_repository", Type: FieldString},
+}
+
+// remoteRepositoryKeys are the keys of a remote repository entry.
+var remoteRepositoryKeys = []string{
+	"name", "url", "base", "branch_prefix", "provider", "project", "max_bundle_mib",
+	"dispatch", "image", "requires",
 }
 
 // RemoteConfig holds the environment.remote settings and the worker
@@ -54,14 +62,17 @@ type RemoteConfig struct {
 	// names the worker of a worker API request.
 	IdentityHeader string
 
-	// Requires is what a worker must declare to take a job.
+	// Requires is what a worker must declare to take a job of a
+	// repository that sets no requires of its own.
 	Requires RemoteRequirements
 
 	// Backend is the isolation backend the worker starts the machine
 	// with. A job also requires it as a capability.
 	Backend string
 
-	// Image is the machine image reference the worker starts.
+	// Image is the machine image reference the worker starts for a job
+	// of a repository that sets no image of its own. Empty only when
+	// every repository sets one.
 	Image string
 
 	// Credentials lists the credentials the agent needs. The machine
@@ -76,11 +87,41 @@ type RemoteConfig struct {
 	// LeaseTTLMS is how long a lease lasts without a heartbeat.
 	LeaseTTLMS int
 
-	// Repository is the host-owned repository each job's workspace is
+	// Repository is the host-owned repository a job's workspace is
 	// seeded from and whose issue branch comes back from the worker as
-	// a bundle. Nil when the block is absent: Sortie then serves no
-	// seed and pushes nothing.
+	// a bundle: the single repository block, or the default_repository
+	// entry of the repositories list, until an issue's run sets it to
+	// the issue's own. Nil when neither is set, and for a repositories
+	// list that names no default.
 	Repository *SmolvmRepository
+
+	// Repositories lists every repository Sortie may open, in written
+	// order: the repositories list, or the single repository block as
+	// its one entry. Nil when neither is set: Sortie then serves no
+	// seed and pushes nothing.
+	Repositories []SmolvmRepository
+
+	// DefaultRepository names the entry of Repositories an issue that
+	// names no repository runs in, as for the smolvm kind.
+	DefaultRepository string
+}
+
+// JobImage returns the image a job of repo runs in: repo's own, or
+// Image when repo is nil or sets none.
+func (c RemoteConfig) JobImage(repo *SmolvmRepository) string {
+	if repo != nil && repo.Image != "" {
+		return repo.Image
+	}
+	return c.Image
+}
+
+// JobRequires returns what a worker must declare to take a job of repo:
+// repo's own requirements, or Requires when repo is nil or sets none.
+func (c RemoteConfig) JobRequires(repo *SmolvmRepository) RemoteRequirements {
+	if repo != nil && repo.Requires != nil {
+		return *repo.Requires
+	}
+	return c.Requires
 }
 
 // RemoteRequirements is what each remote job needs of a worker: every
@@ -113,6 +154,9 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 			return RemoteConfig{}, typeError(remoteField, "mapping", value)
 		}
 	}
+	if err := refuseUnknownKeys(m, remoteField, remoteSchemaFieldNames()); err != nil {
+		return RemoteConfig{}, err
+	}
 	cfg := RemoteConfig{IdentityHeader: DefaultWorkerIdentityHeader, Backend: DefaultRemoteBackend, LeaseTTLMS: defaultRemoteLeaseTTLMS}
 	header, present, err := requireStringField(worker, "identity_header", "worker.identity_header")
 	if err != nil {
@@ -124,7 +168,7 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		}
 		cfg.IdentityHeader = header
 	}
-	if cfg.Requires, err = parseRemoteRequirements(m["requires"]); err != nil {
+	if cfg.Requires, err = parseRemoteRequirements(m["requires"], remoteField+".requires"); err != nil {
 		return RemoteConfig{}, err
 	}
 	backend, present, err := requireStringField(m, "backend", remoteField+".backend")
@@ -137,9 +181,14 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		}
 		cfg.Backend = backend
 	}
-	if cfg.Image, err = requiredString(m, "image", remoteField+".image"); err != nil {
+	image, present, err := requireStringField(m, "image", remoteField+".image")
+	if err != nil {
 		return RemoteConfig{}, err
 	}
+	if present && image == "" {
+		return RemoteConfig{}, &ConfigError{Field: remoteField + ".image", Message: "must not be an empty string"}
+	}
+	cfg.Image = image
 	if cfg.Credentials, err = parseRemoteCredentials(m["credentials"]); err != nil {
 		return RemoteConfig{}, err
 	}
@@ -156,14 +205,53 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		}
 		cfg.LeaseTTLMS = n
 	}
-	if cfg.Repository, err = parseRemoteRepository(m["repository"]); err != nil {
+	single, err := parseRemoteRepository(m["repository"])
+	if err != nil {
 		return RemoteConfig{}, err
+	}
+	var set SmolvmConfig
+	if err := parseRepositoryList(m, remoteField, single, parseRemoteRepositoryEntry, &set); err != nil {
+		return RemoteConfig{}, err
+	}
+	cfg.Repository, cfg.Repositories, cfg.DefaultRepository = set.Repository, set.Repositories, set.DefaultRepository
+	if cfg.Image == "" {
+		if err := requireRemoteImage(cfg); err != nil {
+			return RemoteConfig{}, err
+		}
 	}
 	return cfg, nil
 }
 
+// requireRemoteImage refuses a remote block without image unless every
+// repository sets its own.
+func requireRemoteImage(cfg RemoteConfig) error {
+	const field = remoteField + ".image"
+	if len(cfg.Repositories) == 0 {
+		return &ConfigError{Field: field, Message: "is required and must be a non-empty string"}
+	}
+	for i, r := range cfg.Repositories {
+		if r.Image == "" {
+			name := r.Name
+			if name == "" {
+				name = "the repository block"
+			}
+			return &ConfigError{Field: field, Message: fmt.Sprintf("is required: %s (%s) sets no image of its own", name, cfg.repositoryField(i))}
+		}
+	}
+	return nil
+}
+
+// repositoryField returns the setting path of the repository at index
+// i of Repositories.
+func (c RemoteConfig) repositoryField(i int) string {
+	if c.DefaultRepository == "" && c.Repository != nil {
+		return remoteField + ".repository"
+	}
+	return fmt.Sprintf("%s.repositories[%d]", remoteField, i)
+}
+
 // parseRemoteRepository reads environment.remote.repository with the
-// fields and defaults of environment.smolvm.repository.
+// fields and defaults of a remote repositories entry, except dispatch.
 func parseRemoteRepository(raw any) (*SmolvmRepository, error) {
 	const field = remoteField + ".repository"
 	if raw == nil {
@@ -174,24 +262,100 @@ func parseRemoteRepository(raw any) (*SmolvmRepository, error) {
 		return nil, typeError(field, "mapping", raw)
 	}
 	if _, set := entry["dispatch"]; set {
-		return nil, &ConfigError{Field: field + ".dispatch", Message: "applies to environment.smolvm.repositories entries, not to the remote repository block"}
+		return nil, &ConfigError{Field: field + ".dispatch", Message: "applies to repositories entries, not to the single repository block"}
 	}
-	return parseRepositoryEntry(entry, field)
+	return parseRemoteRepositoryEntry(entry, field)
+}
+
+// parseRemoteRepositoryEntry reads one remote repository mapping at
+// field: the fields and defaults of a smolvm repository, and the image
+// and requires of its jobs.
+func parseRemoteRepositoryEntry(entry map[string]any, field string) (*SmolvmRepository, error) {
+	if err := refuseUnknownKeys(entry, field, remoteRepositoryKeys); err != nil {
+		return nil, err
+	}
+	repo, err := parseRepositoryEntry(entry, field)
+	if err != nil {
+		return nil, err
+	}
+	image, present, err := requireStringField(entry, "image", field+".image")
+	if err != nil {
+		return nil, err
+	}
+	if present && image == "" {
+		return nil, &ConfigError{Field: field + ".image", Message: "must not be an empty string; remove the key to take environment.remote.image"}
+	}
+	repo.Image = image
+	if raw, set := entry["requires"]; set && raw != nil {
+		req, err := parseRemoteRequirements(raw, field+".requires")
+		if err != nil {
+			return nil, err
+		}
+		repo.Requires = &req
+	}
+	return repo, nil
+}
+
+// refuseRemoteHooks refuses a workspace hook under the remote kind,
+// which runs nothing but the agent in a job's workspace.
+func refuseRemoteHooks(env EnvironmentConfig, hooks HooksConfig) error {
+	if env.Kind != EnvironmentKindRemote {
+		return nil
+	}
+	for _, h := range []struct{ key, script string }{
+		{"after_create", hooks.AfterCreate},
+		{"before_run", hooks.BeforeRun},
+		{"after_run", hooks.AfterRun},
+		{"before_remove", hooks.BeforeRemove},
+	} {
+		if strings.TrimSpace(h.script) != "" {
+			return &ConfigError{
+				Field:   "hooks." + h.key,
+				Message: "is not run under environment.kind remote, where only the agent runs in the job's workspace; remove the hook",
+			}
+		}
+	}
+	return nil
+}
+
+// remoteSchemaFieldNames lists the keys of environment.remote.
+func remoteSchemaFieldNames() []string {
+	names := make([]string, 0, len(remoteSchemaFields))
+	for _, f := range remoteSchemaFields {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+// refuseUnknownKeys returns a [*ConfigError] naming the first key of m,
+// in sorted order, that known does not list.
+func refuseUnknownKeys(m map[string]any, field string, known []string) error {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		if !slices.Contains(known, key) {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.Sort(keys)
+	return &ConfigError{
+		Field:   field + "." + keys[0],
+		Message: "unknown key: the remote kind does not support it; valid: " + strings.Join(known, ", "),
+	}
 }
 
 // RepositorySet returns the repository settings of the kind c selects,
 // as a [SmolvmConfig] holding only its Repository, Repositories and
-// DefaultRepository: the smolvm block's own, or the remote kind's single
-// repository block as the only entry and the default. Every other kind
-// configures none.
+// DefaultRepository: the smolvm block's own or the remote block's own.
+// Every other kind configures none.
 func (c EnvironmentConfig) RepositorySet() SmolvmConfig {
 	switch c.Kind {
 	case EnvironmentKindSmolvm:
 		return SmolvmConfig{Repository: c.Smolvm.Repository, Repositories: c.Smolvm.Repositories, DefaultRepository: c.Smolvm.DefaultRepository}
 	case EnvironmentKindRemote:
-		if r := c.Remote.Repository; r != nil {
-			return SmolvmConfig{Repository: r, Repositories: []SmolvmRepository{*r}}
-		}
+		return SmolvmConfig{Repository: c.Remote.Repository, Repositories: c.Remote.Repositories, DefaultRepository: c.Remote.DefaultRepository}
 	}
 	return SmolvmConfig{}
 }
@@ -212,16 +376,16 @@ func (c *EnvironmentConfig) SetRepository(repo *SmolvmRepository) {
 func (c EnvironmentConfig) RepositoryField(i int) string {
 	switch {
 	case c.Kind == EnvironmentKindRemote:
-		return remoteField + ".repository"
+		return c.Remote.repositoryField(i)
 	case c.Smolvm.ListsRepositories():
 		return fmt.Sprintf("%s[%d]", smolvmRepositoriesField, i)
 	}
 	return smolvmRepositoryField
 }
 
-// parseRemoteRequirements reads environment.remote.requires.
-func parseRemoteRequirements(value any) (RemoteRequirements, error) {
-	const field = remoteField + ".requires"
+// parseRemoteRequirements reads the requires mapping at field: that of
+// environment.remote or of one of its repositories.
+func parseRemoteRequirements(value any, field string) (RemoteRequirements, error) {
 	var req RemoteRequirements
 	if value == nil {
 		return req, nil
@@ -339,6 +503,9 @@ func parseRemoteCredentials(value any) ([]RemoteCredential, error) {
 				return nil, &ConfigError{Field: entryField + "." + key, Message: "is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it"}
 			}
 		}
+		if err := refuseUnknownKeys(entry, entryField, []string{"name", "env", "hosts", "header"}); err != nil {
+			return nil, err
+		}
 		creds = append(creds, RemoteCredential{Name: name, Env: env, Hosts: hosts, Header: header})
 	}
 	return creds, nil
@@ -370,6 +537,9 @@ func parseRemoteFlows(value any) (map[string]string, error) {
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			return nil, typeError(flowField, "mapping", raw)
+		}
+		if err := refuseUnknownKeys(entry, flowField, []string{"url"}); err != nil {
+			return nil, err
 		}
 		u, err := requiredString(entry, "url", flowField+".url")
 		if err != nil {

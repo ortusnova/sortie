@@ -283,6 +283,16 @@ type SmolvmRepository struct {
 	// leaves its issues to another Sortie. Set by dispatch: false on a
 	// repositories entry; never set for the single repository block.
 	ClosedToDispatch bool
+
+	// Image is the machine image a remote job of the repository runs
+	// in. Empty takes environment.remote.image. Set only under the
+	// remote kind.
+	Image string
+
+	// Requires is what a worker must declare to take a remote job of
+	// the repository, in place of environment.remote.requires. Nil takes
+	// that. Set only under the remote kind.
+	Requires *RemoteRequirements
 }
 
 // buildEnvironmentConfig parses the top-level environment block. The
@@ -1003,14 +1013,14 @@ func (c SmolvmConfig) DispatchRepository(labels []string) (*SmolvmRepository, er
 	name := IssueRepositoryName(labels)
 	if name == "" {
 		if c.Repository == nil {
-			return nil, fmt.Errorf("the issue names no repository and environment.smolvm sets no default_repository: %w", ErrNotDispatched)
+			return nil, fmt.Errorf("the issue names no repository and the workflow sets no default_repository: %w", ErrNotDispatched)
 		}
 		repo := *c.Repository
 		return &repo, nil
 	}
 	repo, found := c.RepositoryNamed(name)
 	if !found {
-		return nil, fmt.Errorf("the issue names repository %q, which environment.smolvm.repositories does not list: %w", name, ErrNotDispatched)
+		return nil, fmt.Errorf("the issue names repository %q, which the workflow's repositories do not list: %w", name, ErrNotDispatched)
 	}
 	if repo.ClosedToDispatch {
 		return nil, fmt.Errorf("the issue names repository %q, which is closed to dispatch: %w", name, ErrNotDispatched)
@@ -1037,18 +1047,27 @@ func parseSmolvmRepositories(m map[string]any, cfg *SmolvmConfig) error {
 	if err != nil {
 		return err
 	}
+	return parseRepositoryList(m, smolvmField, single, parseRepositoryEntry, cfg)
+}
+
+// parseRepositoryList reads the repositories list and default_repository
+// of the environment block m at section into cfg, or makes single, the
+// block's own single repository when it sets one, the only entry.
+// parseEntry reads one entry of the list.
+func parseRepositoryList(m map[string]any, section string, single *SmolvmRepository, parseEntry func(map[string]any, string) (*SmolvmRepository, error), cfg *SmolvmConfig) error {
+	listField, defField := section+".repositories", section+".default_repository"
 	rawList, listSet := m["repositories"]
 	listSet = listSet && rawList != nil
-	def, defSet, err := requireStringField(m, "default_repository", smolvmDefaultRepoField)
+	def, defSet, err := requireStringField(m, "default_repository", defField)
 	if err != nil {
 		return err
 	}
 	if single != nil {
 		if listSet {
-			return &ConfigError{Field: smolvmRepositoriesField, Message: "cannot be set together with repository; list the one repository under repositories instead"}
+			return &ConfigError{Field: listField, Message: "cannot be set together with repository; list the one repository under repositories instead"}
 		}
 		if defSet {
-			return &ConfigError{Field: smolvmDefaultRepoField, Message: "applies to repositories, not to the single repository block"}
+			return &ConfigError{Field: defField, Message: "applies to repositories, not to the single repository block"}
 		}
 		cfg.Repository = single
 		cfg.Repositories = []SmolvmRepository{*single}
@@ -1056,26 +1075,26 @@ func parseSmolvmRepositories(m map[string]any, cfg *SmolvmConfig) error {
 	}
 	if !listSet {
 		if defSet {
-			return &ConfigError{Field: smolvmDefaultRepoField, Message: "is set but repositories lists none"}
+			return &ConfigError{Field: defField, Message: "is set but repositories lists none"}
 		}
 		return nil
 	}
 	list, ok := rawList.([]any)
 	if !ok {
-		return typeError(smolvmRepositoriesField, "sequence", rawList)
+		return typeError(listField, "sequence", rawList)
 	}
 	if len(list) == 0 {
-		return &ConfigError{Field: smolvmRepositoriesField, Message: "must list at least one repository"}
+		return &ConfigError{Field: listField, Message: "must list at least one repository"}
 	}
 	seen := map[string]bool{}
 	repos := make([]SmolvmRepository, 0, len(list))
 	for i, elem := range list {
-		field := fmt.Sprintf("%s[%d]", smolvmRepositoriesField, i)
+		field := fmt.Sprintf("%s[%d]", listField, i)
 		entry, ok := elem.(map[string]any)
 		if !ok {
 			return typeError(field, "mapping", elem)
 		}
-		repo, err := parseRepositoryEntry(entry, field)
+		repo, err := parseEntry(entry, field)
 		if err != nil {
 			return err
 		}
@@ -1100,12 +1119,12 @@ func parseSmolvmRepositories(m map[string]any, cfg *SmolvmConfig) error {
 		return nil
 	}
 	if !seen[def] {
-		return &ConfigError{Field: smolvmDefaultRepoField, Message: fmt.Sprintf("names %q, which repositories does not list", def)}
+		return &ConfigError{Field: defField, Message: fmt.Sprintf("names %q, which repositories does not list", def)}
 	}
 	cfg.DefaultRepository = def
 	cfg.Repository, _ = cfg.RepositoryNamed(def)
 	if cfg.Repository.ClosedToDispatch {
-		return &ConfigError{Field: smolvmDefaultRepoField, Message: fmt.Sprintf("names %q, which is closed to dispatch; leave default_repository out to dispatch no issue that names no repository", def)}
+		return &ConfigError{Field: defField, Message: fmt.Sprintf("names %q, which is closed to dispatch; leave default_repository out to dispatch no issue that names no repository", def)}
 	}
 	return nil
 }
