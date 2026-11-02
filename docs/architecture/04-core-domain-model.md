@@ -145,6 +145,8 @@ Fields (logical):
 - `exported_commit` (string)
   - The commit the attempt pushed to the upstream issue branch, under `smolvm` with a repository. Empty when it pushed nothing.
 - `error` (optional)
+- `error_detail` (string)
+  - The whole cause of a failed attempt: the full output of the step that failed it, for a git command its porcelain output and standard error, for an agent runtime its error object, capped at 16 KiB and with every registered credential masked. Empty when the failing step left no output, for an attempt that did not fail, and on a row recorded before the field was kept.
 
 #### 4.1.6 Live Session (Agent Session Metadata)
 

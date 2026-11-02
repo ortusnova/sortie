@@ -19,6 +19,10 @@ Jobs for `environment.kind: remote` are matched to workers in `internal/worker`,
 
 A remote attempt is a normal worker run (`RunRemoteAttempt` in `internal/orchestrator/remote.go`, following `agent-platform/remote-runs`): the attempt's execution environment is the job's machine, Sortie drives the agent session over the `stdio` flow through `sortie stdio-bridge`, and seeds and pushes the repository through `internal/gitsync` (`BuildSeed`, `ImportReturned`). `internal/dataplane` serves the `stdio`, `bundles` and `usage` flows under `/api/v1/flows/`, each request admitted by its flow's job token. No forge credential reaches a worker.
 
+## Failure causes
+
+A failed run keeps its whole cause in `run_history.error_detail` (migration 1005), served as `error_detail` on every run row, following `agent-platform/run-supervision`. `internal/failcause` reads it from the first error in the run error's chain that has a `FailureOutput() string` method, masks it and caps it; `gitsync.Error` (a git command's porcelain output and standard error) and the `agent-client-protocol` adapter's JSON-RPC error cause (the runtime's error object) have one. Another adapter adds a cause by giving its error that method.
+
 ## Plan sync from the workbench
 
 The agentic-orchestration workbench syncs the plan on its own, with no Sync step for the user. It calls `POST /api/v1/plan/sync` with `"apply": false` to preview, then applies that preview with `"apply": true` and the preview's `preview_id`. After a sync that released a story, it calls `POST /api/v1/refresh` so the released story is dispatched on the next tick instead of the next poll. Both routes take the control token. Nothing else in Sortie changes for this.
