@@ -1104,7 +1104,7 @@ type ParkedEntry struct {
 	// read for the park; the zero value holds no read. Its State is never
 	// served: ParkedState is.
 	IssueIdentity IssueIdentity
-	Reason        string // "agent_blocked" or "handoff_absence"
+	Reason        string // "agent_blocked", "handoff_absence", or "repeated_failure"
 	ParkedState   string // tracker state observed at park time; empty when unobserved
 	Label         string // parking label the orchestrator applied
 	LabelApplied  bool

@@ -192,6 +192,10 @@ var table = map[string]parts{
 		short: "Parked: no evidence of work",
 		long:  "Parked: the issue's runs ended without evidence of work as many times in a row as the limit allows. " + parkingLabel,
 	},
+	"parked_repeated_failure": {
+		short: "Parked: the same failure twice",
+		long:  "Parked: the issue's run failed the same way as the run before it, so Sortie stopped retrying it. " + parkingLabel,
+	},
 
 	"held_escalated_ci": {
 		short: "CI escalated on #{{.PR}}",
@@ -267,6 +271,12 @@ var table = map[string]parts{
 		reason: "Parked: no evidence of work",
 		why: "The issue's runs ended without evidence of work as many times in a row as `agent.max_consecutive_absences` allows, " +
 			"so Sortie parked it under the label `{{.Label}}`" + parkedSeen + ".",
+		clears: parkedClears,
+	},
+	"attn_parked_repeated_failure": {
+		reason: "Parked: the same failure twice",
+		why: "The issue's run failed at the same step, in the same class and with the same cause as the run before it, " +
+			"so Sortie stopped retrying it and parked it under the label `{{.Label}}`" + parkedSeen + ".",
 		clears: parkedClears,
 	},
 	"attn_budget_tokens": {

@@ -1983,3 +1983,7 @@ func (s *mgcStoreFake) ListReactionHandedOffComments(_ context.Context, _, _ str
 }
 
 func (s *mgcStoreFake) DeleteStageHop(context.Context, string) error { return nil }
+
+func (*mgcStoreFake) LatestRunFailureSignature(context.Context, string) (string, error) {
+	return "", nil
+}

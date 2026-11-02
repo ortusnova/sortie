@@ -306,6 +306,11 @@ func TestAttentionTexts(t *testing.T) {
 			"The issue's runs ended without evidence of work as many times in a row as `agent.max_consecutive_absences` allows, so Sortie parked it under the label `needs-human` (not yet seen on the issue).",
 			"Clears when a poll tick finds `needs-human` removed from the issue after Sortie has seen it there, or when a person answers it through the API.",
 		}},
+		{"repeated_failure park with the label seen", parkedInput(func(r *orchestrator.SnapshotParkedEntry) { r.Reason = "repeated_failure" }), nil, texts{
+			"Parked: the same failure twice",
+			"The issue's run failed at the same step, in the same class and with the same cause as the run before it, so Sortie stopped retrying it and parked it under the label `needs-human`.",
+			"Clears when a poll tick finds `needs-human` removed from the issue, or when a person answers it through the API.",
+		}},
 		{"token hold with a lower-bound spend", budgetInput(func(r *orchestrator.SnapshotBudgetEntry) {
 			r.IssueID, r.Reason, r.UsedTokens, r.BudgetTokens = "id-651", "token_budget", new(int64(2_020_000)), 2_000_000
 			r.UnmeasuredSessions, r.StoppedInFlight = new(1), new(1)

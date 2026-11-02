@@ -795,8 +795,8 @@ Template input variables:
   - `previous` and `previous_outcome` are frozen with the dispatch selection, so a retry or reaction continuation renders the pair its first dispatch rendered, also after a restart.
 - `park` (object or null)
   - Always present as a key, so a template that references it never fails; null except on turn 1 of the first run after a person releases a park, which a label removal, a state change, or an answer through the API does.
-  - `reason` (string): `agent_blocked` or `handoff_absence`.
-  - `statement` (string): the stop statement of the run the park follows; empty when that run declared none.
+  - `reason` (string): `agent_blocked`, `handoff_absence`, or `repeated_failure`.
+  - `statement` (string): the stop statement of the run the park follows, or for `repeated_failure` the first line of the run's error; empty when that run declared none.
   - `parked_at` and `released_at` (strings): RFC 3339 times in UTC, whole seconds.
   - `gesture` (string): `label_removed`, `state_changed`, or `answered` for an answer posted through `POST /api/v1/{identifier}/answer`.
   - `comments` (list, never null): the comments created since the park, oldest first, each with `id`, `author`, `body`, and `created_at`.

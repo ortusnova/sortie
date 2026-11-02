@@ -63,6 +63,7 @@ type mockExitStore struct {
 	deleteRetryEntryErr       error
 	absenceCountErr           error
 	absenceResetErr           error
+	failureSignatureErr       error
 	writesAtPassDelete        int
 }
 
@@ -10717,4 +10718,17 @@ func TestHandleWorkerExit_PricesUnderReloadedRatesAndClearsLiveEstimate(t *testi
 	if meta.EstimatedCostUSD != nil || meta.CostStatus != "" {
 		t.Errorf("session_metadata cost after exit = (%v, %q), want (nil, %q)", meta.EstimatedCostUSD, meta.CostStatus, "")
 	}
+}
+
+// LatestRunFailureSignature answers from the runs this double recorded.
+func (m *mockExitStore) LatestRunFailureSignature(_ context.Context, issueID string) (string, error) {
+	if m.failureSignatureErr != nil {
+		return "", m.failureSignatureErr
+	}
+	for _, run := range slices.Backward(m.runHistories) {
+		if run.IssueID == issueID && run.Status != "ci_failed" {
+			return run.FailureSignature, nil
+		}
+	}
+	return "", nil
 }

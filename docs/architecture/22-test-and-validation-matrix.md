@@ -248,6 +248,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - A tracker write that fails to post the comment is logged and counted but does not retry on the following tick, and leaves the exhausted set, the claim set, and reconciliation unaffected
 - A dispatch that does not drive issue state performs neither the dispatch-time transition nor the handoff transition, and enqueues no reaction on its own exit
 - Abnormal worker exit increments retries with 10s-based exponential backoff
+- Two runs of the same refused push give one failure signature: the step, the class (`git_push`), and the refusal's first line with the branch, upstream path, issue keys, commit hashes, times, URLs, and process IDs removed; two different refusals, or one refusal at two steps, give two
+- The second run of an issue that fails at the push with the same refusal schedules no further retry, parks the issue with the reason `repeated_failure` and the refusal as its statement, deletes the persisted retry entry, and leaves the issue at 2 of its 16 sessions
+- Two runs in a row that fail on a GitHub 502 answer retry with the backoff of the next attempt and park nothing; each transient class (`network_timeout`, `server_error`, `rate_limit`, `usage_limit`) is recognized from a typed error and from its text, and a context deadline Sortie set is not a network timeout
+- A repeated failure whose previous run succeeded, that differs from the previous failure, whose previous signature cannot be read, or that ends a `label-review` or `label-fix` pass keeps the backoff
 - Retry backoff cap uses configured `agent.max_retry_backoff_ms`
 - Retry queue entries include attempt, due time, identifier, and error
 - Stall detection kills stalled sessions and schedules retry

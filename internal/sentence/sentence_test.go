@@ -153,6 +153,7 @@ func TestFor(t *testing.T) {
 
 		{"parked by the agent", parked("agent_blocked"), "Parked: the agent needs a person", ""},
 		{"parked without evidence of work", parked("handoff_absence"), "Parked: no evidence of work", ""},
+		{"parked on a repeated failure", parked("repeated_failure"), "Parked: the same failure twice", ""},
 
 		{"escalated CI", escalated(reaction("ci", nil)), "CI escalated on #7", ""},
 		{"escalated other reaction", escalated(reaction("review", nil)), "Review comments escalated on #7", ""},

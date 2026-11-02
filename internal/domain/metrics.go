@@ -79,7 +79,7 @@ type Metrics interface {
 	IncHandoffTransitions(result string)
 
 	// IncIssueParks increments the issue park counter. reason is
-	// "agent_blocked" or "handoff_absence"
+	// "agent_blocked", "handoff_absence", or "repeated_failure"
 	// (sortie_issue_parks_total{reason} counter).
 	IncIssueParks(reason string)
 

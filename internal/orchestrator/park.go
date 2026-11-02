@@ -12,11 +12,12 @@ import (
 	"github.com/sortie-ai/sortie/internal/prompt"
 )
 
-// Park reason and unpark trigger values, shared by both parking triggers
+// Park reason and unpark trigger values, shared by every parking trigger
 // and by every release path.
 const (
-	parkReasonAgentBlocked   = "agent_blocked"
-	parkReasonHandoffAbsence = "handoff_absence"
+	parkReasonAgentBlocked    = "agent_blocked"
+	parkReasonHandoffAbsence  = "handoff_absence"
+	parkReasonRepeatedFailure = "repeated_failure"
 
 	unparkTriggerStateChanged     = "state_changed"
 	unparkTriggerLabelRemoved     = "label_removed"

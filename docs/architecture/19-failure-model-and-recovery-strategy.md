@@ -55,6 +55,8 @@
 
 - Worker failures:
   - Convert to retries with exponential backoff.
+  - A run that fails with the same failure signature as the issue's previous run (Section 8.4, Repeated failure) is not retried on a timer: the issue is parked with the reason `repeated_failure`, on the park mechanism and release rule the `blocked` stop and the consecutive-absence ceiling share, so a person sees the failure once instead of a retry loop repeating it. The park spends no session, and the issue keeps the rest of its `agent.max_sessions` budget for the runs after its release.
+  - A failure of a transient class (`network_timeout`, `server_error`, `rate_limit`, `usage_limit`) keeps the backoff however often it repeats, because it is expected to clear on its own.
 
 - Provider usage limit reached:
   - Recover by waiting for the reset. A refusal that reports a future reset time schedules the issue's retry at the later of the reset and the ordinary backoff, and records a hold on new sessions of the agent kind, or of that kind on one model when the exhausted allowance covers one model. Running sessions finish, and issues routed to other agent kinds or models keep dispatching.
