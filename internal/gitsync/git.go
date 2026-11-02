@@ -156,6 +156,12 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("git %s: %v: %s", e.Subcommand, e.err, e.Stderr)
 }
 
+// FailureClass names the failure's class after the git subcommand, such
+// as "git_push", for a run failure's signature.
+func (e *Error) FailureClass() string {
+	return "git_" + e.Subcommand
+}
+
 // FailureOutput returns the command's standard output and standard
 // error under a line naming the command and how it ended, for the run
 // record. The standard output is not masked.

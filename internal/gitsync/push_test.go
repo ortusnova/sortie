@@ -239,6 +239,45 @@ func TestPush_RefusedPushKeepsItsWholeCause(t *testing.T) {
 	}
 }
 
+func TestPush_TwoRefusalsOfTheSamePushGiveOneSignature(t *testing.T) {
+	requireGit(t)
+	isolateGit(t, "")
+	ctx := context.Background()
+
+	refuse := func(branch string) error {
+		t.Helper()
+		bare := refusingBareUpstream(t, "")
+		m, err := OpenMirror(t.TempDir(), bare)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := lockMirror(t, m)
+		defer l.Unlock()
+		if err := l.FetchUpstream(ctx); err != nil {
+			t.Fatalf("FetchUpstream() error = %v", err)
+		}
+		err = l.Push(ctx, "refs/heads/main", branch, "")
+		if err == nil {
+			t.Fatal("Push() error = nil, want the hook's refusal")
+		}
+		return err
+	}
+
+	// Each run pushes from its own mirror to its own upstream path, and
+	// the second is a later run on another issue's branch name.
+	first := failcause.Sign("export", refuse("sortie/ONS-49"))
+	second := failcause.Sign("export", refuse("sortie/ONS-50"))
+	if first != second {
+		t.Fatalf("two refusals of the same push give two signatures:\n %q\n %q", first, second)
+	}
+	if first.Class != "git_push" || first.Transient() {
+		t.Errorf("signature class = %q, want git_push and not transient", first.Class)
+	}
+	if !strings.Contains(first.Cause, "[remote rejected] (pre-receive hook declined)") {
+		t.Errorf("signature cause = %q, want the remote's reason", first.Cause)
+	}
+}
+
 func TestRefusal(t *testing.T) {
 	t.Parallel()
 
