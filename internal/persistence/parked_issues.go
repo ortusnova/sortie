@@ -12,7 +12,7 @@ type ParkedIssue struct {
 	IssueID      string
 	Identifier   string
 	DisplayID    string // empty when the tracker needs no qualified form
-	Reason       string // "agent_blocked" or "handoff_absence"
+	Reason       string // "agent_blocked", "handoff_absence", or "repeated_failure"
 	ParkedState  string // tracker state observed at park time; empty when unobserved
 	Label        string // parking label the orchestrator applied
 	LabelApplied bool

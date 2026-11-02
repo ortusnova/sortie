@@ -227,6 +227,12 @@ type RunHistory struct {
 	// capped and masked; empty when that step left none, for a run that
 	// did not fail, and for pre-migration rows.
 	ErrorDetail string
+
+	// FailureSignature identifies how the run failed: the failed step,
+	// the failure's class, and the first line of its cause with
+	// run-specific values removed. Empty for a run that did not fail on
+	// an error and for pre-migration rows.
+	FailureSignature string
 }
 
 // AppendRunHistory inserts a completed run attempt. The input ID is
@@ -387,8 +393,8 @@ func insertRunHistory(ctx context.Context, ex statementExecer, run RunHistory) (
 
 	res, err := ex.ExecContext(ctx,
 		`INSERT INTO run_history
-			(issue_id, identifier, display_identifier, attempt, agent_adapter, workspace, started_at, completed_at, status, error, workflow_file, turns_completed, review_metadata, rule_name, template_id, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, tokens_measured, unaccounted_turns, configured_model, configured_effort, reported_model, stage_previous, stage_previous_outcome, chain_id, stage_target, stage_result, issue_title, issue_url, dispatched_at, trigger, reaction_kind, session_id, ssh_host, first_after_hop, dispatch_id, agent_blocked, resume_input_tokens, resume_output_tokens, resume_cache_read_tokens, resume_cache_write_tokens, resume_model_usage, estimated_cost_usd, cost_status, declared_outcome, agent_text, skills, held_ms, environment_image_sha256, exported_commit, error_detail)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(issue_id, identifier, display_identifier, attempt, agent_adapter, workspace, started_at, completed_at, status, error, workflow_file, turns_completed, review_metadata, rule_name, template_id, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, tokens_measured, unaccounted_turns, configured_model, configured_effort, reported_model, stage_previous, stage_previous_outcome, chain_id, stage_target, stage_result, issue_title, issue_url, dispatched_at, trigger, reaction_kind, session_id, ssh_host, first_after_hop, dispatch_id, agent_blocked, resume_input_tokens, resume_output_tokens, resume_cache_read_tokens, resume_cache_write_tokens, resume_model_usage, estimated_cost_usd, cost_status, declared_outcome, agent_text, skills, held_ms, environment_image_sha256, exported_commit, error_detail, failure_signature)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.IssueID, run.Identifier, dispIDVal, run.Attempt, run.AgentAdapter,
 		run.Workspace, run.StartedAt, run.CompletedAt, run.Status, errVal, wfVal,
 		run.TurnsCompleted, reviewMetaVal, run.RuleName, run.TemplateID,
@@ -401,7 +407,7 @@ func insertRunHistory(ctx context.Context, ex statementExecer, run RunHistory) (
 		resumeInput, resumeOutput, resumeCacheRead, resumeCacheWrite, resumeModelUsage,
 		nullFloat(run.EstimatedCostUSD), nullIfEmpty(run.CostStatus),
 		run.DeclaredOutcome, run.AgentText, skillsVal,
-		run.HeldMS, run.EnvironmentImageSHA256, run.ExportedCommit, run.ErrorDetail,
+		run.HeldMS, run.EnvironmentImageSHA256, run.ExportedCommit, run.ErrorDetail, run.FailureSignature,
 	)
 	if err != nil {
 		return RunHistory{}, fmt.Errorf("append run history for %q: %w", run.IssueID, err)
@@ -959,6 +965,25 @@ func (s *Store) CountRunHistoryByIssue(ctx context.Context, issueID string) (int
 		return 0, fmt.Errorf("count run history by issue %q: %w", issueID, err)
 	}
 	return count, nil
+}
+
+// LatestRunFailureSignature returns the failure signature of the issue's
+// latest run, "" when that run recorded none or the issue has no run.
+// "ci_failed" rows are not runs and are skipped.
+func (s *Store) LatestRunFailureSignature(ctx context.Context, issueID string) (string, error) {
+	var signature string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT failure_signature FROM run_history
+		WHERE issue_id = ? AND status <> 'ci_failed'
+		ORDER BY id DESC LIMIT 1`, issueID,
+	).Scan(&signature)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("latest run failure signature for %q: %w", issueID, err)
+	}
+	return signature, nil
 }
 
 // CountWorkerRunsCompletedSince returns the number of worker-session rows

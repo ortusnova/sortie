@@ -258,6 +258,7 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"environment_image_sha256", "TEXT", true, 0},
 				{"exported_commit", "TEXT", true, 0},
 				{"error_detail", "TEXT", true, 0},
+				{"failure_signature", "TEXT", true, 0},
 			},
 		},
 		{
@@ -1384,5 +1385,53 @@ func TestMigrate_Migration1005_RecordsTheErrorDetail(t *testing.T) {
 	recent, err := s.QueryRunHistory(ctx, RunHistoryFilter{Limit: 2})
 	if err != nil || len(recent) != 2 || recent[0].ErrorDetail != "" || recent[1].ErrorDetail != detail {
 		t.Errorf("QueryRunHistory(2) = %+v, %v, want the succeeded run without a detail and the failed run with it", recent, err)
+	}
+}
+
+func TestMigrate_Migration1006_FailureSignatureDefaultsToEmpty(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateToVersion(t, s, 1005)
+	insertBareRun(t, s, "rh-pre1006")
+
+	migrateOrFatal(t, s)
+
+	got, err := s.LatestRunFailureSignature(context.Background(), "rh-pre1006")
+	if err != nil || got != "" {
+		t.Errorf("LatestRunFailureSignature for a pre-migration-1006 row = %q, %v, want empty, nil", got, err)
+	}
+}
+
+func TestLatestRunFailureSignature(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateOrFatal(t, s)
+	ctx := context.Background()
+	const signature = "export | git_push | push sortie/<id> to <url>: [remote rejected] (pre-receive hook declined)"
+
+	if got, err := s.LatestRunFailureSignature(ctx, "rh-none"); err != nil || got != "" {
+		t.Errorf("LatestRunFailureSignature(no run) = %q, %v, want empty, nil", got, err)
+	}
+
+	run := func(issueID, status, sig string) {
+		t.Helper()
+		if _, err := s.AppendRunHistory(ctx, RunHistory{IssueID: issueID, Identifier: "ONS-49", Attempt: 1, AgentAdapter: "mock",
+			Workspace: "/tmp/ONS-49", StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:01:00Z",
+			Status: status, FailureSignature: sig}); err != nil {
+			t.Fatalf("AppendRunHistory: %v", err)
+		}
+	}
+	run("rh-sig", "failed", signature)
+	run("rh-sig", "ci_failed", "")
+	run("rh-other", "failed", "other | error | x")
+	if got, err := s.LatestRunFailureSignature(ctx, "rh-sig"); err != nil || got != signature {
+		t.Errorf("LatestRunFailureSignature(after a ci_failed row) = %q, %v, want %q", got, err, signature)
+	}
+
+	run("rh-sig", "succeeded", "")
+	if got, err := s.LatestRunFailureSignature(ctx, "rh-sig"); err != nil || got != "" {
+		t.Errorf("LatestRunFailureSignature(after a success) = %q, %v, want empty", got, err)
 	}
 }
