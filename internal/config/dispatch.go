@@ -200,6 +200,10 @@ const OnFailEscalate = "escalate"
 // gate is criteria.
 const ReviewCriteriaLabel = "sortie-review:criteria"
 
+// ReviewHumanLabel is the label plan sync keeps on a story whose review gate
+// is human.
+const ReviewHumanLabel = "sortie-review:human"
+
 // StageLabelsEqual reports whether two stage labels name the same label.
 // Selection, duplicate detection, and the collision check against tracker
 // states and applied labels all compare through it, so they cannot

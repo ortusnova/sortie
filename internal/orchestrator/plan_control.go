@@ -214,9 +214,12 @@ func applyCancel(ctx context.Context, state *State, t planTarget, p planControlP
 type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed bool, reason string, err error)
 
 // planReviewGate returns the auto-merge gate of plan control, or nil when
-// plan control is off. Under plan control Sortie merges only a story that
-// carries the criteria review label, and only after a run of a criteria
-// rule: a human story is merged by a person in the forge.
+// plan control is off. Under plan control Sortie merges only a plan story,
+// one that carries a review label, and only after a run of a criteria rule.
+// The workflow's rules decide which stories reach a criteria rule: a human
+// story whose chain ends in none is merged by a person in the forge, and a
+// workflow that routes every story through the check lets Sortie merge
+// either kind.
 func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
@@ -232,11 +235,11 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) Rev
 			return false, "", err
 		}
 		for _, l := range issue.Labels {
-			if strings.EqualFold(l, config.ReviewCriteriaLabel) {
+			if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
 				return true, "", nil
 			}
 		}
-		return false, "the story does not carry " + config.ReviewCriteriaLabel, nil
+		return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
 	}
 }
 
