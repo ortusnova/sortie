@@ -105,6 +105,38 @@ func TestToolSession_CarrierServesTheRelayOverItsChannel(t *testing.T) {
 	}
 }
 
+// A channel whose environment authorizes the agent's requests itself is
+// handed the relay's bearer once it opens, and that bearer is the one the
+// relay accepts through the channel.
+func TestToolSession_CarrierChannelAuthorizeReceivesTheBearer(t *testing.T) {
+	t.Parallel()
+
+	channel := agenttest.NewToolChannel(t)
+	var handed []string
+	channel.Authorize = func(bearer string) { handed = append(handed, bearer) }
+	carrier := &agenttest.FakeCarrier{GuestWorkspace: "/workspace", Channel: channel}
+	tools := fmt.Sprintf(`"sortie-tools":{"command":%q,"args":["mcp-server"]}`,
+		agenttest.FakeRuntime(t, t.TempDir(), "sortie", agenttest.HTTPToolServerScenario, struct{}{}))
+	target := LaunchTarget{Command: "agent", WorkspacePath: t.TempDir(), Carrier: carrier}
+	session := startSession(t, domain.StartSessionParams{MCPConfigPath: writeConfig(t, tools)}, target, testDialect)
+
+	if len(handed) != 1 || handed[0] == "" {
+		t.Fatalf("Authorize received %d bearers, want the relay's one", len(handed))
+	}
+	var launched string
+	for _, secret := range session.Launch(placeDocument).Secrets {
+		if secret.Name == mcpconfig.BearerEnv {
+			launched = secret.Value
+		}
+	}
+	if launched != handed[0] {
+		t.Error("Authorize received another bearer than the session delivers")
+	}
+	if status, body := getThroughSocket(t, channel.HostSocket, handed[0]); status != http.StatusOK || body != agenttest.HTTPToolServerReply {
+		t.Errorf("request with the handed bearer = %d %q, want 200 %q", status, body, agenttest.HTTPToolServerReply)
+	}
+}
+
 func TestToolSession_CarrierWithoutChannelDeclaresTheGap(t *testing.T) {
 	t.Parallel()
 
