@@ -49,6 +49,10 @@ var droppedEnv = map[string]bool{
 // stderrCap bounds the standard error a failed git command reports.
 const stderrCap = 4 << 10
 
+// stdoutCap bounds the standard output a failed git command keeps, such
+// as the porcelain report of a refused push.
+const stdoutCap = 8 << 10
+
 // runner runs host git commands on one bare repository.
 type runner struct {
 	// binary is the git program; empty is "git" resolved through PATH.
@@ -105,9 +109,23 @@ func (r runner) run(ctx context.Context, args ...string) ([]byte, error) {
 		err = res.WaitErr
 	}
 	if err != nil {
-		return stdout.Bytes(), &Error{Subcommand: args[0], ExitCode: procutil.ExtractExitCode(err), Stderr: strings.TrimSpace(string(stderr.Bytes())), err: err}
+		return stdout.Bytes(), &Error{
+			Subcommand: args[0],
+			ExitCode:   procutil.ExtractExitCode(err),
+			Stdout:     strings.TrimSpace(string(tail(stdout.Bytes(), stdoutCap))),
+			Stderr:     strings.TrimSpace(string(stderr.Bytes())),
+			err:        err,
+		}
 	}
 	return stdout.Bytes(), nil
+}
+
+// tail returns the last n bytes of b, or b when it is shorter.
+func tail(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	return b[len(b)-n:]
 }
 
 // Error reports a failed git command.
@@ -118,6 +136,11 @@ type Error struct {
 	// ExitCode is the command's exit status, or -1 when it did not exit
 	// on its own.
 	ExitCode int
+
+	// Stdout is the tail of the command's standard output, such as the
+	// porcelain report of a push, which names why the remote refused
+	// each ref. Unlike Stderr it is not masked.
+	Stdout string
 
 	// Stderr is the tail of the command's standard error, secrets
 	// masked.
@@ -131,6 +154,23 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("git %s: %v", e.Subcommand, e.err)
 	}
 	return fmt.Sprintf("git %s: %v: %s", e.Subcommand, e.err, e.Stderr)
+}
+
+// FailureOutput returns the command's standard output and standard
+// error under a line naming the command and how it ended, for the run
+// record. The standard output is not masked.
+func (e *Error) FailureOutput() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "git %s: %v", e.Subcommand, e.err)
+	if e.Stdout != "" {
+		b.WriteString("\nstdout:\n")
+		b.WriteString(e.Stdout)
+	}
+	if e.Stderr != "" {
+		b.WriteString("\nstderr:\n")
+		b.WriteString(e.Stderr)
+	}
+	return b.String()
 }
 
 func (e *Error) Unwrap() error { return e.err }

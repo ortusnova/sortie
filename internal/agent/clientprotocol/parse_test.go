@@ -11,6 +11,8 @@ import (
 	"github.com/sortie-ai/sortie/internal/agent/agentcore"
 	"github.com/sortie-ai/sortie/internal/agent/jsonrpc"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/failcause"
+	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/waittest"
 )
 
@@ -101,6 +103,50 @@ func TestHandshake_ErrorQuotesData(t *testing.T) {
 				t.Errorf("%s error = %v, want message %q", tt.method, err, tt.wantMessage)
 			}
 		})
+	}
+}
+
+func TestNewSession_ErrorKeepsTheWholeErrorObject(t *testing.T) {
+	t.Parallel()
+
+	const secret = "clientprotocol-error-object-secret-41b"
+	redact.Add("test.clientprotocol error object", secret)
+	long := strings.Repeat("y", 700)
+	state, outPr, inPw := newTestSession(t, domain.AgentConfig{ReadTimeoutMS: 2000}, clientProtocolMaxLineBytes)
+	out := newOutboundReader(outPr)
+	ch := make(chan *domain.AgentError, 1)
+	go func() {
+		_, err := doNewSession(context.Background(), state, "/ws", nil)
+		ch <- err
+	}()
+
+	id := out.awaitMethod(t, methodSessionNew)
+	sendLine(t, inPw, `{"jsonrpc":"2.0","id":`+string(id)+`,"error":{"code":-32603,"message":"Internal error","data":{"errorName":"ServiceUnavailableError","detail":"`+long+`","key":"`+secret+`"}}}`)
+
+	err := waittest.Receive(t, ch, "session/new return")
+	if err == nil || err.Kind != domain.ErrResponseError || !strings.HasPrefix(err.Message, "session/new error -32603: Internal error: ") {
+		t.Fatalf("doNewSession() error = %v, want a response error quoting the object", err)
+	}
+	if got := err.Error(); got != "agent: response_error: "+err.Message {
+		t.Errorf("Error() = %q, want the message once", got)
+	}
+	cause := failcause.Of(err)
+	want := `session/new error object: {"code":-32603,"message":"Internal error","data":{"errorName":"ServiceUnavailableError","detail":"` + long + `","key":"` + redact.Marker + `"}}`
+	if cause != want {
+		t.Errorf("failcause.Of() = %q, want %q", cause, want)
+	}
+}
+
+func TestPromptErrorEvidence_CarriesTheErrorObject(t *testing.T) {
+	t.Parallel()
+
+	ev := promptErrorEvidence(&jsonrpc.Error{Code: -32603, Message: "Internal error", Data: json.RawMessage(`{"errorName":"ThrottlingException"}`)})
+	if ev.TerminalMessage != `session/prompt error -32603: Internal error: {"errorName":"ThrottlingException"}` {
+		t.Errorf("TerminalMessage = %q", ev.TerminalMessage)
+	}
+	want := `session/prompt error object: {"code":-32603,"message":"Internal error","data":{"errorName":"ThrottlingException"}}`
+	if got := failcause.Of(ev.Cause); got != want {
+		t.Errorf("failcause.Of(Cause) = %q, want %q", got, want)
 	}
 }
 

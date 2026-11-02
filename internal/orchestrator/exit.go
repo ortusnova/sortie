@@ -14,6 +14,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/environment"
+	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -495,6 +496,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		CompletedAt:      now.Format(time.RFC3339),
 		Status:           status,
 		Error:            errorStringPtr(runError),
+		ErrorDetail:      failcause.Of(runError),
 		WorkflowFile:     entry.WorkflowFile,
 		TurnsCompleted:   workerResult.TurnsCompleted,
 		RuleName:         entry.RuleName,

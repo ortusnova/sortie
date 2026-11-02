@@ -3,6 +3,7 @@ package clientprotocol
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/sortie-ai/sortie/internal/agent/jsonrpc"
 	"github.com/sortie-ai/sortie/internal/redact"
@@ -19,6 +20,33 @@ func quoteJSONRPCError(e *jsonrpc.Error) string {
 		text += ": " + data
 	}
 	return redact.Truncate(text, messageTruncateLimit)
+}
+
+// errorObjectError is the error object the agent answered a call with,
+// as the cause of the agent error the call fails with. Its text
+// is the display form; [errorObjectError.FailureOutput] keeps the whole
+// object for the run record.
+type errorObjectError struct {
+	method string
+	object *jsonrpc.Error
+}
+
+func newErrorObjectError(method string, object *jsonrpc.Error) *errorObjectError {
+	return &errorObjectError{method: method, object: object}
+}
+
+func (e *errorObjectError) Error() string {
+	return fmt.Sprintf("%s error %d: %s", e.method, e.object.Code, quoteJSONRPCError(e.object))
+}
+
+// FailureOutput returns the error object as the agent sent it, its data
+// member included and uncut. It is not masked.
+func (e *errorObjectError) FailureOutput() string {
+	encoded, err := json.Marshal(e.object)
+	if err != nil {
+		encoded = fmt.Appendf(nil, "%+v", *e.object)
+	}
+	return e.method + " error object: " + string(encoded)
 }
 
 func formatErrorData(data json.RawMessage) string {

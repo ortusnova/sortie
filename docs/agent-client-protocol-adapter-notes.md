@@ -75,6 +75,10 @@ The `initialize` wait during credential verification is the larger of `agent.rea
 
 A `-32000` response to `initialize`, `session/new`, or `session/prompt` means the runtime refused its credential, on a verification session and a working one alike. A runtime that exits before it answers any startup request gets the shared early-exit report, not a credential diagnosis. A connection lost while the runtime stays alive past the observation grace keeps `port_exit`'s transport message. A failed `session/load` or `session/resume` still falls back to a fresh session and is never read as a credential refusal.
 
+## Error objects
+
+Any other error response to `initialize`, `session/new`, or `session/prompt` fails with `response_error`, whose message quotes the error's `message` and `data` cut to 500 runes, such as `session/new error -32603: Internal error: Internal service failure: {"errorName":"ServiceUnavailableError"}`. The error object itself, `code`, `message`, and `data` uncut, is the cause of that error, so a failed run keeps it in its run record's `error_detail` as `session/new error object: {...}`, masked and capped at 16 KiB.
+
 ## Session load spacing
 
 The adapter holds a `session/load` call until the clock leaves the UTC minute in which this process created the session. The wait runs on the open connection, after the handshake and the negative control, and is bounded at one minute.

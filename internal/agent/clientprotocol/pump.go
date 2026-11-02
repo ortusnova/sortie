@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -611,10 +610,12 @@ func promptErrorEvidence(e *jsonrpc.Error) agentcore.TurnEvidence {
 			TerminalMessage:   agentcore.CredentialRefusedMessage(quoteJSONRPCError(e)),
 		}
 	}
+	cause := newErrorObjectError(methodSessionPrompt, e)
 	return agentcore.TurnEvidence{
 		Terminal:          agentcore.TerminalFailure,
 		TerminalErrorKind: domain.ErrResponseError,
-		TerminalMessage:   fmt.Sprintf("session/prompt error %d: %s", e.Code, quoteJSONRPCError(e)),
+		TerminalMessage:   cause.Error(),
+		Cause:             cause,
 	}
 }
 

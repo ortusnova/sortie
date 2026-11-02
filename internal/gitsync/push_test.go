@@ -5,13 +5,19 @@ package gitsync
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/config"
+	"github.com/sortie-ai/sortie/internal/failcause"
+	"github.com/sortie-ai/sortie/internal/redact"
 )
+
+var _ failcause.Carrier = (*Error)(nil)
 
 // mirrorRef returns the commit ref holds in the fixture's mirror, or ""
 // when the mirror has no such ref.
@@ -159,6 +165,94 @@ func TestExport_HumanCreatedTheBranchBeforeSortiesFirstPush(t *testing.T) {
 	}
 	if got := f.mirrorRef(PushedRef("ENG-73")); got != "" {
 		t.Errorf("%s = %q, want it absent", PushedRef("ENG-73"), got)
+	}
+}
+
+// workflowScopeRefusal is the line GitHub gives for a push its token's
+// scopes do not allow.
+const workflowScopeRefusal = "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/talos-installer.yml` without `workflow` scope"
+
+// refusingBareUpstream returns a bare copy of a new upstream whose
+// pre-receive hook writes workflowScopeRefusal and token to its standard
+// error and refuses every push.
+func refusingBareUpstream(t *testing.T, token string) string {
+	t.Helper()
+	up := newUpstream(t)
+	bare := filepath.Join(t.TempDir(), "upstream.git")
+	fixtureGit(t, up.env, filepath.Dir(bare), "clone", "--quiet", "--bare", "--template=", up.dir, bare)
+	hook := "#!/bin/sh\n" +
+		"echo '" + workflowScopeRefusal + "' >&2\n" +
+		"echo 'the token " + token + " lacks the scope' >&2\n" +
+		"exit 1\n"
+	if err := os.MkdirAll(filepath.Join(bare, "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bare, "hooks", "pre-receive"), []byte(hook), 0o700); err != nil { //nolint:gosec // G306: a hook must be executable
+		t.Fatal(err)
+	}
+	return bare
+}
+
+func TestPush_RefusedPushKeepsItsWholeCause(t *testing.T) {
+	requireGit(t)
+	isolateGit(t, "")
+	const token = "ghp_gitsyncPushTestToken0123456789"
+	redact.Add("test.gitsync push token", token)
+	bare := refusingBareUpstream(t, token)
+	m, err := OpenMirror(t.TempDir(), bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := lockMirror(t, m)
+	defer l.Unlock()
+	ctx := context.Background()
+	if err := l.FetchUpstream(ctx); err != nil {
+		t.Fatalf("FetchUpstream() error = %v", err)
+	}
+
+	err = l.Push(ctx, "refs/heads/main", "sortie/ONS-49", "")
+	if err == nil {
+		t.Fatal("Push() error = nil, want the hook's refusal")
+	}
+	if errors.Is(err, ErrBranchMoved) {
+		t.Errorf("Push() error = %v, want a refusal other than %v", err, ErrBranchMoved)
+	}
+	if !strings.Contains(err.Error(), "push sortie/ONS-49 to "+bare+": [remote rejected] (pre-receive hook declined): git push") {
+		t.Errorf("Push() error = %q, want it to name the remote's reason", err)
+	}
+
+	cause := failcause.Of(err)
+	for _, want := range []string{
+		"git push: exit status 1",
+		"stdout:\nTo " + bare + "\n!\trefs/heads/main:refs/heads/sortie/ONS-49\t[remote rejected] (pre-receive hook declined)",
+		"stderr:\n",
+		"remote: " + workflowScopeRefusal,
+		"remote: the token " + redact.Marker + " lacks the scope",
+		"failed to push some refs",
+	} {
+		if !strings.Contains(cause, want) {
+			t.Errorf("failcause.Of(Push()) = %q, want it to hold %q", cause, want)
+		}
+	}
+	if strings.Contains(cause, token) {
+		t.Errorf("failcause.Of(Push()) = %q, want the token masked", cause)
+	}
+}
+
+func TestRefusal(t *testing.T) {
+	t.Parallel()
+
+	const dst = "refs/heads/sortie/K"
+	tests := []struct{ name, out, want string }{
+		{"remote rejected", "To /up\n!\trefs/sortie/incoming/K:refs/heads/sortie/K\t[remote rejected] (" + workflowScopeRefusal + ")\nDone\n", "[remote rejected] (" + workflowScopeRefusal + ")"},
+		{"other ref", "To /up\n!\trefs/sortie/incoming/K:refs/heads/sortie/KX\t[remote rejected] (hook declined)\nDone\n", ""},
+		{"accepted", "To /up\n*\trefs/sortie/incoming/K:refs/heads/sortie/K\t[new branch]\nDone\n", ""},
+		{"no output", "", ""},
+	}
+	for _, tt := range tests {
+		if got := refusal(tt.out, dst); got != tt.want {
+			t.Errorf("refusal(%s) = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 

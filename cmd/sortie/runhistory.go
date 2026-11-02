@@ -179,6 +179,7 @@ func runHistoryEntry(r persistence.RunHistory) server.RunHistoryEntry {
 		StartedAt:        r.StartedAt,
 		CompletedAt:      r.CompletedAt,
 		Error:            r.Error,
+		ErrorDetail:      r.ErrorDetail,
 		TurnsCompleted:   r.TurnsCompleted,
 		RuleName:         r.RuleName,
 		ChainID:          r.ChainID,

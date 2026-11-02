@@ -118,7 +118,7 @@ func TestMigrate_ForkDatabaseTakesLaterUpstreamMigrations(t *testing.T) {
 			t.Errorf("migration %d (%s) not applied", m.Version, m.Description)
 		}
 	}
-	for _, column := range []string{"held_ms", "environment_image_sha256", "exported_commit", "dispatch_id", "skills"} {
+	for _, column := range []string{"held_ms", "environment_image_sha256", "exported_commit", "error_detail", "dispatch_id", "skills"} {
 		if !hasColumn(t, s, "run_history", column) {
 			t.Errorf("run_history lacks %s after the upgrade", column)
 		}
