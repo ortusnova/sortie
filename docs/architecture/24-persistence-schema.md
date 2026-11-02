@@ -98,6 +98,7 @@ Note: `timer_handle` is runtime-only and is not stored.
 | `exported_commit` | TEXT | The commit the run pushed to the upstream issue branch when it ended, under `smolvm` with `environment.smolvm.repository`; empty for a run that pushed nothing, a run on the host, and a row written before migration 1003 (migration 1003) |
 
 | `error_detail` | TEXT | The whole cause of a failed run: the full output of the step that failed it, taken at worker exit from the first error in the run error's chain that carries one. For a git command Sortie ran on its mirror, the command's porcelain output and standard error under a line naming the command and its exit status; for an agent runtime's protocol error, the error object it answered with. Every registered credential is masked and the text is capped at 16 KiB, keeping its start and its end. Empty when the failing step left no output, for a run that did not fail, and for a row written before migration 1005 (migration 1005), which is not backfilled |
+| `failure_signature` | TEXT | The signature of a run that ended on an error (Section 8.4, Repeated failure): its failed step, its failure class, and the first line of its error with run-specific values removed, joined by ` | `. Read at the next worker exit of the same issue, from the issue's newest row that is not `ci_failed`, to tell whether the run failed as the previous one did. Empty for a run that did not end on an error and for a row written before migration 1006 (migration 1006), which is not backfilled |
 
 Neither execution environment column is backfilled. A failed export records its error in `error`, the output of a git command that failed it, such as a refused push, in `error_detail`, and an empty `exported_commit`.
 
@@ -312,7 +313,7 @@ The reset point is read from `run_history` inside the write, so a work-observed 
 | `issue_id`      | TEXT PK | Tracker-internal issue ID                                          |
 | `identifier`    | TEXT    | Human-readable ticket key                                          |
 | `display_id`    | TEXT    | Qualified display form; empty when the tracker needs none          |
-| `reason`        | TEXT    | `agent_blocked` or `handoff_absence`                                |
+| `reason`        | TEXT    | `agent_blocked`, `handoff_absence`, or `repeated_failure`          |
 | `parked_state`  | TEXT    | Tracker state observed when the park was recorded; empty when unobserved |
 | `label`         | TEXT    | Parking label the orchestrator applied                             |
 | `label_applied` | INTEGER | `1` once the orchestrator has confirmed the label reached the tracker |
@@ -330,7 +331,7 @@ The reset point is read from `run_history` inside the write, so a work-observed 
 | `issue_labels` | TEXT | The issue's labels as read for the park, less the park's own parking label, as a JSON array of strings; `[]` for a read that found none, and `''` for no read, on a row written before the column existed, and for a value that does not decode as an array of strings |
 | `session_id` | TEXT | The agent session the park hands to the first run after a release, taken from the run the park follows only when that run had no reaction kind and either succeeded or failed with a withheld handoff; empty otherwise, and while the park records no run. Its migration fills an older row from the `session_id` of the park's run under the same rule: the issue's `run_history` row with the greatest `id` among rows whose `agent_adapter` is non-empty and whose `started_at`, compared as an instant, is at or before the row's `parked_at`. Empty when no row qualifies, the run does not meet the rule, or a time does not parse |
 | `template_id` | TEXT | Prompt template of that run, kept under the same rule as `session_id` and filled by the same migration step; empty for the workflow body template and when the run does not meet the rule |
-| `statement` | TEXT | The stop statement of the run the park follows, as that run's `agent_text` stores it, kept whatever the run's reaction kind or status; empty when the run declared none or the park records no run. Its migration fills an older row from the `agent_text` of the park's run, selected as above |
+| `statement` | TEXT | The stop statement of the run the park follows, as that run's `agent_text` stores it, kept whatever the run's reaction kind or status; for a `repeated_failure` park, the first line of the run's error, credentials masked. Empty when the run declared none or the park records no run. Its migration fills an older row from the `agent_text` of the park's run, selected as above |
 | `released_at` | TEXT | RFC 3339 timestamp in UTC, whole seconds, of the gesture that released the park; empty while the park holds |
 | `release_gesture` | TEXT | `label_removed`, `state_changed`, or `answered`; empty while the park holds |
 

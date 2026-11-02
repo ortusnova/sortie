@@ -147,6 +147,8 @@ Fields (logical):
 - `error` (optional)
 - `error_detail` (string)
   - The whole cause of a failed attempt: the full output of the step that failed it, for a git command its porcelain output and standard error, for an agent runtime its error object, capped at 16 KiB and with every registered credential masked. Empty when the failing step left no output, for an attempt that did not fail, and on a row recorded before the field was kept.
+- `failure_signature` (string)
+  - How an attempt that ended on an error failed, the same for two attempts that failed the same way: the failed step, the failure's class, and the first line of its error with run-specific values removed, joined by ` | ` (Section 8.4, Repeated failure). Empty for an attempt that did not end on an error and on a row recorded before the field was kept.
 
 #### 4.1.6 Live Session (Agent Session Metadata)
 

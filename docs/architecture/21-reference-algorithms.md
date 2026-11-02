@@ -1337,6 +1337,14 @@ on_worker_exit(issue_id, reason, worker_result, state):
           usage_limit_notified: true
         })
       # else: an incumbent retry takes usage_limit_notified: true
+    elif repeated_failure:
+      # signature = failure_signature(step, class, normalized first line),
+      # recorded on the run's row; repeated_failure was read before the row
+      # was written: the signature is not transient, the run drives the
+      # issue's state, and it equals the latest row's failure_signature.
+      log_warn("worker run failed as the previous run did, parking instead of retrying", signature)
+      park_issue(state, issue_id, reason="repeated_failure",
+        statement=first_line(mask(reason)))           // releases the claim, cancels the retry
     elif retry_slot_incumbent(state, issue_id) is nil:
       state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
         identifier: running_entry.identifier,
