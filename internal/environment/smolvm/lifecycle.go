@@ -88,6 +88,7 @@ func (e *Environment) Release(ctx context.Context, ws environment.Workspace) err
 		}
 		e.removeMissingMachineResidue(vm.Name)
 	}
+	e.forgetStart(vm.Name)
 	e.logger.DebugContext(ctx, "stopped VM", slog.String("vm", vm.Name), slog.String("workspace", ws.HostPath))
 	return nil
 }
@@ -111,8 +112,15 @@ func (e *Environment) Resume(ctx context.Context, ws environment.Workspace) (boo
 	if err := e.ensureMountDirs(ws.Key); err != nil {
 		return false, err
 	}
-	e.warnUnsetCredentials(ctx, vm.Name)
-	if err := e.cli.Start(ctx, vm.Name); err != nil {
+	// The hook or the triage command runs without the value of a source
+	// that yields none, rather than not at all.
+	credEnv, err := e.credentialEnv(ctx)
+	if err != nil {
+		e.logger.WarnContext(ctx, "starting the VM without a credential: requests to its hosts from the VM will fail",
+			slog.String("vm", vm.Name), slog.Any("error", err))
+		credEnv = nil
+	}
+	if err := e.startVM(ctx, vm.Name, credEnv); err != nil {
 		return false, err
 	}
 	if err := e.startToolListener(ctx, vm.Name); err != nil {
@@ -171,6 +179,9 @@ func (e *Environment) Remove(ctx context.Context, ws environment.Workspace) erro
 // successfully, and the residue smolvm leaves for its name is removed.
 func (e *Environment) deleteVM(ctx context.Context, name string) error {
 	err := e.cli.Delete(ctx, name)
+	if err == nil || IsNotFound(err) {
+		e.forgetStart(name)
+	}
 	if IsNotFound(err) {
 		e.removeMissingMachineResidue(name)
 		return nil

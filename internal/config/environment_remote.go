@@ -334,6 +334,11 @@ func parseRemoteCredentials(value any) ([]RemoteCredential, error) {
 		if present && header == "" {
 			return nil, &ConfigError{Field: entryField + ".header", Message: "must not be an empty string; remove the key for the default"}
 		}
+		for _, key := range []string{"file", "command"} {
+			if _, set := entry[key]; set {
+				return nil, &ConfigError{Field: entryField + "." + key, Message: "is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it"}
+			}
+		}
 		creds = append(creds, RemoteCredential{Name: name, Env: env, Hosts: hosts, Header: header})
 	}
 	return creds, nil
