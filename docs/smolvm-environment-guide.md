@@ -186,6 +186,7 @@ credentials:
 - In the VM, `OPENROUTER_API_KEY` holds a placeholder value that smolvm generates. The key itself never enters the VM.
 - Never put a placeholder value into anything an agent reads: issue text, comments, or prompt files. An agent sends what it reads to its model, smolvm then rejects every request that carries the placeholder, and the agent's session fails with `credential_unverified`.
 - smolvm reads the value from Sortie's environment each time it starts the VM. Set the variable before Sortie starts; Sortie logs a warning for a binding whose variable is not set.
+- For a token that a login refreshes, name its source instead: `file: <path>` or `command: <shell command>`. Sortie reads it on its host each time it starts the VM for a run, so the next run gets the refreshed token without a restart of Sortie. A source that yields no value fails the run before its VM starts. See [A credential read at each launch](workflow-reference.md#a-credential-read-at-each-launch).
 - The placeholder is replaced only on HTTPS requests to the listed hosts. A request that carries it in the query string is refused.
 - On those hosts, requests are HTTP/1.1 only, cannot upgrade to a WebSocket, and carry at most 8 MiB of body.
 - The binding's hosts are added to the allowlist.
@@ -398,6 +399,7 @@ The reload applies the change. Each existing workspace was created by `smolvm`, 
 | `environment.smolvm.binary: cannot read the version of smolvm binary` | smolvm is not on Sortie's `PATH`. Set `environment.smolvm.binary` to its full path. |
 | `smolvm version 1.x.y is older than the minimum supported version 1.32.4` | Install 1.32.4 or later with the install script's `--version`. |
 | `environment.agent_credential: agent kind ... reads the credential variable ...` | Bind that variable in `credentials`, list it in `pass_env`, or unset it in Sortie's environment. |
+| `credential "<name>": its source (...) yielded no value: ...` | The binding's `file` or `command` gave no value when the run started its VM: the file is missing or empty, or the command failed or printed nothing. Fix the source, such as renewing the login the command reads. The run is retried. |
 | `environment.smolvm.net_backend: ... use virtio-net` | `tsi`, or another backend smolvm cannot keep an allowlist on, is set. Set `virtio-net`, or remove the key. |
 | `environment.smolvm.net_backend: needs allow_hosts or credentials` | A backend without an allowlist would have no network. List the hosts the VM needs in `allow_hosts`. |
 | `environment.smolvm.mounts[N].guest: ... overlaps /run/sortie/control` | The mount would cover a path Sortie mounts itself. Pick another `guest`. |

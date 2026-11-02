@@ -123,6 +123,11 @@ type Environment struct {
 
 	packMu   sync.Mutex
 	packSums map[string]packSum
+
+	// startedWith holds, for each VM this process started, the
+	// fingerprint of the sourced credential values it started with.
+	startedMu   sync.Mutex
+	startedWith map[string]string
 }
 
 // packSum is a pack file's SHA-256 together with the size and
@@ -162,6 +167,7 @@ func New(params environment.Params) (environment.Environment, error) {
 		machineCache: machineCacheDir(),
 		logger:       logger,
 		packSums:     map[string]packSum{},
+		startedWith:  map[string]string{},
 	}
 	if params.WorkflowPath != "" {
 		abs, err := filepath.Abs(params.WorkflowPath)
@@ -285,12 +291,23 @@ func shortHash(s string) string {
 // managed, for the workspace key, and for this workflow is never
 // touched, and fails preparation. A smolvm
 // failure fails preparation with a [*CLIError].
+//
+// Every credential binding with a file or command source is read anew
+// before anything else, and its value given to the VM's start. A source
+// that yields no value fails preparation with a [*credsource.Error]. A
+// running VM started with other values, or by another process, is
+// stopped and started again, because smolvm reads the values only when
+// a VM starts.
 func (e *Environment) Prepare(ctx context.Context, ws environment.Workspace) (environment.PrepareResult, error) {
 	paths, err := e.preparePaths(ws)
 	if err != nil {
 		return environment.PrepareResult{}, err
 	}
 	name := VMName(ws.Key)
+	credEnv, err := e.credentialEnv(ctx)
+	if err != nil {
+		return environment.PrepareResult{}, fmt.Errorf("smolvm environment: %w", err)
+	}
 
 	machines, err := e.cli.List(ctx)
 	if err != nil {
@@ -317,9 +334,19 @@ func (e *Environment) Prepare(ctx context.Context, ws environment.Workspace) (en
 			// The label names the pack the VM was created from, which a
 			// rebuild of the pack file since does not change.
 			reused := environment.PrepareResult{ImageDigest: existing.Labels[LabelPack]}
-			if !existing.Running() {
-				e.warnUnsetCredentials(ctx, name)
-				if err := e.cli.Start(ctx, name); err != nil {
+			running := existing.Running()
+			if running && e.staleCredentials(name, credEnv) {
+				// smolvm reads a binding's value only when the VM
+				// starts, so a refreshed value needs a new start.
+				e.logger.InfoContext(ctx, "restarting a running VM to give it the credential values read for this launch", slog.String("vm", name))
+				if err := e.cli.Stop(ctx, name); err != nil {
+					return environment.PrepareResult{}, err
+				}
+				e.forgetStart(name)
+				running = false
+			}
+			if !running {
+				if err := e.startVM(ctx, name, credEnv); err != nil {
 					return environment.PrepareResult{}, err
 				}
 			}
@@ -342,8 +369,7 @@ func (e *Environment) Prepare(ctx context.Context, ws environment.Workspace) (en
 	if err := e.cli.Create(ctx, spec); err != nil {
 		return environment.PrepareResult{}, err
 	}
-	e.warnUnsetCredentials(ctx, name)
-	if err := e.cli.Start(ctx, name); err != nil {
+	if err := e.startVM(ctx, name, credEnv); err != nil {
 		return environment.PrepareResult{}, err
 	}
 	if err := e.startToolListener(ctx, name); err != nil {
@@ -550,18 +576,6 @@ func (e *Environment) packSHA256(path string) (string, error) {
 	sum := hex.EncodeToString(h.Sum(nil))
 	e.packSums[path] = packSum{size: info.Size(), modTime: info.ModTime(), sum: sum}
 	return sum, nil
-}
-
-// warnUnsetCredentials logs each credential binding whose host variable
-// is not set. smolvm reads the value when the VM starts; without it, the
-// VM starts and every request to the binding's hosts fails.
-func (e *Environment) warnUnsetCredentials(ctx context.Context, name string) {
-	for _, cred := range e.cfg.Credentials {
-		if _, ok := os.LookupEnv(cred.Env); !ok {
-			e.logger.WarnContext(ctx, "credential variable is not set; requests to its hosts from the VM will fail",
-				slog.String("vm", name), slog.String("credential", cred.Name), slog.String("variable", cred.Env))
-		}
-	}
 }
 
 // toolListenerArgv is the guest command that serves the tool channel: a

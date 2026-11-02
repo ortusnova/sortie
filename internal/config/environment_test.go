@@ -507,6 +507,36 @@ func TestEnvironmentConfig_Errors(t *testing.T) {
 			wantMsg:   []string{"invalid header name"},
 		},
 		{
+			name:      "credential with both file and command",
+			raw:       withCreds(cred(map[string]any{"file": "/run/token", "command": "cat /run/token"})),
+			wantField: "environment.smolvm.credentials[0]",
+			wantMsg:   []string{"both file and command"},
+		},
+		{
+			name:      "credential with an empty file",
+			raw:       withCreds(cred(map[string]any{"file": ""})),
+			wantField: "environment.smolvm.credentials[0].file",
+			wantMsg:   []string{"empty"},
+		},
+		{
+			name:      "credential with a relative file",
+			raw:       withCreds(cred(map[string]any{"file": "token.txt"})),
+			wantField: "environment.smolvm.credentials[0].file",
+			wantMsg:   []string{"token.txt", "absolute"},
+		},
+		{
+			name:      "credential file of the wrong type",
+			raw:       withCreds(cred(map[string]any{"file": 5})),
+			wantField: "environment.smolvm.credentials[0].file",
+			wantMsg:   []string{"expected string, got integer"},
+		},
+		{
+			name:      "credential with a blank command",
+			raw:       withCreds(cred(map[string]any{"command": "  "})),
+			wantField: "environment.smolvm.credentials[0].command",
+			wantMsg:   []string{"empty"},
+		},
+		{
 			name:      "credential header Host",
 			raw:       withCreds(cred(map[string]any{"header": "Host"})),
 			wantField: "environment.smolvm.credentials[0].header",
@@ -678,6 +708,33 @@ func TestValidateFrontMatter_Environment(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ValidateFrontMatter() warnings = %v, want %v", got, want)
+	}
+}
+
+func TestSmolvmCredentialSource(t *testing.T) {
+	t.Setenv("SORTIE_TEST_TOKEN_DIR", "/run/tokens")
+	pack := writePack(t)
+
+	cfg, err := NewServiceConfig(smolvmRaw(pack, map[string]any{"credentials": []any{
+		map[string]any{"name": "plain", "env": "PLAIN_API_KEY", "hosts": []any{"a.example"}},
+		map[string]any{"name": "fromfile", "env": "FILE_API_KEY", "hosts": []any{"b.example"}, "file": "$SORTIE_TEST_TOKEN_DIR/./b"},
+		map[string]any{"name": "fromcmd", "env": "CMD_API_KEY", "hosts": []any{"c.example"}, "command": "anthropic-token.py --print"},
+	}}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	want := []SmolvmCredential{
+		{Name: "plain", Env: "PLAIN_API_KEY", Hosts: []string{"a.example"}},
+		{Name: "fromfile", Env: "FILE_API_KEY", Hosts: []string{"b.example"}, File: "/run/tokens/b"},
+		{Name: "fromcmd", Env: "CMD_API_KEY", Hosts: []string{"c.example"}, Command: "anthropic-token.py --print"},
+	}
+	if got := cfg.Environment.Smolvm.Credentials; !reflect.DeepEqual(got, want) {
+		t.Errorf("Credentials = %+v, want %+v", got, want)
+	}
+	for i, c := range want {
+		if got, wantSourced := c.Sourced(), i > 0; got != wantSourced {
+			t.Errorf("%s.Sourced() = %v, want %v", c.Name, got, wantSourced)
+		}
 	}
 }
 

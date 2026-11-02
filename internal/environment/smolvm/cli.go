@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -442,7 +443,16 @@ func (c *CLI) Binary() string { return c.binary }
 // run runs the binary with args and returns its standard output.
 // subcommand and machine describe the invocation in a [CLIError].
 func (c *CLI) run(ctx context.Context, subcommand []string, machine string, args []string) ([]byte, error) {
+	return c.runEnv(ctx, subcommand, machine, args, nil)
+}
+
+// runEnv is [CLI.run] with env added to the inherited environment; an
+// entry of env overrides the inherited variable of the same name.
+func (c *CLI) runEnv(ctx context.Context, subcommand []string, machine string, args, env []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.binary, args...) //nolint:gosec // G204: the operator configures the binary; arguments are built by this package.
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	stdout := &cappedWriter{max: maxStdoutBytes}
 	stderr := procutil.NewTailBuffer(stderrTailBytes)
 	result, err := procutil.RunCapture(ctx, cmd, procutil.DefaultStopGrace, procutil.CaptureParams{Stdout: stdout, Stderr: stderr})
@@ -581,9 +591,11 @@ func (c *CLI) Create(ctx context.Context, spec CreateSpec) error {
 	return err
 }
 
-// Start starts the machine name.
-func (c *CLI) Start(ctx context.Context, name string) error {
-	_, err := c.run(ctx, []string{"machine", "start"}, name, machineArgs("start", "--name", name))
+// Start starts the machine name. Each KEY=VALUE entry of env is set in
+// smolvm's environment for the start, where smolvm reads the values of
+// the host variables the machine's credential bindings name.
+func (c *CLI) Start(ctx context.Context, name string, env ...string) error {
+	_, err := c.runEnv(ctx, []string{"machine", "start"}, name, machineArgs("start", "--name", name), env)
 	return err
 }
 
