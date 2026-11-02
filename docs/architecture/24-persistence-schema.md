@@ -27,13 +27,13 @@ Migrations 1 to 999 follow upstream's sequence. This fork's own migrations are n
 | `display_identifier` | TEXT | Qualified form of `identifier` (for example `owner/repo#9`); empty when `identifier` suffices, and on an entry written before the column existed |
 | `issue_title` | TEXT | The tracker's title of the issue as read when the retry was scheduled; empty on an entry written before the column existed, and while the retry holds no read of its issue |
 | `issue_url` | TEXT | The tracker's web link of the issue as read then, under the same rule as `issue_title` |
-| `trigger` | TEXT | The `sortie_retries_total` label of the schedule that created the entry (`error`, `usage_limit`, `continuation`, `timer`, `stall`, or `ci_fix`); empty when that schedule records none, and `''` on an entry written before the column existed until the entry is next written |
+| `trigger` | TEXT | The `sortie_retries_total` label of the schedule that created the entry (`error`, `usage_limit`, `continuation`, `timer`, `stall`, `ci_fix`, or `story_fault`); empty when that schedule records none, and `''` on an entry written before the column existed until the entry is next written |
 | `configured_model` | TEXT | The `model` the dispatch's resolved settings block carried, frozen with the selection; empty when unset. Its migration fills an older entry from the `configured_model` of the newest agent run of the issue in `run_history` that shares the entry's `chain_id`; empty when no such run exists |
 | `issue_type` | TEXT | The tracker's issue type as read when the retry was scheduled; empty on an entry written before the column existed, and while the retry holds no read of its issue |
 | `issue_labels` | TEXT | The issue's labels as read then, as a JSON array of strings; `[]` for a read that found none, and `''` for no read, on an entry written before the column existed, and for a value that does not decode as an array of strings |
 | `issue_state` | TEXT | The tracker state of the issue as read then, under the same rule as `issue_type` |
 | `dispatched_at` | TEXT | RFC 3339 timestamp, in UTC with nanosecond precision, of the start of the first run of the pass the entry's `chain_id` names. Its migration fills an older entry with the earliest `started_at`, compared as an instant, among the issue's agent runs in `run_history` that share the entry's non-empty `chain_id`; an agent run is a row with a non-empty `agent_adapter`, so the synthetic `ci_failed` row is not one. Empty when `chain_id` is empty or no agent run shares it |
-| `origin_trigger` | TEXT NOT NULL | What started the retry: the `sortie_retries_total` label of the schedule that created it (`error`, `usage_limit`, `continuation`, `stall`, or `ci_fix`), kept through every put-back by the retry timer, whose `timer` label stays in `trigger`. Empty for a retry no label started, such as a reaction continuation. Its migration fills an older entry from `trigger` when `trigger` is neither `timer` nor empty, and leaves the rest empty, because those entries never stored what started them |
+| `origin_trigger` | TEXT NOT NULL | What started the retry: the `sortie_retries_total` label of the schedule that created it (`error`, `usage_limit`, `continuation`, `stall`, `ci_fix`, or `story_fault`), kept through every put-back by the retry timer, whose `timer` label stays in `trigger`. Empty for a retry no label started, such as a reaction continuation. Its migration fills an older entry from `trigger` when `trigger` is neither `timer` nor empty, and leaves the rest empty, because those entries never stored what started them |
 | `usage_limit_notified` | INTEGER NOT NULL DEFAULT 0 | `1` when the run the retry follows ended in a provider usage-limit refusal, so the run the retry dispatches publishes no `session.started` event and, when refused again, no `session.failed` event; `0` otherwise, and on an entry written before the column existed |
 
 Note: `timer_handle` is runtime-only and is not stored.
@@ -76,7 +76,7 @@ Note: `timer_handle` is runtime-only and is not stored.
 | `issue_title` | TEXT | The tracker's title of the issue as read when the run was dispatched. Reaction recovery restores it; empty on a row written before the column existed, or on a `ci_failed` row whose pending reaction was recovered from such a row |
 | `issue_url` | TEXT | The tracker's web link of the issue as read then, restored and emptied under the same rule as `issue_title` |
 | `dispatched_at` | TEXT | RFC 3339 timestamp, in UTC with nanosecond precision, of the start of the first run of the pass the row's `chain_id` names. Reaction recovery restores it. Its migration fills an older row under the rule of `retry_entries.dispatched_at`; empty when `chain_id` is empty or no agent run shares it |
-| `trigger` | TEXT | What started the retry whose fire dispatched the run, as `retry_entries.origin_trigger` holds it: `error`, `usage_limit`, `continuation`, `stall`, or `ci_fix`. Empty for a dispatch from the poll tick and for a retry a reaction other than the CI fix started; the CI fix records `ci_fix`. `NULL` on a row written before the column existed, and on a run whose retry never stored what started it, which means "not recorded" |
+| `trigger` | TEXT | What started the retry whose fire dispatched the run, as `retry_entries.origin_trigger` holds it: `error`, `usage_limit`, `continuation`, `stall`, `ci_fix`, or `story_fault`. Empty for a dispatch from the poll tick and for a retry a reaction other than the CI fix started; the CI fix records `ci_fix`. `NULL` on a row written before the column existed, and on a run whose retry never stored what started it, which means "not recorded" |
 | `reaction_kind` | TEXT | The reaction kind of the retry that dispatched the run; empty when none. `NULL` on a row written before the column existed |
 | `session_id` | TEXT | The agent session the run used, the value the session-metadata write at the same exit takes; empty when the run started no session. `NULL` on a row written before the column existed, which makes it the column that tells a recorded origin from an unrecorded one |
 | `ssh_host` | TEXT | The SSH worker the run executed on; empty for a local run. `NULL` on a row written before the column existed |
@@ -442,6 +442,37 @@ The rows of a run are written once, at worker exit, in the transaction that appe
 | `bytes` | INTEGER NOT NULL                | The sum of `size` over `run_events`                                   |
 
 Every write of `run_events` updates `bytes` in its own transaction, so the figure the 2 GiB bound reads is exact and a write never sums the table, a cost that grows with the stored volume. The migration creates the row at 0 beside the empty table.
+
+**`platform_faults`**: platform faults, each recorded once by its failure signature (Section 8.4, Stopped failure routing) (migration 1007)
+
+| Column             | Type    | Notes |
+| ------------------ | ------- | ----- |
+| `id`               | TEXT PK | `pf-` and 12 hexadecimal digits derived from the signature and the time it was recorded |
+| `signature`        | TEXT    | The failure signature the fault is recorded by; a later run that fails with it is held under the open fault |
+| `class`            | TEXT    | The fault class of the signature, such as `token_scope`, or `unclassified` |
+| `step`             | TEXT    | The failed step, normalized as the signature's |
+| `cause`            | TEXT    | The first line of the run's error, credentials masked |
+| `detail`           | TEXT    | The failing step's whole output, as the run's `error_detail` keeps it |
+| `action`           | TEXT    | The person action that clears the fault, with the host and forge filled; empty when Sortie's own check clears it |
+| `action_where`     | TEXT    | Where to take the action; empty with `action` |
+| `recorded_at`      | TEXT    | RFC 3339 UTC |
+| `action_done_at`   | TEXT    | RFC 3339 UTC of the request that marked the action done; empty until then |
+| `action_done_by`   | TEXT    | Who marked it done, as the request named them |
+| `last_check_at`    | TEXT    | RFC 3339 UTC of the latest check; empty before the first |
+| `last_check_error` | TEXT    | The error of the latest check, credentials masked; empty when it passed or none ran |
+| `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed; empty while the fault is open. A resolved row is kept and never loaded again |
+
+**`platform_fault_holds`**: the stories an open platform fault holds out of dispatch (migration 1007)
+
+| Column       | Type | Notes |
+| ------------ | ---- | ----- |
+| `fault_id`   | TEXT | The `platform_faults.id` of the fault; part of the primary key |
+| `issue_id`   | TEXT | Tracker-internal issue ID; part of the primary key |
+| `identifier` | TEXT | Human-readable ticket key |
+| `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
+| `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
+
+Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart.
 
 ### 19.3 Migration Strategy
 

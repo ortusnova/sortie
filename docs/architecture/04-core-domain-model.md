@@ -129,7 +129,7 @@ Fields (logical):
 - `issue_title`, `issue_url` (strings)
   - The tracker's title and web link of the issue as read when the attempt was dispatched. Empty on a row recorded before they were kept.
 - `trigger` (string or unknown)
-  - What started the retry whose fire dispatched the attempt: the `sortie_retries_total` label of the schedule that created that retry (`error`, `usage_limit`, `continuation`, `stall`, or `ci_fix`), kept through every put-back. Empty for a dispatch from the poll tick and for a retry a reaction other than the CI fix started; the CI fix records `ci_fix`. Unknown where the row does not record it: a row recorded before the origin was kept, and an attempt dispatched by a retry that never stored what started it.
+  - What started the retry whose fire dispatched the attempt: the `sortie_retries_total` label of the schedule that created that retry (`error`, `usage_limit`, `continuation`, `stall`, `ci_fix`, or `story_fault`), kept through every put-back. Empty for a dispatch from the poll tick and for a retry a reaction other than the CI fix started; the CI fix records `ci_fix`. Unknown where the row does not record it: a row recorded before the origin was kept, and an attempt dispatched by a retry that never stored what started it.
 - `reaction_kind` (string or unknown)
   - The reaction kind of the retry that dispatched the attempt. Empty when none. Unknown where the row does not record it.
 - `session_id` (string or unknown)
