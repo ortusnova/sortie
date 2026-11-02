@@ -40,6 +40,7 @@ const (
 	triggerTimer        = "timer"
 	triggerStall        = "stall"
 	triggerCIFix        = "ci_fix"
+	triggerStoryFault   = "story_fault"
 
 	actionStop         = "stop"
 	actionCleanup      = "cleanup"
@@ -442,6 +443,11 @@ type RetryEntry struct {
 	// provider usage-limit refusal, so the next run publishes no session.started
 	// event and, if refused, no session.failed event.
 	UsageLimitNotified bool
+
+	// Failure is the failure a story-fault retry hands to its session;
+	// nil for every other retry. Runtime-only: a retry restored from the
+	// store hands over its Error instead.
+	Failure *StoryFailure
 
 	// RuleName is the dispatch rule of the run this retry follows.
 	RuleName string
@@ -1606,6 +1612,15 @@ type State struct {
 	// dispatchPause is the pause of dispatch in force; nil when dispatch
 	// runs. Owned by the event loop.
 	dispatchPause *dispatchPauseState
+
+	// PlatformFaults maps the ID of each open platform fault to the fault.
+	// The durable mirror is the platform_faults table. Only the event loop
+	// mutates this map.
+	PlatformFaults map[string]*PlatformFault
+
+	// FaultHolds maps the ID of each issue an open platform fault holds out
+	// of dispatch to that fault's ID. Only the event loop mutates this map.
+	FaultHolds map[string]string
 }
 
 // continuationCtxKey is the context key for reaction continuation data
@@ -1692,6 +1707,8 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		DispatchBlocks:            make(map[string]DispatchBlock),
 		CriteriaReviewWarned:      make(map[string]struct{}),
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
+		PlatformFaults:            make(map[string]*PlatformFault),
+		FaultHolds:                make(map[string]string),
 	}
 }
 
@@ -2156,6 +2173,10 @@ type RuntimeSnapshotResult struct {
 	// DispatchPause is a copy of the pause of dispatch in force; nil when
 	// dispatch runs.
 	DispatchPause *DispatchPause `json:"-"`
+
+	// PlatformFaults is a copy of every open platform fault, oldest first;
+	// empty when there is none.
+	PlatformFaults []SnapshotPlatformFault `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -2446,6 +2467,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.AttentionAcknowledgements = maps.Clone(state.AttentionAcknowledgements)
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
 	snap.DispatchPause = state.dispatchPause.snapshot()
+	snap.PlatformFaults = snapshotPlatformFaults(state)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))

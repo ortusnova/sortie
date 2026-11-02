@@ -162,6 +162,10 @@ var table = map[string]parts{
 		short: "CI fix run {{due .Due}}",
 		long:  "CI failed on the pull request; fix run {{due .Due}}.",
 	},
+	"retry_story_fault": {
+		short: "Fix run {{due .Due}} after the same failure twice",
+		long:  "The last two runs failed the same way{{if .Error}}: {{.Error}}{{end}}. A new session starts {{due .Due}} with the failure in its prompt.",
+	},
 	"retry_reaction": {
 		short: "{{.Run}} {{due .Due}}",
 		long:  "{{.Run}} {{due .Due}}.",

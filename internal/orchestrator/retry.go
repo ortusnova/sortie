@@ -258,6 +258,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			Trigger:             triggerTimer,
 			OriginTrigger:       popped.OriginTrigger,
 			UsageLimitNotified:  popped.UsageLimitNotified,
+			Failure:             popped.Failure,
 		}, params.OnRetryFire)
 	}
 
@@ -322,6 +323,19 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			delete(state.Claimed, issueID)
 			if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
 				log.Error("failed to delete retry entry for parked issue",
+					slog.Any("error", err),
+				)
+			}
+			return
+		}
+
+		if faultID, held := state.FaultHolds[issueID]; held {
+			log.Info("issue held by a platform fault, releasing claim",
+				slog.String("platform_fault_id", faultID),
+			)
+			delete(state.Claimed, issueID)
+			if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+				log.Error("failed to delete retry entry for an issue a platform fault holds",
 					slog.Any("error", err),
 				)
 			}
@@ -946,6 +960,9 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 	if popped.UsageLimitNotified {
 		dispatchCtx = withUsageLimitNotified(dispatchCtx)
+	}
+	if failure, ok := storyFailureOfRetry(popped); ok {
+		dispatchCtx = withFailureRender(dispatchCtx, failure)
 	}
 	lineage := popped.StageLineage
 	if ruleName != popped.RuleName {

@@ -50,7 +50,8 @@ type Metrics interface {
 
 	// IncRetries increments the retry scheduling counter.
 	// trigger is "error", "usage_limit", "continuation", "timer",
-	// "stall", or "ci_fix" (sortie_retries_total{trigger} counter).
+	// "stall", "ci_fix", or "story_fault" (sortie_retries_total{trigger}
+	// counter).
 	IncRetries(trigger string)
 
 	// IncReconciliationActions increments the reconciliation outcome

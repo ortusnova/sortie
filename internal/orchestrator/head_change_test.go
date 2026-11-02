@@ -207,3 +207,7 @@ func (s *headChangeStore) DeleteStageHop(context.Context, string) error { return
 func (*headChangeStore) LatestRunFailureSignature(context.Context, string) (string, error) {
 	return "", nil
 }
+
+func (*headChangeStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}

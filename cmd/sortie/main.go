@@ -446,6 +446,13 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		orchestrator.PopulateParked(state, parkedRows, br.logger)
 	}
 
+	platformFaultRows, err := store.LoadOpenPlatformFaults(ctx)
+	if err != nil {
+		br.logger.Warn("failed to load platform faults, starting with none", slog.Any("error", err))
+	} else {
+		orchestrator.PopulatePlatformFaults(state, platformFaultRows, br.logger)
+	}
+
 	stageHopRows, err := store.ListStageHops(ctx)
 	if err != nil {
 		br.logger.Warn("failed to load stage hop records, starting with none", slog.Any("error", err))
@@ -1078,6 +1085,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			EscalateFn:             server.EscalateFunc(o.EscalateFunc()),
 			AnswerFn:               server.AnswerFunc(o.AnswerFunc()),
 			DispatchPauseFn:        server.DispatchPauseFunc(o.DispatchPauseFunc()),
+			PlatformFaultDoneFn:    server.PlatformFaultDoneFunc(o.PlatformFaultDoneFunc()),
 			PullBackFn:             server.PlanControlFunc(o.PullBackFunc()),
 			PlanCancelFn:           server.PlanControlFunc(o.PlanCancelFunc()),
 			BrokerReportFn:         server.BrokerReportFunc(o.BrokerReportFunc()),

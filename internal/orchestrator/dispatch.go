@@ -137,6 +137,11 @@ func ShouldDispatch(issue domain.Issue, state *State, activeStates, terminalStat
 		return false
 	}
 
+	// Issues an open platform fault holds wait for its check to pass.
+	if _, held := state.FaultHolds[issue.ID]; held {
+		return false
+	}
+
 	// Any unsatisfied blocker blocks dispatch.
 	if isBlockedFor(judgeOf(state), issue, terminalSet) {
 		return false
@@ -193,6 +198,11 @@ func ShouldDispatchWithSets(issue domain.Issue, state *State, activeSet, termina
 	// Issues a plan pull-back or cancel moved out are held until the
 	// tracker confirms it.
 	if _, blocked := state.DispatchBlocks[issue.ID]; blocked {
+		return false
+	}
+
+	// Issues an open platform fault holds wait for its check to pass.
+	if _, held := state.FaultHolds[issue.ID]; held {
 		return false
 	}
 
@@ -368,6 +378,11 @@ func passesEligibilityGates(issue domain.Issue, state *State, activeSet, termina
 		return false
 	}
 	if _, blocked := state.DispatchBlocks[issue.ID]; blocked {
+		return false
+	}
+
+	// Issues an open platform fault holds wait for its check to pass.
+	if _, held := state.FaultHolds[issue.ID]; held {
 		return false
 	}
 
@@ -599,6 +614,10 @@ type ScheduleRetryParams struct {
 	// the new [RetryEntry].
 	UsageLimitNotified bool
 
+	// Failure is the failure a story-fault retry hands to its session.
+	// Propagated verbatim into the new [RetryEntry].
+	Failure *StoryFailure
+
 	// AgentKind is the adapter kind of the dispatch. Propagated verbatim
 	// into the new [RetryEntry].
 	AgentKind string
@@ -704,6 +723,7 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		Trigger:             params.Trigger,
 		OriginTrigger:       originTrigger,
 		UsageLimitNotified:  params.UsageLimitNotified,
+		Failure:             params.Failure,
 		RuleName:            params.RuleName,
 		StageLineage:        params.StageLineage,
 		RuleSettingsApplied: params.RuleSettingsApplied,
