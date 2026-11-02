@@ -44,7 +44,8 @@ func TestPlanReviewGate(t *testing.T) {
 	}{
 		{"criteria story after the criteria check", "check", []string{"sortie-review:criteria"}, true},
 		{"criteria story after the implementing run", "implement", []string{"sortie-review:criteria"}, false},
-		{"human story", "check", []string{"sortie-review:human"}, false},
+		{"human story after the criteria check", "check", []string{"sortie-review:human"}, true},
+		{"human story after the implementing run", "implement", []string{"sortie-review:human"}, false},
 		{"self-review is not the gate", "implement", []string{"sortie-review:criteria", "self-reviewed"}, false},
 		{"no gate label", "check", nil, false},
 	}
@@ -63,12 +64,12 @@ func TestPlanReviewGate(t *testing.T) {
 	}
 }
 
-// Auto-merge leaves a human story alone even when its pull request is
-// clean, approved, and green.
+// Auto-merge leaves a human story alone when its chain ends in no criteria
+// check, even when its pull request is clean, approved, and green.
 func TestReconcileAutoMerge_ReviewGateKeepsHumanStories(t *testing.T) {
 	t.Parallel()
 	state := stateWithAutoMergePending(t, "AM-HUMAN", 42)
-	state.PendingReactions[ReactionKey("AM-HUMAN", ReactionKindAutoMerge)].RuleName = "check"
+	state.PendingReactions[ReactionKey("AM-HUMAN", ReactionKindAutoMerge)].RuleName = "implement"
 	merged := false
 	scm := &controlledSCMAdapter{
 		getMergeabilityFn: func(context.Context, int, string, string) (domain.PRMergeStatus, error) {

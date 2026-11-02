@@ -1324,9 +1324,9 @@ Each reset logs `stage hop count reset` with the `trigger`. Moving a stage label
 
 Under plan control, plan sync keeps one review label on each story: `sortie-review:human` or `sortie-review:criteria`. Dispatch rules route on it with `match.labels`.
 
-- **`sortie-review:human`.** A person reviews and merges the pull request in the forge. Sortie's auto-merge never merges such a story.
+- **`sortie-review:human`.** A person reviews and merges the pull request in the forge, unless the workflow routes the story through a criteria check too. Sortie's auto-merge merges such a story only after a run of a `gate: criteria` rule, so a human story whose chain ends in no such rule is never merged by Sortie.
 - **`sortie-review:criteria`.** The story's chain must end in a rule with `gate: criteria`. Startup and reload refuse a workflow in which a rule that matches `sortie-review:criteria` leads to no such rule. A stage hop starts a fresh run and a new agent session, so the check never shares a session with the run that implemented the story. The self-review of an implementing run never counts.
-  - A check passes when its run exits normally. Only then may auto-merge merge the pull request: under plan control it merges only a story that carries `sortie-review:criteria`, after a run of a `gate: criteria` rule.
+  - A check passes when its run exits normally. Only then may auto-merge merge the pull request: under plan control it merges only a story that carries `sortie-review:criteria` or `sortie-review:human`, after a run of a `gate: criteria` rule.
   - A check fails when its run ends `blocked` or `needs-human-review`. Sortie then seeds no reaction for the pull request, and comments on the story with the check's last message. With `on_fail: <rule>` it adds that rule's stage label, removes the check's, and moves the story back to `tracker.release_state`, so the next poll dispatches the rework stage. With `on_fail: escalate` it routes `session.escalated` with kind `criteria_failed`.
 - Auto-merge still needs the forge's own approval. A repository whose branch protection requires an approving review cannot auto-merge criteria stories. Sortie warns once per story when such a story waits on `REVIEW_REQUIRED`, and those repositories should use `review: human`.
 
