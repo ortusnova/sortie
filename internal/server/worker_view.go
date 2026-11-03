@@ -202,10 +202,19 @@ func (s *Server) waitsOf(resp *stateResponse, hostName string) []waitResponse {
 		case orchestrator.SkipAgentSlotsFull:
 			w.Worker = hostName
 		case orchestrator.SkipSSHHostsFull:
+		case orchestrator.SkipNoWorker:
+			if h.Hold.Worker != nil {
+				w = workerWait(h.IssueIdentifier, h.Hold.Worker, h.Hold.HeldSince, workersOf(resp))
+			}
 		default:
 			continue
 		}
 		waits = append(waits, w)
+	}
+	for _, r := range resp.Retrying {
+		if r.WorkerWait != nil && r.WorkerWaitSince != nil {
+			waits = append(waits, workerWait(r.IssueIdentifier, r.WorkerWait, *r.WorkerWaitSince, workersOf(resp)))
+		}
 	}
 	if resp.Workers != nil {
 		for _, q := range resp.Workers.Queue {
@@ -229,6 +238,20 @@ func (s *Server) waitsOf(resp *stateResponse, hostName string) []waitResponse {
 		return waits[a].IssueIdentifier < waits[b].IssueIdentifier
 	})
 	return waits
+}
+
+// workerWait says why a job no worker can take waits, as [queueWait]
+// says it of a queued job: Sortie dispatches it only once a worker can.
+func workerWait(identifier string, wait *workerWaitResponse, since time.Time, workers []worker.Worker) waitResponse {
+	return queueWait(worker.Queued{Job: worker.Job{ID: identifier, Issue: worker.Issue{Identifier: identifier},
+		Requires: worker.Requires{Capabilities: wait.Capabilities}}, QueuedAt: since, Waiting: wait.Waiting}, workers)
+}
+
+func workersOf(resp *stateResponse) []worker.Worker {
+	if resp.Workers == nil {
+		return nil
+	}
+	return resp.Workers.Workers
 }
 
 // queueWait says why a queued job waits: for a capability no worker

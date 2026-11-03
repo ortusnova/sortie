@@ -485,6 +485,15 @@ type RetryEntry struct {
 	// paused. Runtime-only: never persisted, never on ScheduleRetryParams.
 	pausedSinceMS int64
 
+	// WorkerWait is why no worker could take the retry's remote job when
+	// HandleRetryTimer last re-armed it for that; nil otherwise.
+	// Runtime-only.
+	WorkerWait *WorkerHold
+
+	// WorkerWaitSince is when the retry's wait for a worker began; zero
+	// while WorkerWait is nil. Runtime-only.
+	WorkerWaitSince time.Time
+
 	// holdRearmed is true when HandleRetryTimer re-armed this entry because a
 	// spend ceiling or a usage-limit hold held it, so a later slot or host
 	// shortage keeps Attempt. Runtime-only.
@@ -1822,7 +1831,8 @@ type SnapshotSlotHold struct {
 
 // SnapshotHold is a read-only view of the hold the latest dispatch pass gave
 // one candidate. Blockers is nil unless Reason is [SkipBlockedBy], Slot is nil
-// unless it is [SkipAgentSlotsFull], ResetsAt is zero unless it is a spend
+// unless it is [SkipAgentSlotsFull], Worker is nil unless it is
+// [SkipNoWorker], ResetsAt is zero unless it is a spend
 // reason or [SkipUsageLimit], and AgentKind, ModelOnly, and Model are set for
 // [SkipUsageLimit] only.
 type SnapshotHold struct {
@@ -1830,6 +1840,7 @@ type SnapshotHold struct {
 	Since     time.Time         `json:"held_since"`
 	Blockers  []SnapshotBlocker `json:"blockers"`
 	Slot      *SnapshotSlotHold `json:"slot"`
+	Worker    *WorkerHold       `json:"worker,omitempty"`
 	ResetsAt  time.Time         `json:"resets_at"`
 	AgentKind string            `json:"agent_kind,omitempty"`
 	ModelOnly bool              `json:"model_only,omitempty"`
@@ -1998,6 +2009,11 @@ type SnapshotRetryEntry struct {
 	StagePosition     *SnapshotStagePosition `json:"stage_position"`
 	Paused            bool                   `json:"paused"`
 	Environment       *SnapshotEnvironment   `json:"environment,omitempty"`
+
+	// WorkerWait is why no worker could take the retry's remote job when
+	// it was last re-armed for that, since WorkerWaitSince; nil otherwise.
+	WorkerWait      *WorkerHold `json:"worker_wait,omitempty"`
+	WorkerWaitSince time.Time   `json:"worker_wait_since,omitzero"`
 }
 
 // SnapshotParkedEntry is a read-only view of one parked issue, produced by
@@ -2490,6 +2506,8 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			StagePosition:     stagePosition(state, entry.IssueID, entry.RuleName, entry.StageLineage.PreviousRule),
 			Paused:            entry.pausedSinceMS != 0,
 			Environment:       snapshotEnvironment(state, instance, entry.Identifier),
+			WorkerWait:        cloneWorkerHold(entry.WorkerWait),
+			WorkerWaitSince:   entry.WorkerWaitSince,
 		})
 	}
 

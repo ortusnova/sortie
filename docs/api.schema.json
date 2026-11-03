@@ -1490,6 +1490,7 @@
           "enum": [
             "agent_slots_full",
             "ssh_hosts_full",
+            "no_worker",
             "blockers_not_read",
             "blockers_unresolved",
             "blockers_incomplete",
@@ -1529,6 +1530,9 @@
               "type": "null"
             }
           ]
+        },
+        "worker": {
+          "$ref": "#/$defs/WorkerWaitResponse"
         }
       },
       "required": [
@@ -3486,6 +3490,13 @@
           "type": "string"
         },
         "trigger": {
+          "type": "string"
+        },
+        "worker_wait": {
+          "$ref": "#/$defs/WorkerWaitResponse"
+        },
+        "worker_wait_since": {
+          "format": "date-time",
           "type": "string"
         }
       },
@@ -6707,6 +6718,41 @@
         "declaration",
         "last_check_in",
         "available"
+      ],
+      "type": "object"
+    },
+    "WorkerWaitResponse": {
+      "properties": {
+        "capabilities": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "capabilities",
+        "waiting"
       ],
       "type": "object"
     },

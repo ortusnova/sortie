@@ -1893,6 +1893,7 @@ API design notes:
   - `hold.slot` is non-null exactly for `agent_slots_full`: `scope` is `global` or `state`, `state` is present exactly for `state` and is the candidate's state as the pass read it, `used` is the sessions running against the limit, and `limit` is the limit.
   - `hold.resets_at` is non-null exactly for the spend reasons and `usage_limit`, in UTC: the reset instant of the window or the usage limit that holds.
   - `hold.agent_kind`, `hold.model_only`, and `hold.model` are served for the reason `usage_limit` and omitted otherwise. `agent_kind` is the agent kind the hold stops. `model_only` is true when the hold stops that kind on one configured model alone, and omitted when it stops every model of the kind. `model` is that configured model, omitted for a kind-wide hold and for the runtime's default model.
+  - `hold.worker` is served for the reason `no_worker` and omitted otherwise: `capabilities`, what the issue's remote job requires, and `waiting`, per checked-in worker what it lacks. A `no_worker` candidate takes no agent slot and is not running, so a drain does not wait for it; a retry that finds no worker for its job is re-armed at its attempt every poll interval and serves `worker_wait` instead.
   - `hold.reason_text` is a short operator text without a final period, and `hold.release_text` is one sentence ending with a period that says what releases the hold. On a held row `status_text` equals `reason_text`.
   - A candidate's reason is the first row of this table that matches it on the latest pass. A spend window or a usage-limit hold that holds ranks above the capacity rows, because a freed slot would not dispatch the candidate while the hold stands. A spend hold ranks above a usage-limit hold.
 
@@ -1910,9 +1911,10 @@ API design notes:
     | 9 | spend | A spend window holds | `daily_spend_ceiling`, `weekly_spend_ceiling`, `monthly_spend_ceiling` | `resets_at` |
     | 10 | stage hop | The hop confirmation read did not confirm and the hop record stands | `stage_hop_unconfirmed` | None |
     | 11 | usage limit | A usage-limit hold covers the candidate's agent kind, or that kind on the candidate's configured model | `usage_limit` | `resets_at`, `agent_kind`, `model_only`, `model` |
-    | 12 | dispatch | The agent kind, prompt template, or attempt settings are refused | None | |
-    | 13 | host acquisition | No SSH host accepts the issue | `ssh_hosts_full` | None; this and every later eligible candidate |
-    | 14 | park release | The issue's park was released by a person and the read of its comments failed | `park_comments_unread` | None |
+    | 12 | remote worker | Under `environment.kind: remote`, no checked-in worker can take the candidate's job now, after the queued jobs take what they fit | `no_worker` | `worker` |
+    | 13 | dispatch | The agent kind, prompt template, or attempt settings are refused | None | |
+    | 14 | host acquisition | No SSH host accepts the issue | `ssh_hosts_full` | None; this and every later eligible candidate |
+    | 15 | park release | The issue's park was released by a person and the read of its comments failed | `park_comments_unread` | None |
 
   - A capacity check that stops the loop classifies the candidates it does not evaluate by the eligibility gates alone and reads no blocker for them, so while every slot or host is taken a candidate that also has an open blocker shows the capacity reason until a pass reaches it with capacity free. Under a spend hold it shows the spend reason instead, and under a usage-limit hold on its agent kind it shows `usage_limit`. A candidate refused at dispatch for its agent kind, prompt template, or attempt settings is held for nothing and is on no row list. A hop confirmation read that shows a terminal or non-active state resets the hop record and records no hold.
   - The list is sorted by `issue_identifier`, then `issue_id`, and `counts.held` equals its length. A held issue is never an `active` entry and adds nothing to `counts.attention` or to `attention`. The spend ceiling keeps its instance-level attention items, one per holding window. The per-issue response does not read `held`, so an issue only that list holds is answered from the other row lists and run history alone, and a between-stages issue's `between_stages` object carries `hold`.

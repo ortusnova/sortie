@@ -29,7 +29,7 @@ type SlotHold struct {
 
 // HeldEntry is the hold the latest dispatch pass gave one candidate. Blockers
 // is set for [SkipBlockedBy] only, Slot for [SkipAgentSlotsFull] only,
-// ResetsAt for the spend reasons and [SkipUsageLimit] only, and AgentKind,
+// Worker for [SkipNoWorker] only, ResetsAt for the spend reasons and [SkipUsageLimit] only, and AgentKind,
 // ModelOnly, and Model for [SkipUsageLimit] only.
 type HeldEntry struct {
 	Identifier string
@@ -39,10 +39,26 @@ type HeldEntry struct {
 	Reason     SkipReason
 	Blockers   []HeldBlocker
 	Slot       *SlotHold
+	Worker     *WorkerHold
 	ResetsAt   time.Time
 	AgentKind  string
 	ModelOnly  bool
 	Model      string
+}
+
+// WorkerHold is why no worker can take a remote job now: the
+// capabilities the job requires, and per checked-in worker what it
+// lacks, as the matcher's queue says it.
+type WorkerHold struct {
+	Capabilities []string `json:"capabilities"`
+	Waiting      []string `json:"waiting"`
+}
+
+func cloneWorkerHold(w *WorkerHold) *WorkerHold {
+	if w == nil {
+		return nil
+	}
+	return &WorkerHold{Capabilities: slices.Clone(w.Capabilities), Waiting: slices.Clone(w.Waiting)}
 }
 
 // HeldBlocker is a blocker that holds a candidate, with the reason the
@@ -205,7 +221,8 @@ func snapshotHeld(state *State) []SnapshotHeldEntry {
 }
 
 // snapshotHold returns the view of one hold record. Blockers is non-nil
-// exactly for [SkipBlockedBy] and Slot exactly for [SkipAgentSlotsFull].
+// exactly for [SkipBlockedBy], Slot exactly for [SkipAgentSlotsFull], and
+// Worker exactly for [SkipNoWorker].
 func snapshotHold(e *HeldEntry) SnapshotHold {
 	hold := SnapshotHold{
 		Reason:    e.Reason,
@@ -234,6 +251,9 @@ func snapshotHold(e *HeldEntry) SnapshotHold {
 			Used:  e.Slot.Used,
 			Limit: e.Slot.Limit,
 		}
+	}
+	if e.Reason == SkipNoWorker {
+		hold.Worker = cloneWorkerHold(e.Worker)
 	}
 	return hold
 }

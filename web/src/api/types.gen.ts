@@ -334,10 +334,11 @@ export interface HoldBlockerResponse {
 }
 
 export interface HoldResponse {
-  reason: "agent_slots_full" | "ssh_hosts_full" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread";
+  reason: "agent_slots_full" | "ssh_hosts_full" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread";
   held_since: string;
   blockers: HoldBlockerResponse[] | null;
   slot: HoldSlotResponse | null;
+  worker?: WorkerWaitResponse;
   resets_at: string | null;
   agent_kind?: string;
   model_only?: boolean;
@@ -729,6 +730,8 @@ export interface RetryEntryResponse {
   stage_lineage: StageLineageResponse | null;
   stage_position: StagePositionResponse | null;
   paused: boolean;
+  worker_wait?: WorkerWaitResponse;
+  worker_wait_since?: string;
   status_text: string;
   status_text_full: string;
 }
@@ -1367,6 +1370,11 @@ export interface Worker {
   declaration: Declaration;
   last_check_in: string;
   available: Capacity;
+}
+
+export interface WorkerWaitResponse {
+  capabilities: string[] | null;
+  waiting: string[] | null;
 }
 
 export interface WorkflowHealthResponse {
