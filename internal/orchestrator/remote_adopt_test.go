@@ -26,6 +26,7 @@ func TestRemoteRunEntryRoundTrip(t *testing.T) {
 		},
 		Continuation: ContinuationTarget{PRNumber: 12, Owner: "org", Repo: "app", Attempt: 1},
 		SessionID:    "ses-1", TurnCount: 3, AgentInputTokens: 1200, AgentOutputTokens: 300, AgentTotalTokens: 1500,
+		LastAgentTimestamp: time.Date(2026, 11, 3, 8, 40, 0, 0, time.UTC),
 	}
 	raw, err := json.Marshal(snapshotRemoteEntry(entry))
 	if err != nil {
@@ -54,7 +55,8 @@ func TestRemoteRunEntryRoundTrip(t *testing.T) {
 	}
 	if got.DispatchID != "D1" || *got.RetryAttempt != 2 || restored.RuleName != "build" || restored.StageLineage.ChainID != "C1" ||
 		restored.Continuation.PRNumber != 12 || restored.SessionID != "ses-1" || restored.TurnCount != 3 ||
-		restored.AgentInputTokens != 1200 || restored.AgentTotalTokens != 1500 || restored.LastReportedInputTokens != 0 {
+		restored.AgentInputTokens != 1200 || restored.AgentTotalTokens != 1500 || restored.LastReportedInputTokens != 0 ||
+		!restored.LastAgentTimestamp.Equal(entry.LastAgentTimestamp) {
 		t.Errorf("restored entry %+v", restored)
 	}
 	if _, err := decodeRemoteRunEntry(""); err == nil {
