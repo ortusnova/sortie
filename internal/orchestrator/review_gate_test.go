@@ -54,14 +54,14 @@ func TestPlanReviewGate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			gate := planReviewGate(gateConfig(), &labelTracker{labels: tt.labels})
+			gate := planReviewGate(gateConfig(), &labelTracker{labels: tt.labels}, allMet{})
 			got, why, err := gate(context.Background(), &PendingReaction{IssueID: "i", RuleName: tt.rule})
 			if err != nil || got != tt.want {
 				t.Errorf("gate = %v (%s), %v, want %v", got, why, err, tt.want)
 			}
 		})
 	}
-	if planReviewGate(config.ServiceConfig{}, &labelTracker{}) != nil {
+	if planReviewGate(config.ServiceConfig{}, &labelTracker{}, nil) != nil {
 		t.Error("gate set with plan control off, want nil")
 	}
 }
@@ -87,7 +87,7 @@ func TestReconcileAutoMerge_ReviewGateKeepsHumanStories(t *testing.T) {
 		},
 	}
 	params := autoMergeParams(&reviewReconcileStore{}, scm, &reviewTrackerStub{})
-	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:human"}})
+	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:human"}}, allMet{})
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	state.TrackerOpsWg.Wait()
@@ -102,7 +102,7 @@ func TestReconcileAutoMerge_ReviewGateKeepsHumanStories(t *testing.T) {
 	// A criteria story that passed its check is merged.
 	state = stateWithAutoMergePending(t, "AM-CRIT", 43)
 	state.PendingReactions[ReactionKey("AM-CRIT", ReactionKindAutoMerge)].RuleName = "check"
-	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:criteria"}})
+	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:criteria"}}, allMet{})
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	state.TrackerOpsWg.Wait()
 	if !merged {
@@ -116,7 +116,7 @@ func TestReconcileAutoMerge_ReviewGateReadFailureRetries(t *testing.T) {
 	state := stateWithAutoMergePending(t, "AM-ERR", 44)
 	state.PendingReactions[ReactionKey("AM-ERR", ReactionKindAutoMerge)].RuleName = "check"
 	params := autoMergeParams(&reviewReconcileStore{}, &controlledSCMAdapter{}, &reviewTrackerStub{})
-	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{err: errors.New("huly down")})
+	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{err: errors.New("huly down")}, nil)
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	if _, ok := state.PendingReactions[ReactionKey("AM-ERR", ReactionKindAutoMerge)]; !ok {
 		t.Error("entry dropped after a failed label read, want it kept")
@@ -216,7 +216,7 @@ func TestReconcileAutoMerge_WarnsOnceWhenTheForgeRequiresReview(t *testing.T) {
 		},
 	}
 	params := autoMergeParams(&reviewReconcileStore{}, scm, &reviewTrackerStub{})
-	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:criteria"}})
+	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{"sortie-review:criteria"}}, allMet{})
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	if _, ok := state.CriteriaReviewWarned["AM-REQ"]; !ok {
 		t.Error("no warning recorded for a criteria story that needs a forge review")

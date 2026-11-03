@@ -366,6 +366,10 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 	// evidence policy changes this run's persisted status. Evidence is
 	// consulted only where the handoff conditions already hold, and only
 	// after the blocked and terminal dispositions are ruled out.
+	// A criteria review that found a criterion not met stops blocked here,
+	// so every disposition below treats it as the refusal it is.
+	applyCriteriaVerdict(ctx, params, entry, &workerResult, log)
+
 	var issueIsActive bool
 	var blockedSoftStop bool
 	var drivesIssue bool

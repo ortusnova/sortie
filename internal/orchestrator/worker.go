@@ -244,6 +244,11 @@ type WorkerResult struct {
 	// repository, or its export pushed nothing.
 	ExportedCommit string
 
+	// CriteriaFile is the .sortie/criteria.json the run left (see
+	// [CriteriaFile]); nil when it left none. Set only on
+	// [WorkerExitNormal].
+	CriteriaFile []byte
+
 	// Worker is the ID of the worker that held the run's lease under
 	// environment.kind remote. Empty when no worker took the run, and
 	// under any other kind.
@@ -1139,6 +1144,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		PreRunFunc: func(wsPath string) {
 			workspace.CleanupStatusFile(wsPath, logger)
 			workspace.CleanupEvidenceFile(wsPath, logger)
+			clearCriteriaFile(wsPath, logger)
 		},
 	})
 	cancelledAtEnding = ctx.Err() != nil
@@ -2051,6 +2057,19 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		}
 	}
 
+	// A remote run's agent wrote its status in the worker's machine, which
+	// the export brought back into this workspace with the issue branch:
+	// the turns above could not see it.
+	if _, remote := repo.(*remoteRepository); remote && pendingSoftStopReason == "" {
+		if statusFile := workspace.ReadStatusFile(wsResult.Path, logger); statusFile.Signal.IsRecognized() {
+			logger.Info("agent signaled status in the worker's machine",
+				slog.String("status", string(statusFile.Signal)))
+			pendingSoftStopReason = string(statusFile.Signal)
+			pendingSoftStopStatement = statusFile.Statement
+		}
+	}
+	criteriaFile := readCriteriaFile(wsResult.Path, logger)
+
 	logger.Info("worker exiting",
 		slog.Any("exit_kind", WorkerExitNormal),
 		slog.Int("turns_completed", turnsCompleted),
@@ -2087,6 +2106,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		UnaccountedTurns:             localUnaccounted,
 		HandedOffComments:            presentedComments,
 		ExportedCommit:               exportedCommit,
+		CriteriaFile:                 criteriaFile,
 	})
 }
 
