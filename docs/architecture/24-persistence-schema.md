@@ -504,7 +504,7 @@ One row per request the supervisor token makes to a control route, written by th
 | `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
 | `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
 
-Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart.
+Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked.
 
 **`standing_holds`**: leases on issues that are not running (migration 1010)
 
@@ -521,6 +521,23 @@ Every write of a fault replaces its holds in the same transaction, and the write
 | `expired_at` | TEXT NOT NULL    | When the lease expired, same format; `''` while it is live           |
 
 One row per held issue, written by each hold, renewal, and expiry, and deleted by a release. Startup loads the rows before the event loop starts, and the first poll tick expires a lease whose `held_until` passed while Sortie was down.
+
+**`supervisor_sessions`**: the supervisor's sessions and their spend (migration 1012)
+
+| Column           | Type                | Notes |
+| ---------------- | ------------------- | ----- |
+| `id`             | INTEGER PRIMARY KEY | Auto-increment |
+| `trigger_kind`   | TEXT NOT NULL       | The kind of the session's first trigger: `park`, `unclassified_failure`, `stalled_reaction`, `idle_slot`, or `sweep` |
+| `trigger_issue`  | TEXT NOT NULL       | The identifier the first trigger names; empty for none |
+| `trigger_detail` | TEXT NOT NULL       | The first trigger's detail, masked |
+| `triggers`       | INTEGER NOT NULL    | How many triggers started the session |
+| `started_at`     | TEXT NOT NULL       | UTC, at a fixed nanosecond width so the text order is the time order; indexed |
+| `ended_at`       | TEXT NOT NULL       | UTC in the same layout; empty while the session runs or when Sortie stopped before recording its end |
+| `outcome`        | TEXT NOT NULL       | `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled`; empty with `ended_at` |
+| `error`          | TEXT NOT NULL       | Why the session ended other than completed, masked; empty otherwise |
+| `tokens`         | INTEGER NOT NULL    | Tokens less cache reads the session spent |
+
+The event loop writes a row when a session starts, and the session's goroutine records its end. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the newest row, which `GET /api/v1/state` serves as `last_session` until a session ends. Rows are never deleted.
 
 ### 19.3 Migration Strategy
 

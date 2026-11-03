@@ -55,6 +55,10 @@ type stateResponse struct {
 	// cause, the stories it holds, and the person action that clears it.
 	PlatformFaults []platformFaultResponse `json:"platform_faults"`
 
+	// Supervisor is the supervisor session's status, its last trigger, and
+	// its budget use; null while the workflow configures no supervisor.
+	Supervisor *supervisorResponse `json:"supervisor"`
+
 	Config *configResponse `json:"config,omitempty"`
 
 	Health *stateHealthResponse `json:"health,omitempty"`
@@ -1410,6 +1414,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 	resp.SpendCeiling = spendCeilingOf(snap.SpendCeilings)
 	resp.DispatchPaused = toDispatchPausedResponse(snap.DispatchPause)
 	resp.PlatformFaults = toPlatformFaultResponses(snap.PlatformFaults)
+	resp.Supervisor = toSupervisorResponse(snap.Supervisor)
 
 	return resp
 }

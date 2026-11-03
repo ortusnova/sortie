@@ -178,6 +178,10 @@ func parkIssue(state *State, params parkIssueParams) {
 	resetStageHop(ctx, state, params.Store, params.IssueID, stageResetParked, log)
 
 	params.Metrics.IncIssueParks(params.Reason)
+	noteSupervisorTrigger(state, SupervisorTrigger{
+		Kind: SupervisorTriggerPark, IssueID: params.IssueID, Identifier: params.Identifier,
+		Detail: "parked: " + params.Reason, At: parkedAt,
+	})
 
 	attrs := []slog.Attr{
 		slog.String("reason", params.Reason),

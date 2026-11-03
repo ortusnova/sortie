@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/orchestrator"
 	"github.com/sortie-ai/sortie/internal/parkanswer"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -87,6 +88,28 @@ func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id string) orchestr
 	return f.result(id)
 }
 
+func (f *fakeSupervisor) AskPerson(_ context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult {
+	f.called("ask_person " + q.Action)
+	if len(q.Stories) == 0 || q.Checked == "" {
+		return orchestrator.SupervisorQuestionResult{SupervisorResult: orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorPrecondition, Code: "invalid_request", Message: "a question names its stories and what was checked",
+		}}
+	}
+	r := f.result(q.Stories[0])
+	if r.Status != orchestrator.SupervisorDone {
+		return orchestrator.SupervisorQuestionResult{SupervisorResult: r}
+	}
+	return orchestrator.SupervisorQuestionResult{
+		SupervisorResult: r,
+		Fault: orchestrator.SnapshotPlatformFault{
+			ID: "pf-q1", Class: orchestrator.PlatformFaultClassSupervisorQuestion, Step: "supervisor",
+			Cause: q.Cause, Detail: q.Checked,
+			Action: &failcause.PersonAction{Action: q.Action, Where: q.Where},
+			Holds:  []orchestrator.PlatformFaultHold{{IssueID: "id-7", Identifier: "ONS-7"}},
+		},
+	}
+}
+
 type supervisorHarness struct {
 	ts       *httptest.Server
 	store    *persistence.Store
@@ -144,6 +167,10 @@ func newSupervisorHarness(t *testing.T, sessionCap int) *supervisorHarness {
 		},
 		PullBackFn:   planControl,
 		PlanCancelFn: planControl,
+		SupervisorPauseFn: func(context.Context, bool, string, string) orchestrator.SupervisorPauseResult {
+			reached("supervisor_pause")
+			return orchestrator.SupervisorPauseResult{Status: orchestrator.SupervisorPauseDone}
+		},
 	})
 	h.ts = httptest.NewServer(srv.Mux())
 	t.Cleanup(h.ts.Close)
@@ -225,6 +252,8 @@ func TestSupervisor_EveryOtherOperatorRouteIsForbidden(t *testing.T) {
 		{http.MethodPost, "/api/v1/refresh"},
 		{http.MethodPost, "/api/v1/dispatch/pause"},
 		{http.MethodPost, "/api/v1/dispatch/resume"},
+		{http.MethodPost, "/api/v1/supervisor/pause"},
+		{http.MethodPost, "/api/v1/supervisor/resume"},
 		{http.MethodPost, "/api/v1/retries/ONS-7/run"},
 		{http.MethodPost, "/api/v1/attention/0123456789abcdef0123456789abcdef/acknowledge"},
 		{http.MethodPost, "/api/v1/reactions/ONS-7/ci/check"},
@@ -326,6 +355,7 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/ONS-7/merge", `{}`, "merge", "merge"},
 		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice"}`, "file_issue", "file_issue Flaky seed"},
 		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof"},
+		{"/api/v1/supervisor/questions", `{"action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
 		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
 		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},
 	} {
@@ -358,8 +388,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].By != "supervisor" || grants[0].Cap != 4 {
 		t.Errorf("grants = %+v, want one by the supervisor capped at 4", grants)
 	}
-	if n := len(h.supervisorActions(t)); n != 22 {
-		t.Errorf("records = %d, want 22: a rejection and an action per route", n)
+	if n := len(h.supervisorActions(t)); n != 24 {
+		t.Errorf("records = %d, want 24: a rejection and an action per route", n)
 	}
 
 	// The control token reaches the same routes, needs no evidence and
@@ -370,8 +400,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/merge", tokenLive1, `{}`); status != http.StatusForbidden {
 		t.Errorf("merge with a session token = %d, want 403", status)
 	}
-	if n := len(h.supervisorActions(t)); n != 22 {
-		t.Errorf("records after operator calls = %d, want still 22", n)
+	if n := len(h.supervisorActions(t)); n != 24 {
+		t.Errorf("records after operator calls = %d, want still 24", n)
 	}
 }
 

@@ -137,6 +137,15 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			}},
 		},
 	},
+	"supervisor": {
+		Fields: []FieldDef{
+			{Name: "agent", Type: FieldString},
+			{Name: "prompt", Type: FieldString},
+			{Name: "sweep_interval_ms", Type: FieldInt},
+			{Name: "max_sessions_per_day", Type: FieldInt},
+			{Name: "max_tokens_per_day", Type: FieldInt},
+		},
+	},
 	"environment": {
 		Fields: []FieldDef{
 			{Name: "kind", Type: FieldString},

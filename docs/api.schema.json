@@ -6027,6 +6027,16 @@
             }
           ]
         },
+        "supervisor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "supervisor_actions": {
           "anyOf": [
             {
@@ -6072,6 +6082,7 @@
         "rate_limits",
         "dispatch_paused",
         "platform_faults",
+        "supervisor",
         "waits",
         "pulls",
         "supervisor_actions"
@@ -6261,6 +6272,158 @@
       ],
       "type": "object"
     },
+    "SupervisorBudgetResponse": {
+      "properties": {
+        "day": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "resets_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "sessions_limit": {
+          "type": "integer"
+        },
+        "sessions_used": {
+          "type": "integer"
+        },
+        "tokens_limit": {
+          "type": "integer"
+        },
+        "tokens_used": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "day",
+        "resets_at",
+        "sessions_used",
+        "sessions_limit",
+        "tokens_used",
+        "tokens_limit"
+      ],
+      "type": "object"
+    },
+    "SupervisorQuestionResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "platform_fault": {
+          "$ref": "#/$defs/PlatformFaultResponse"
+        }
+      },
+      "required": [
+        "action",
+        "existing",
+        "platform_fault"
+      ],
+      "type": "object"
+    },
+    "SupervisorResponse": {
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/SupervisorBudgetResponse"
+        },
+        "last_session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorSessionResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorTriggerResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_sweep_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paused": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DispatchPausedResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending_triggers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorTriggerResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "running": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorSessionResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "agent",
+        "unavailable",
+        "paused",
+        "running",
+        "last_session",
+        "last_trigger",
+        "pending_triggers",
+        "budget",
+        "next_sweep_at"
+      ],
+      "type": "object"
+    },
     "SupervisorResultResponse": {
       "properties": {
         "action": {
@@ -6299,6 +6462,105 @@
         "issue_id",
         "pull_request",
         "merge_commit"
+      ],
+      "type": "object"
+    },
+    "SupervisorSessionResponse": {
+      "properties": {
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "tokens": {
+          "type": "integer"
+        },
+        "trigger_count": {
+          "type": "integer"
+        },
+        "triggers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorTriggerResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "started_at",
+        "ended_at",
+        "outcome",
+        "error",
+        "tokens",
+        "trigger_count",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "SupervisorTriggerResponse": {
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "issue_identifier",
+        "detail",
+        "at"
       ],
       "type": "object"
     },

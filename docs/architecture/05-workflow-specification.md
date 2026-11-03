@@ -48,6 +48,7 @@ Top-level keys:
 - `dispatch`
 - `notifications`
 - `environment`
+- `supervisor`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -764,6 +765,19 @@ Fields:
   - `repositories`: a list of `repository` blocks, each with a unique `name` (`[a-z0-9]+(-[a-z0-9]+)*`), not set together with `repository`; the optional `default_repository` names the entry an issue without a `sortie-repository:<name>` label runs in. An entry may set `dispatch: false`: it stays listed, so plan sync accepts its name, and its issues are not dispatched. Without a default, plan sync refuses a story that names no repository, naming its plan key. The orchestrator dispatches an issue only when the repository it runs in is listed and open to dispatch, so an issue whose label names an unlisted or closed repository, or that names none while no default is set, is left out of the poll: it is not claimed, moved, commented on, held, run, or counted against `max_sessions`. Two Sorties can so share one tracker project, each running the issues of its own repositories. A workspace keeps the repository it was seeded from. Under plan control a blocker in a repository the orchestrator does not dispatch (by its seeded workspace record, else by the same label rule) is judged by its tracker state alone, satisfied in `done_state` and never in `cancel_state`, because its merge record belongs to the Sortie that runs it; a blocker in a dispatched repository keeps the merge rule.
 
 The full field reference, every validation error, and the reload rules are in the [workflow reference](../workflow-reference.md#212-environment--execution-environment). Changes apply to environments created after a reload; a running VM keeps the settings it was created with. A reload that fails validation, the smolvm version check, or the repository provider check keeps the previous configuration.
+
+#### 5.3.12 `supervisor` (object, optional)
+
+The supervisor: one agent session at a time that settles what the orchestrator's rules cannot, acting only through the supervisor token's routes (Section 13.7). Absent, no supervisor runs.
+
+Fields:
+
+- `agent` (string, required): the agent kind the session runs, with the command and settings a story session of that kind takes.
+- `prompt` (path, required): the prompt template, relative to the directory of `WORKFLOW.md` when not absolute, read and parsed in strict mode at each session start.
+- `sweep_interval_ms` (positive integer, default `1800000`): the time between two sweeps.
+- `max_sessions_per_day` (positive integer, default `48`) and `max_tokens_per_day` (positive integer, default `2000000`): the daily budget, per UTC day, the tokens counted less cache reads.
+
+The section needs `server.supervisor_token`; startup fails without it. A session starts on a park, on a repeated stopped failure whose signature is in no fault class, on a pull request reaction without progress for an hour, on a poll that leaves a story slot free and dispatches nothing while stories are held, and on each sweep. Triggers that come while a session runs wait for the next one; triggers that come while the day's budget is spent are dropped. The session runs on Sortie's host in a directory beside the database, outside `agent.max_concurrent_agents`, for one turn bounded by `agent.turn_timeout_ms`, and is stopped when its tokens reach what the day's budget has left. Its prompt is the rendered template (variables `trigger`, `triggers`, `state`, `state_json`, `supervisor.token`, `supervisor.api_url`) followed by a section holding the token, the API URL, every trigger, and a state digest of the runs, retries, parks, holds, platform faults, reactions and plan blockers. The operator pauses and resumes it with `POST /api/v1/supervisor/pause` and `/resume`. A question it raises for a person is a platform fault of class `supervisor_question` (Section 8.4). Each session is stored in `supervisor_sessions` (Section 19.2). The section reloads; a running session keeps the settings it started with. The full reference is in the [workflow reference](../workflow-reference.md#213-supervisor--supervisor-session).
 
 ### 5.4 Prompt Template Contract
 
