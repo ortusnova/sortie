@@ -2158,6 +2158,8 @@ The matcher offers queued jobs in priority order, lower first and a job without 
 - a free run slot: it declares fewer `running` machines than `run_slots`.
 - at least `cpu`, `mem_gib` and `disk_gib` free.
 
+When more than one worker can take a job now, the job goes to the one with the fewest capabilities the job does not need. So a job that needs only `smolvm` goes to a worker without `nested` while that worker has room, and the worker with `nested` keeps its slots for the jobs that need it. A worker that polls is not offered a job another worker is placed to take; it takes the job when that worker cannot, because it is full, too small or gone. Among workers with as many spare capabilities, the worker that polls takes the job. A job that fewer workers have the capabilities for is placed first, ahead of its priority order: with one nested slot free, a job that needs `nested` takes it, and a job ahead of it that needs only `smolvm` waits for a worker without `nested`. The dispatch check (`no_worker`) places the queued jobs by the same rule.
+
 A running machine uses a run slot. A stopped machine uses only disk, which the worker counts in its free disk. Between check-ins, Sortie counts what it handed out. A taken job uses a run slot and its sizes. A report of a stopped machine returns all except the disk, a deleted machine returns everything, and a running machine returns nothing. An expired or withdrawn lease counts as a stopped machine. The next check-in replaces the count with the worker's declaration, so a worker declares what is free after all the machines it holds. For each queued job, `GET /api/v1/state` says why it waits, for example `worker p1: no nested virtualization`.
 
 `environment.remote` fields:
