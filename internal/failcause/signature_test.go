@@ -124,8 +124,8 @@ func (timeoutError) Temporary() bool { return true }
 
 type classedError struct{}
 
-func (classedError) Error() string        { return "git push: exit status 1" }
-func (classedError) FailureClass() string { return "git_push" }
+func (*classedError) Error() string        { return "git push: exit status 1" }
+func (*classedError) FailureClass() string { return "git_push" }
 
 func TestClassify_TransientClasses(t *testing.T) {
 	t.Parallel()
@@ -176,7 +176,7 @@ func TestClassify_OtherClasses(t *testing.T) {
 	}{
 		{"nil", nil, ClassOther},
 		{"plain", errors.New("something broke"), ClassOther},
-		{"classer", fmt.Errorf("export: %w", classedError{}), "git_push"},
+		{"classer", fmt.Errorf("export: %w", &classedError{}), "git_push"},
 		{"agent kind", &domain.AgentError{Kind: domain.ErrTurnFailed, Message: "turn failed"}, Class(domain.ErrTurnFailed)},
 		{"own deadline", &domain.AgentError{Kind: domain.ErrTurnTimeout, Message: "turn", Err: context.DeadlineExceeded}, Class(domain.ErrTurnTimeout)},
 		{"scm auth", &domain.SCMError{Kind: domain.ErrSCMAuth, Message: "token lacks scope",
