@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
@@ -25,7 +26,14 @@ const (
 	// scopeSession also admits the session token minted for the issue
 	// the request path names.
 	scopeSession
+
+	// scopeSupervisor also admits the supervisor token.
+	scopeSupervisor
 )
+
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // bearerToken returns the credential of an "Authorization: Bearer"
 // header, and false when the request carries none.
@@ -47,6 +55,8 @@ func bearerToken(r *http.Request) (string, bool) {
 //   - The control token is accepted on every wrapped route.
 //   - A session token is accepted only on a [scopeSession] route whose
 //     path names the issue it was minted for, and answered 403 elsewhere.
+//   - The supervisor token is accepted only on a [scopeSupervisor] route,
+//     and answered 403 elsewhere; either way the request is recorded.
 //   - Any other presented credential is answered 401.
 //   - A request with no credential is accepted only when no control
 //     token is configured, which startup allows only on a loopback bind.
@@ -66,8 +76,15 @@ func (s *Server) requireControl(scope controlScope, next http.HandlerFunc) http.
 		case token == "":
 			s.rejectControl(w, r, http.StatusUnauthorized, "unauthorized", "the Authorization header is not a bearer token")
 			return
-		case s.controlToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.controlToken)) == 1:
+		case s.controlToken != "" && constantTimeEqual(token, s.controlToken):
 			next(w, r)
+			return
+		case s.isSupervisorToken(token):
+			if scope != scopeSupervisor {
+				s.refuseSupervisor(w, r)
+				return
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), supervisorCtxKey{}, &supervisorNote{})))
 			return
 		}
 

@@ -59,6 +59,7 @@ type stateResponse struct {
 	Workers *worker.State `json:"workers,omitempty"`
 
 	workerView
+	supervisorView
 }
 
 type stateCounts struct {
@@ -1441,6 +1442,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	resp.Workers = s.workersState()
 	s.attachWorkerView(r.Context(), &resp, snap)
 	s.attachActivePRLoops(r, &resp, snap, words.Shape)
+	s.attachSupervisorActions(r.Context(), &resp)
 	writeJSON(w, s.logger, http.StatusOK, resp)
 
 	s.logger.Debug("request served",
