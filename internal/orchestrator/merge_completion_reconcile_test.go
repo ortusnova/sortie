@@ -235,6 +235,15 @@ func (s *mgcStoreFake) GetReactionFingerprint(_ context.Context, issueID, kind s
 	return rec.fingerprint, rec.dispatched, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *mgcStoreFake) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *mgcStoreFake) MarkReactionDispatched(_ context.Context, issueID, kind string) error {
 	s.markCalls++
 	if s.markErr != nil {

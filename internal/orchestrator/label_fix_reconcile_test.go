@@ -37,6 +37,15 @@ func (s *labelFixDispatchedFlagStore) GetReactionFingerprint(_ context.Context, 
 	return s.mark, s.dispatched, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *labelFixDispatchedFlagStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *labelFixDispatchedFlagStore) UpsertReactionFingerprint(_ context.Context, _, _, _ string) error {
 	s.upsertCalls++
 	return nil

@@ -25,6 +25,7 @@ type ReconcileStore interface {
 	AppendRunHistory(ctx context.Context, run persistence.RunHistory) (persistence.RunHistory, error)
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
+	GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error)
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
 	DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error

@@ -782,6 +782,11 @@ type PendingReaction struct {
 	// entry's watch window; zero when none has.
 	WatchRestartedAt time.Time
 
+	// SameHeadSince is when a merge-conflict pass first found the head it
+	// had dispatched for still conflicting with no run of the issue in
+	// flight; zero otherwise. Runtime-only.
+	SameHeadSince time.Time
+
 	// PullRequestURL is the pull request's web page as the latest read of
 	// it reported; empty until a read reports one.
 	PullRequestURL string
