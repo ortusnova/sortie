@@ -151,6 +151,14 @@ func (a *lineAdapter) RunTurn(ctx context.Context, session domain.Session, param
 				if s.readErr != nil {
 					return domain.TurnResult{SessionID: session.ID}, fmt.Errorf("reading the agent's output: %w", s.readErr)
 				}
+				// The standard error copy ends only with cmd.Wait, so
+				// stderr is read once the process is waited for.
+				select {
+				case <-s.exited:
+				case <-ctx.Done():
+					_ = s.cmd.Process.Kill()
+					<-s.exited
+				}
 				return domain.TurnResult{SessionID: session.ID}, fmt.Errorf("agent exited mid-turn: %s", s.stderr)
 			}
 			var line fakeAgentLine

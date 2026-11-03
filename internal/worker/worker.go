@@ -399,8 +399,8 @@ type Matcher struct {
 	pending []Job
 	leased  map[string]Job
 	ends    map[string]chan Outcome
-	// granted holds, per queued job, the channel its worker's ID
-	// arrives on when it is leased.
+	// granted holds, per submitted job until it ends, the channel its
+	// worker's ID arrives on when it is leased.
 	granted map[string]chan string
 	// steps holds the step each leased job last reported.
 	steps map[string]Step
@@ -462,7 +462,9 @@ func (m *Matcher) Submit(j Job) <-chan Outcome {
 }
 
 // Granted returns the channel the ID of the worker that leases the
-// submitted job arrives on, once; nil for a job not queued.
+// submitted job arrives on, once; nil for a job not submitted or already
+// ended. A call after the grant still returns it, with the ID waiting, so
+// a poll between Submit and Granted loses nothing.
 func (m *Matcher) Granted(jobID string) <-chan string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -665,7 +667,8 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 		m.leased[j.ID] = j
 		delete(m.steps, j.ID)
 		if ch, ok := m.granted[j.ID]; ok {
-			delete(m.granted, j.ID)
+			// Buffered for the one grant of the submission, which left
+			// the queue above; endLocked drops the channel.
 			ch <- workerID
 		}
 		w.take(j.Requires)

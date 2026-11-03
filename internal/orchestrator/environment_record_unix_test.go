@@ -103,6 +103,11 @@ func TestRunWorkerAttempt_WorkspaceOfAnotherKindIsRecreated(t *testing.T) {
 	// The workspace now records the recorder kind. Recorded as the
 	// registered stale kind instead, the next dispatch removes it there.
 	registerStaleKind()
+	// The registry outlives a test, so a repeated run (-count) starts the
+	// record of builds afresh.
+	staleKindMu.Lock()
+	staleKindParams, staleKindEnvs = nil, nil
+	staleKindMu.Unlock()
 	if err := workspacekit.WriteSortieFile(existing.Path, workspace.EnvironmentRecordFile, []byte(`{"kind":"`+staleKind+`"}`)); err != nil {
 		t.Fatalf("write environment record: %v", err)
 	}
