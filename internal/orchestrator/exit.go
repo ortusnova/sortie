@@ -59,6 +59,7 @@ type WorkerExitStore interface {
 	RecordReactionActivity(ctx context.Context, records []persistence.ReactionActivity) error
 	SaveUsageLimitHold(ctx context.Context, hold persistence.UsageLimitHold) error
 	DeleteUsageLimitHold(ctx context.Context, agentKind string, modelOnly bool, model string) error
+	ReturnReactionDispatch(ctx context.Context, issueID, kind string) error
 }
 
 // HandleWorkerExitParams holds the dependencies for [HandleWorkerExit] that
@@ -491,6 +492,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 			}
 		}
 	}
+
+	returnLostMergeConflictDispatch(ctx, params.Store, entry.ReactionKind, workerResult.IssueID, status, runError, log)
 
 	issueIdentity := issueIdentityOf(entry.Issue)
 
@@ -2092,4 +2095,27 @@ func removeControlBytes(text string) string {
 		kept.WriteByte(b)
 	}
 	return kept.String()
+}
+
+// returnLostMergeConflictDispatch gives back the dispatch a merge-conflict
+// run took on its head when the run ended without doing its work for a
+// reason outside it: the service shut down under it, or its worker was
+// lost. A deploy then does not spend the runs one head gets. A run that
+// ended on its own, failed on its own, or stalled keeps its dispatch.
+func returnLostMergeConflictDispatch(ctx context.Context, store WorkerExitStore, reactionKind, issueID, status string, runError error, log *slog.Logger) {
+	if reactionKind != ReactionKindMergeConflict {
+		return
+	}
+	lost := status == "cancelled" && errors.Is(runError, errCancelShutdown)
+	if !lost && status == "failed" && runError != nil {
+		lost = failcause.RouteOf(runFailureSignature(runError)).Class == failcause.ClassWorkerLost
+	}
+	if !lost {
+		return
+	}
+	if err := store.ReturnReactionDispatch(ctx, issueID, reactionKind); err != nil {
+		log.Warn("failed to give back the dispatch of a lost merge conflict run",
+			slog.Any("error", err),
+		)
+	}
 }

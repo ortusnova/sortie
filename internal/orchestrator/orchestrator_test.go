@@ -11569,3 +11569,5 @@ func TestRun_UsageLimitRefusalHoldsItsKindOnly(t *testing.T) {
 		t.Errorf("budget_exhausted = %+v, want none after a refused run", snap.BudgetExhausted)
 	}
 }
+
+func (*stubStore) ReturnReactionDispatch(context.Context, string, string) error { return nil }
