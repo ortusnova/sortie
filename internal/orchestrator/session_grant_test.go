@@ -208,6 +208,10 @@ func (s *grantingRetryStore) SessionGrantTotals(context.Context) (map[string]int
 	return maps.Clone(s.grants), nil
 }
 
+func (s *grantingRetryStore) SessionGrantTotal(_ context.Context, issueID string) (int, error) {
+	return s.grants[issueID], nil
+}
+
 // A retry that comes due at max_sessions runs when the issue has a grant.
 func TestSessionGrant_RetryGateCountsTheGrant(t *testing.T) {
 	t.Parallel()
@@ -247,5 +251,32 @@ func TestSessionGrant_RetryGateCountsTheGrant(t *testing.T) {
 				t.Errorf("held budget = %d, want %d", held.BudgetSessions, tt.wantBudget)
 			}
 		})
+	}
+}
+
+// A grant with a cap is refused when the issue's granted sessions would pass
+// it, and nothing is granted.
+func TestSessionGrant_CapBoundsTheIssuesGrants(t *testing.T) {
+	t.Parallel()
+
+	store := openRepeatedFailureStore(t)
+	h := newGrantHarness(t, store, 2, 0)
+	h.heldAt(t, 2, 2, 0)
+
+	grant := h.o.SessionGrantFunc()
+	over := grant(t.Context(), SessionGrantRequest{Identifier: grantIdentifier, Add: 4, By: "supervisor", Cap: 3})
+	if over.Status != SessionGrantOverCap || over.GrantedSessions != 0 {
+		t.Fatalf("grant past the cap = %+v, want refused with 0 granted", over)
+	}
+	if total, err := store.SessionGrantTotal(t.Context(), grantIssueID); err != nil || total != 0 {
+		t.Fatalf("granted after a refusal = %d, %v, want 0", total, err)
+	}
+	within := grant(t.Context(), SessionGrantRequest{Identifier: grantIdentifier, Add: 3, By: "supervisor", Cap: 3})
+	if within.Status != SessionGrantDone || within.GrantedSessions != 3 {
+		t.Fatalf("grant up to the cap = %+v, want done with 3 granted", within)
+	}
+	h.heldAt(t, 5, 5, 3)
+	if again := grant(t.Context(), SessionGrantRequest{Identifier: grantIdentifier, Add: 1, By: "supervisor", Cap: 3}); again.Status != SessionGrantOverCap {
+		t.Errorf("grant once the cap is reached = %+v, want refused", again)
 	}
 }
