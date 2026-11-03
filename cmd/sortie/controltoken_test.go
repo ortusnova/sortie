@@ -160,3 +160,39 @@ func TestUnsetControlTokenEnv(t *testing.T) {
 		t.Errorf("unsetControlTokenEnv(\"\") = %v, want nil", got)
 	}
 }
+
+func TestResolveSupervisor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		section   map[string]any
+		wantToken string
+		wantCap   int
+		wantErr   string
+	}{
+		{name: "unset", section: nil, wantCap: defaultSupervisorSessionCap},
+		{name: "set", section: map[string]any{"supervisor_token": " sup-1 ", "supervisor_max_sessions": 6}, wantToken: "sup-1", wantCap: 6},
+		{name: "a zero cap", section: map[string]any{"supervisor_token": "sup-1", "supervisor_max_sessions": float64(0)}, wantToken: "sup-1"},
+		{name: "the control token", section: map[string]any{"supervisor_token": "operator-token-123"}, wantErr: "server.supervisor_token"},
+		{name: "not a string", section: map[string]any{"supervisor_token": 7}, wantErr: "server.supervisor_token"},
+		{name: "a negative cap", section: map[string]any{"supervisor_max_sessions": -1}, wantErr: "server.supervisor_max_sessions"},
+		{name: "a fractional cap", section: map[string]any{"supervisor_max_sessions": 1.5}, wantErr: "server.supervisor_max_sessions"},
+		{name: "a text cap", section: map[string]any{"supervisor_max_sessions": "4"}, wantErr: "server.supervisor_max_sessions"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			token, sessionCap, err := resolveSupervisor(tt.section, "operator-token-123")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("resolveSupervisor() err = %v, want one naming %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || token != tt.wantToken || sessionCap != tt.wantCap {
+				t.Errorf("resolveSupervisor() = %q, %d, %v, want %q, %d", token, sessionCap, err, tt.wantToken, tt.wantCap)
+			}
+		})
+	}
+}

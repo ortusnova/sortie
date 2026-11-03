@@ -189,6 +189,43 @@ func resolveControlToken(serverSection map[string]any) (string, error) {
 	return strings.TrimSpace(token), nil
 }
 
+// Server settings of the supervisor token.
+const (
+	supervisorTokenSetting = "server.supervisor_token"
+	supervisorCapSetting   = "server.supervisor_max_sessions"
+
+	// defaultSupervisorSessionCap is the sessions granted to one issue in
+	// total that a supervisor grant may reach when
+	// server.supervisor_max_sessions is unset.
+	defaultSupervisorSessionCap = 4
+)
+
+// resolveSupervisor returns server.supervisor_token and
+// server.supervisor_max_sessions from the server extension section. An
+// absent or blank token returns the empty string. The token must differ
+// from the control token, and the cap must be a whole number from 0.
+func resolveSupervisor(serverSection map[string]any, controlToken string) (token string, sessionCap int, err error) {
+	if raw, exists := serverSection["supervisor_token"]; exists && raw != nil {
+		s, ok := raw.(string)
+		if !ok {
+			return "", 0, fmt.Errorf("invalid %s value: unsupported type %T, must be a string", supervisorTokenSetting, raw)
+		}
+		token = strings.TrimSpace(s)
+	}
+	if token != "" && token == controlToken {
+		return "", 0, fmt.Errorf("%s must differ from %s", supervisorTokenSetting, controlTokenSetting)
+	}
+	sessionCap = defaultSupervisorSessionCap
+	if raw, exists := serverSection["supervisor_max_sessions"]; exists && raw != nil {
+		n, ok := config.IntFromNumber(raw)
+		sessionCap = n
+		if !ok || sessionCap < 0 {
+			return "", 0, fmt.Errorf("invalid %s value %v: must be a whole number from 0", supervisorCapSetting, raw)
+		}
+	}
+	return token, sessionCap, nil
+}
+
 // checkControlBinding refuses a non-loopback bind address without a
 // control token, because every state-changing endpoint would then be
 // open to the network.

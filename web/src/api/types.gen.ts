@@ -1198,6 +1198,7 @@ export interface StateResponse {
   host?: Host;
   waits: WaitResponse[];
   pulls: PullWaitResponse[];
+  supervisor_actions: SupervisorActionResponse[] | null;
 }
 
 export interface Summary {
@@ -1218,6 +1219,28 @@ export interface Summary {
   cost_unpriced_runs: number;
   cost_partial_runs: number;
   tokens_unmeasured_runs: number;
+}
+
+export interface SupervisorActionResponse {
+  id: number;
+  action: string;
+  route: string;
+  issue_identifier: string | null;
+  evidence: string;
+  result: string;
+  status: number;
+  detail: string | null;
+  pull_request: string | null;
+  merge_commit: string | null;
+  at: string;
+}
+
+export interface SupervisorResultResponse {
+  action: string;
+  issue_identifier: string;
+  issue_id: string;
+  pull_request: string | null;
+  merge_commit: string | null;
 }
 
 export interface TableInForceResponse {
