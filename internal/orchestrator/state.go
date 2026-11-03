@@ -138,6 +138,16 @@ type RunningEntry struct {
 	// silence from no earlier than this instant.
 	HoldReleasedAt time.Time
 
+	// WorkerQueued is true while the run's remote job waits in the
+	// matcher's queue for a worker: the run holds no agent slot, stall
+	// detection does not measure it, and the state API lists it as a wait,
+	// not as running. WorkerGrantedAt is when a worker took the job after
+	// it waited so; stall detection measures silence from no earlier than
+	// this instant. Both are set on the event loop
+	// ([Orchestrator.refreshWorkerQueue]). Runtime-only.
+	WorkerQueued    bool
+	WorkerGrantedAt time.Time
+
 	// TurnClock bounds the run's turns; a hold pauses it. Shared with the
 	// worker goroutine, and safe for concurrent use.
 	TurnClock *turnClock
@@ -2345,6 +2355,9 @@ func stallReference(entry *RunningEntry) time.Time {
 	}
 	if entry.HoldReleasedAt.After(ref) {
 		ref = entry.HoldReleasedAt
+	}
+	if entry.WorkerGrantedAt.After(ref) {
+		ref = entry.WorkerGrantedAt
 	}
 	return ref
 }

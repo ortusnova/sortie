@@ -419,8 +419,9 @@ func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ct
 	stallThreshold := int64(params.StallTimeoutMS)
 
 	for issueID, entry := range state.Running {
-		// A held run is silent because a person is working in it.
-		if !entry.HeldSince.IsZero() {
+		// A held run is silent because a person is working in it, and
+		// one whose job waits for a worker has no agent yet.
+		if !entry.HeldSince.IsZero() || entry.WorkerQueued {
 			continue
 		}
 

@@ -1016,6 +1016,35 @@ func TestPlaceable(t *testing.T) {
 	if why, ok := m.Placeable(nested); ok || !reflect.DeepEqual(why, want) {
 		t.Fatalf("Placeable() while ONS-54 waits for taichi's one slot = %v, %v; want not placeable, %v", why, ok, want)
 	}
+	if !m.Queued("ONS-54") || !m.Holds("ONS-54") || m.Queued("ONS-55") || m.Holds("ONS-55") {
+		t.Fatal("Queued/Holds do not name ONS-54 alone")
+	}
+}
+
+// Jobs dispatched but not yet queued are charged after the queued ones:
+// with one slot free on each of two workers, a third dispatch in the
+// same pass waits (live, 2026-11-03: a cap of 16 sent ONS-101, ONS-105
+// and ONS-109 to the one slot p1 and taichi had free, and they sat in
+// the queue as running until the stall timeout ended them).
+func TestPlaceableChargesTheJobsAhead(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	one := host()
+	one.RunSlots, one.Running = 3, 2
+	m.CheckIn("p1", one)
+	m.CheckIn("taichi", one)
+	r := Requires{CPU: 4, MemGiB: 8, DiskGiB: 20}
+	if _, ok := m.Placeable(r, r); !ok {
+		t.Fatal("Placeable() with one job ahead and two free slots = false, want true")
+	}
+	want := []string{"worker p1: all 3 run slots in use", "worker taichi: all 3 run slots in use"}
+	if why, ok := m.Placeable(r, r, r); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() with two jobs ahead = %v, %v; want not placeable, %v", why, ok, want)
+	}
+	m.Submit(job("ONS-101", 1))
+	if why, ok := m.Placeable(r, r); ok {
+		t.Fatalf("Placeable() with one queued and one ahead = %v, %v; want not placeable", why, ok)
+	}
 }
 
 // A worker that stops checking in counts as gone once three heartbeat

@@ -601,17 +601,27 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 // take a job that requires r now, after the queued jobs took what they
 // fit, and else why it waits, per worker. A job that waits here is
 // better not submitted: no worker would take it.
-func (m *Matcher) Placeable(r Requires) ([]string, bool) {
+//
+// ahead is what jobs dispatched but not yet queued require: each takes
+// what it fits after the queued jobs, so a dispatch that sees one free
+// slot sends one job to it, not one per issue it reads.
+func (m *Matcher) Placeable(r Requires, ahead ...Requires) ([]string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workers := m.workersLocked()
-	for _, j := range m.pending {
+	charge := func(j Job) {
 		for i := range workers {
 			if len(misfits(&workers[i], j)) == 0 {
 				workers[i].take(j.Requires)
-				break
+				return
 			}
 		}
+	}
+	for _, j := range m.pending {
+		charge(j)
+	}
+	for _, a := range ahead {
+		charge(Job{Requires: a})
 	}
 	probe := Job{Requires: r}
 	for i := range workers {
@@ -620,6 +630,22 @@ func (m *Matcher) Placeable(r Requires) ([]string, bool) {
 		}
 	}
 	return waiting(probe, workers), false
+}
+
+// Queued reports whether jobID waits in the queue: submitted, and no
+// worker leased it yet.
+func (m *Matcher) Queued(jobID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
+}
+
+// Holds reports whether jobID is queued or leased.
+func (m *Matcher) Holds(jobID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, leased := m.leased[jobID]
+	return leased || slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
 }
 
 // held returns the leased job when workerID holds a live lease on

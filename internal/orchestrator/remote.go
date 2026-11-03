@@ -123,6 +123,19 @@ func (r *remoteWorkers) attempt(issueID string) *remoteAttempt {
 	return r.attempts[issueID]
 }
 
+// submitted reports whether the running attempt of issueID handed its
+// job to the matcher. An attempt still preparing its workspace, or not
+// yet started, has not: its job is charged ahead of a new dispatch.
+func (r *remoteWorkers) submitted(issueID string) bool {
+	a := r.attempt(issueID)
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.submitted
+}
+
 // leased reports whether the running attempt of issueID is recorded as
 // held by a worker.
 func (r *remoteWorkers) leased(issueID string) bool {
@@ -220,6 +233,20 @@ func (o *Orchestrator) WorkerIdentityHeader() string {
 func (o *Orchestrator) expireLeases() {
 	if o.remote != nil {
 		o.remote.matcher.ExpireLeases()
+		o.refreshWorkerQueue(time.Now())
+	}
+}
+
+// refreshWorkerQueue marks each running entry whose remote job waits in
+// the matcher's queue, and stamps the moment a worker took one that
+// waited. Runs on the event loop, with the lease sweep.
+func (o *Orchestrator) refreshWorkerQueue(now time.Time) {
+	for _, e := range o.state.Running {
+		queued := o.remote.matcher.Queued(e.Identifier)
+		if e.WorkerQueued && !queued {
+			e.WorkerGrantedAt = now
+		}
+		e.WorkerQueued = queued
 	}
 }
 
@@ -291,24 +318,40 @@ func remoteRequires(rc config.RemoteConfig) worker.Requires {
 }
 
 // workerWait returns why no checked-in worker can take issue's remote
-// job now, after the queued jobs took what they fit, and nil when one
-// can or cfg selects another kind. A job that waits so is not
+// job now, after the queued jobs, and then the running attempts that
+// have not queued theirs yet, took what they fit; and nil when one can
+// or cfg selects another kind. A job that waits so is not
 // dispatched: it would hold an agent slot, and count as running, until
 // a worker took it.
 func (o *Orchestrator) workerWait(cfg config.ServiceConfig, issue domain.Issue) *WorkerHold {
 	if o.remote == nil || !isRemoteKind(cfg.Environment) {
 		return nil
 	}
-	env := cfg.Environment
-	if issueEnv, _, err := issueRepository(env, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
-		env = issueEnv
+	requires := issueRequires(cfg, issue)
+	var ahead []worker.Requires
+	for id, e := range o.state.Running {
+		// submitted first: an attempt marks itself submitted and queues
+		// its job under one lock, so once it reads true the matcher holds
+		// the job, or held it, and it is not counted twice.
+		if !o.remote.submitted(id) && !o.remote.matcher.Holds(e.Identifier) {
+			ahead = append(ahead, issueRequires(cfg, e.Issue))
+		}
 	}
-	requires := remoteRequires(env.Remote)
-	waiting, ok := o.remote.matcher.Placeable(requires)
+	waiting, ok := o.remote.matcher.Placeable(requires, ahead...)
 	if ok {
 		return nil
 	}
 	return &WorkerHold{Capabilities: requires.Capabilities, Waiting: waiting}
+}
+
+// issueRequires returns what a worker must declare to take issue's
+// remote job: the requirements of the issue's repository.
+func issueRequires(cfg config.ServiceConfig, issue domain.Issue) worker.Requires {
+	env := cfg.Environment
+	if issueEnv, _, err := issueRepository(env, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
+		env = issueEnv
+	}
+	return remoteRequires(env.Remote)
 }
 
 // remoteWorkspace is the workspace path inside a remote job's machine.

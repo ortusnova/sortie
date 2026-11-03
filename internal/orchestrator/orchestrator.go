@@ -1088,7 +1088,7 @@ func (o *Orchestrator) runOnLoop(ctx context.Context, apply func(loopCtx context
 func (o *Orchestrator) updateGauges(now time.Time) {
 	o.metrics.SetRunningSessions(len(o.state.Running))
 	o.metrics.SetRetryingSessions(len(o.state.RetryAttempts))
-	o.metrics.SetAvailableSlots(GlobalAvailableSlots(o.state.MaxConcurrentAgents, len(o.state.Running)))
+	o.metrics.SetAvailableSlots(GlobalAvailableSlots(o.state.MaxConcurrentAgents, AgentsRunning(o.state.Running)))
 	o.metrics.SetActiveSessionsElapsed(ActiveElapsedSeconds(o.state, now))
 	o.metrics.SetHeldRuns(heldRuns(o.state))
 
@@ -1380,10 +1380,10 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 			o.once.declined(issue, SkipStandingHold)
 			continue
 		}
-		if GlobalAvailableSlots(o.state.MaxConcurrentAgents, len(o.state.Running)) == 0 {
+		if GlobalAvailableSlots(o.state.MaxConcurrentAgents, AgentsRunning(o.state.Running)) == 0 {
 			held.holdEligible(input[i:], o.state, activeSet, terminalSet, HeldEntry{
 				Reason: SkipAgentSlotsFull,
-				Slot:   &SlotHold{Scope: SlotScopeGlobal, Used: len(o.state.Running), Limit: o.state.MaxConcurrentAgents},
+				Slot:   &SlotHold{Scope: SlotScopeGlobal, Used: AgentsRunning(o.state.Running), Limit: o.state.MaxConcurrentAgents},
 			})
 			o.once.deferAll(input[i:], deferSlot)
 			break
