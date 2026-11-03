@@ -30,8 +30,9 @@ const Prefix = "/api/v1/workers/"
 //	POST /api/v1/workers/poll                                     200 Offer or 204
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat  optional body Step; 200 {expires}
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report     body {outcome, reason, machine}; 204
+//	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/resume     200 Offer, with new tokens
 //
-// A heartbeat or report answers 409 while the attempt is held by
+// A heartbeat, report or resume answers 409 while the attempt is held by
 // another worker or under a lease not yet swept, 410 for an attempt that
 // ended or that Sortie does not hold, and 503 for a job Sortie does not
 // know while it still adopts the runs it restored.
@@ -101,6 +102,19 @@ func Handler(m *Matcher, identityHeader string) http.Handler {
 			return
 		}
 		reply(w, http.StatusOK, exp)
+	}))
+	mux.HandleFunc("POST /api/v1/workers/jobs/{job}/attempts/{attempt}/resume", identified(func(w http.ResponseWriter, r *http.Request, id string) {
+		attempt, err := strconv.Atoi(r.PathValue("attempt"))
+		if err != nil {
+			problem(w, http.StatusBadRequest, "invalid_attempt", "attempt must be an integer")
+			return
+		}
+		offer, err := m.Resume(id, r.PathValue("job"), attempt)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, http.StatusOK, offer)
 	}))
 	mux.HandleFunc("POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report", identified(func(w http.ResponseWriter, r *http.Request, id string) {
 		attempt, err := strconv.Atoi(r.PathValue("attempt"))

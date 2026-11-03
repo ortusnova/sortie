@@ -808,6 +808,9 @@ func (f *fakeTokens) Mint(j Job) (map[string]string, error) {
 	out := map[string]string{}
 	for fl := range j.Flows {
 		out[fl] = fmt.Sprintf("tok-%s-%d-%s", j.ID, j.Attempt, fl)
+		if n := len(f.minted); n > 1 {
+			out[fl] += fmt.Sprintf("-%d", n)
+		}
 	}
 	return out, nil
 }
@@ -1387,4 +1390,55 @@ func TestAnUnknownJobDuringRecovery(t *testing.T) {
 	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-30/attempts/1/heartbeat", ""); r.Code != http.StatusOK {
 		t.Fatalf("heartbeat of the adopted job after recovery: %d %s", r.Code, r.Body)
 	}
+}
+
+// A worker that restarted and kept the job's machine resumes the
+// attempt: it gets the offer again with new flow tokens, the earlier
+// tokens end, and the lease is renewed. An attempt it does not hold is
+// refused as a heartbeat is.
+func TestResumeHandsNewTokens(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	toks := &fakeTokens{}
+	m := NewMatcher(NewTTLLeaser(time.Minute), c.now, toks)
+	a := newAPI(t, m)
+	var resumed []string
+	m.OnResume(func(jobID string) error { resumed = append(resumed, jobID); return nil })
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	j := job("ONS-7", 1)
+	j.Flows = map[string]string{"stdio": "https://sortie/stdio"}
+	m.Submit(j)
+	first := decodeOfferBody(t, a.post("taichi", "/api/v1/workers/poll", ""))
+	c.add(30 * time.Second)
+	r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/resume", "")
+	if r.Code != http.StatusOK {
+		t.Fatalf("resume: %d %s", r.Code, r.Body)
+	}
+	again := decodeOfferBody(t, r)
+	if again.Job.ID != "ONS-7" || again.Job.Attempt != 1 || again.Flows["stdio"].URL != "https://sortie/stdio" {
+		t.Fatalf("resumed offer %+v, want ONS-7 attempt 1 with its flows", again)
+	}
+	if again.Flows["stdio"].Token == "" || again.Flows["stdio"].Token == first.Flows["stdio"].Token {
+		t.Errorf("tokens %q then %q, want new ones", first.Flows["stdio"].Token, again.Flows["stdio"].Token)
+	}
+	if !again.Lease.Expires.Equal(c.now().Add(time.Minute)) {
+		t.Errorf("lease expires %v, want renewed from now", again.Lease.Expires)
+	}
+	if len(resumed) != 1 || resumed[0] != "ONS-7" {
+		t.Errorf("resume hook saw %v, want ONS-7", resumed)
+	}
+	if r := a.post("p1", "/api/v1/workers/jobs/ONS-7/attempts/1/resume", ""); r.Code != http.StatusConflict {
+		t.Errorf("resume by another worker: %d, want 409", r.Code)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/resume", ""); r.Code != http.StatusGone {
+		t.Errorf("resume of an attempt never granted: %d, want 410", r.Code)
+	}
+}
+
+func decodeOfferBody(t *testing.T, r *httptest.ResponseRecorder) Offer {
+	t.Helper()
+	var o Offer
+	if err := json.Unmarshal(r.Body.Bytes(), &o); err != nil {
+		t.Fatalf("offer %s: %v", r.Body, err)
+	}
+	return o
 }

@@ -424,6 +424,8 @@ type Matcher struct {
 	// recovering reports that the runs a previous process left with
 	// workers are not all adopted yet.
 	recovering bool
+	// onResume records each job whose attempt a worker resumed.
+	onResume func(jobID string) error
 }
 
 // endedAttempt is an attempt that ended and why.
@@ -820,6 +822,52 @@ func (m *Matcher) HeartbeatStep(workerID, jobID string, attempt int, step Step) 
 		m.steps[jobID] = step
 	}
 	return Expiry{Expires: ls.Expires.UTC()}, nil
+}
+
+// OnResume sets f to record, outside the matcher's lock, each job whose
+// attempt a worker resumes with new tokens, before the worker gets them:
+// an error refuses the resume, and the worker asks again.
+func (m *Matcher) OnResume(f func(jobID string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onResume = f
+}
+
+// Resume hands the worker that holds a live lease on the job's attempt
+// the attempt's offer again, with new flow tokens, as a worker that
+// restarted and kept the job's machine needs it: the tokens it held
+// ended with its process, and it never keeps one at rest. The earlier
+// tokens of the attempt end. The lease is renewed. It returns the errors
+// of [Matcher.Heartbeat] for an attempt the worker does not hold.
+func (m *Matcher) Resume(workerID, jobID string, attempt int) (Offer, error) {
+	m.mu.Lock()
+	j, err := m.held(workerID, jobID, attempt)
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, err
+	}
+	ls, err := m.leaser.Renew(jobID, workerID, m.now())
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, err
+	}
+	toks, err := m.tokens.Mint(j)
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, fmt.Errorf("worker: minting job tokens: %w", err)
+	}
+	hook := m.onResume
+	m.mu.Unlock()
+	flows := make(map[string]FlowAccess, len(j.Flows))
+	for name, u := range j.Flows {
+		flows[name] = FlowAccess{URL: u, Token: toks[name]}
+	}
+	if hook != nil {
+		if err := hook(jobID); err != nil {
+			return Offer{}, err
+		}
+	}
+	return Offer{Job: j, Lease: Expiry{Expires: ls.Expires.UTC()}, Run: j.Run, Flows: flows}, nil
 }
 
 // Report ends the job's attempt with the worker's outcome and releases
