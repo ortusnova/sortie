@@ -4128,6 +4128,17 @@
         "holder": {
           "type": "string"
         },
+        "in_tool_call_since": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "issue_cost_status": {
           "type": "string"
         },
@@ -4470,6 +4481,7 @@
         "stall_text",
         "stall_text_full",
         "stall_off_text",
+        "in_tool_call_since",
         "held",
         "hold_reason",
         "holder",

@@ -897,6 +897,7 @@ export interface RunningEntryResponse {
   stall_text: string | null;
   stall_text_full: string | null;
   stall_off_text: string | null;
+  in_tool_call_since: string | null;
   held: boolean;
   hold_reason: string;
   holder: string;
