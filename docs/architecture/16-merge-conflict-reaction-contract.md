@@ -55,7 +55,7 @@ Before any dispatch, the dirty branch applies three precondition guards, in orde
 
 After all three guards pass, the fingerprint is computed as `sha256(headSHA)` and upserted into `reaction_fingerprints` with `kind = "merge-conflict"`. The reaction reuses the existing table; no migration is required. The fingerprint key `(issue_id, "merge-conflict")` is independent of the `"merge"` fingerprint the auto-merge reaction maintains.
 
-When the stored fingerprint matches the computed value and is marked dispatched, the entry is re-enqueued at `now + poll_interval` with no increment and no dispatch. This dedup prevents a persistent same-head observation from firing multiple continuations while the rebase is in flight.
+When the stored fingerprint matches the computed value and is marked dispatched, the entry is re-enqueued at `now + poll_interval` with no increment and no dispatch. This dedup prevents a persistent same-head observation from firing multiple continuations once a rebase has started. The fingerprint is marked dispatched when `HandleRetryTimer` starts the rebase run, as for the `ci`, `review`, and `bot-review` reactions, and not when the continuation is scheduled; while the continuation waits in the retry slot, the retry-slot guard above keeps the head from being dispatched again. A queued continuation is runtime-only and a restart loses it, so a mark taken at schedule time would keep the watch that startup rebuilds from ever dispatching that head again. Unmarked, the rebuilt watch dispatches the head once more. A rebase run that started is marked, so a restart never repeats it for the same head.
 
 The fingerprint churns on each new push: a new head SHA produces a new fingerprint with `dispatched = 0`, so a conflict that persists across a rebase re-arms a new attempt. The not-dirty branch deletes the row entirely when the PR is not dirty, so the first subsequent dirty observation always finds `dispatched = 0` and dispatches.
 
@@ -97,7 +97,7 @@ Cross-kind isolation: `escalateMergeConflictFailure` MUST scope all deletions to
 
 ### 11E.6 Continuation data
 
-The retry-slot guard in Section 11E.4 is unaffected by anything in this section: a deferral returns before `dispatchMergeConflictContinuation` is ever called, so the `MarkReactionDispatched` timing this section describes only ever runs on a tick that actually dispatches.
+The retry-slot guard in Section 11E.4 is unaffected by anything in this section: a deferral returns before `dispatchMergeConflictContinuation` is ever called, so a deferral never schedules a continuation.
 
 `dispatchMergeConflictContinuation` schedules a continuation turn via `ScheduleRetry` with the prompt key `merge_conflict`, admitted into the slot the guard above already confirmed is free. The continuation map contains:
 
@@ -108,7 +108,7 @@ The retry-slot guard in Section 11E.4 is unaffected by anything in this section:
 | `head_sha` | `status.HeadSHA` at dispatch time |
 | `base` | `status.BaseBranch`, the PR's real target branch, read live from `GetMergeability` on this tick |
 
-`base` is always the PR object's actual base ref, not an assumed default branch. The orchestrator already holds the PR object and cannot diverge from the platform's view; the agent does not re-derive the base independently. `MarkReactionDispatched` is called on the same tick the continuation is scheduled; this is the marker the dirty branch's dedup guard reads in subsequent ticks.
+`base` is always the PR object's actual base ref, not an assumed default branch. The orchestrator already holds the PR object and cannot diverge from the platform's view; the agent does not re-derive the base independently. `MarkReactionDispatched` is called by `HandleRetryTimer` when the scheduled continuation starts the rebase run, not on the tick that schedules it (Section 11E.4); this is the marker the dirty branch's dedup guard reads in subsequent ticks.
 
 The `merge_conflict` key MUST be registered in `prompt.continuationKeys` and seeded to nil in the template data map so `Option("missingkey=error")` does not reject templates that reference the field when no conflict continuation is active.
 
@@ -117,6 +117,8 @@ The `merge_conflict` key MUST be registered in `prompt.continuationKeys` and see
 Worker-exit seeding applies the same metadata predicate `review` and `bot-review` use: an entry is created only when `SCMMetadata` reports `pr_number > 0` and non-empty `owner`, `repo`, and `branch`. The seeding block runs in the `WorkerExitNormal` branch of `HandleWorkerExit`, after the existing auto-merge enqueue block, guarded on `params.SCMAdapter != nil && params.MergeConflictReactionConfigured`. A "create only if absent" guard preserves an in-progress pending entry across re-exits, matching the review, bot-review, and auto-merge kinds. The guard also preserves a standing escalation, because a worker exit seeds only when no entry exists.
 
 Startup recovery re-seeds a `merge-conflict` pending entry for recent handoff-stage issues when `SCMMetadata` passes the same predicate. The recovered count is surfaced in the startup recovery log. Recovery is gated on the configured flag, so a configured-but-providerless setup recovers no entries, matching the §11D.6 pattern for bot-review.
+
+A rebase continuation queued in the retry slot is not persisted, so a restart loses it, for example one waiting for a free agent slot. Its head was not marked dispatched (Section 11E.4), so the entry startup recovery rebuilds dispatches a rebase for that head again on its first due pass. A rebase run that started before the restart marked its head, so the rebuilt entry dedups that head and does not run it again.
 
 A standing escalation is restored at startup from its stored record, also for an issue that startup recovery does not reach (Section 14.3). A restored entry takes `HeadRecordedAt` from the escalation time, so a restart does not change how a new head is budgeted: the entry dispatches nothing while the escalation stands, a graceful stop records every run it drains, and the runs completed since the escalation time are exactly the worker sessions that could have made a later head. A new head with no worker run since the escalation is attributed to a person and resets the counter, so its conflict dispatches a rebase and does not escalate a second time. Only a run cut off by a hard stop, or still running when the drain times out, records no row; its push also reads as a person's, which costs at most one fresh budget.
 
