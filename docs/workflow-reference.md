@@ -4323,6 +4323,8 @@ Returns the finished runs of run history, newest first, one page at a time. Ever
 | `cursor`   | A `next_cursor` value                         | The runs recorded before the last run of the previous page. |
 | `limit`    | An integer from 1 to 200, default 50          | The page size. |
 
+`ended_since` and `ended_until` select by when an issue's work ended, not by when a run finished: a run that finished in the range on an issue still in progress, or one Sortie observed no ending for, is not selected. To read the runs that finished in a range, use `since` and `until`. Encode a `+` offset as `%2B`, or write the time in UTC with `Z`: a bare `+` in a query string reads as a space, and the time is then refused with `400`.
+
 The response is ordered by descending `run_id`, the order Sortie recorded the runs. Each run is appended when it completes, so this is completion order. `next_cursor` is `null` on the last page and otherwise the `run_id` of the page's last run, as a string. A client treats it as opaque and passes it back with any filters. A run recorded between two requests never lands on a later page and never displaces a served run; reading the first page again shows it.
 
 ```json
