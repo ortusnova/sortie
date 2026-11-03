@@ -138,7 +138,7 @@ type restartHarness struct {
 
 const restartHeader = "X-Sortie-Worker-Identity"
 
-func newRestartHarness(t *testing.T, maxTurns int, leaseTTL time.Duration) *restartHarness {
+func newRestartHarness(t *testing.T, maxTurns int) *restartHarness {
 	t.Helper()
 	f := newGitFixture(t)
 	h := &restartHarness{t: t, git: f, upstream: f.upstream(), dbPath: filepath.Join(t.TempDir(), "sortie.db"),
@@ -163,7 +163,7 @@ func newRestartHarness(t *testing.T, maxTurns int, leaseTTL time.Duration) *rest
 	}
 	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
 		Remote: config.RemoteConfig{IdentityHeader: restartHeader, Backend: "smolvm", Image: "ghcr.io/ortusnova/agent:1",
-			Flows: flows, LeaseTTLMS: int(leaseTTL / time.Millisecond), Repository: runRepository(h.upstream)}}
+			Flows: flows, LeaseTTLMS: int(time.Minute / time.Millisecond), Repository: runRepository(h.upstream)}}
 	h.cfg = cfg
 	return h
 }
@@ -529,7 +529,7 @@ func (w *restartWorker) seen() (offers, starts int, prompts [][]string) {
 // with its worker, the restarted Sortie resumes the session and runs the
 // interrupted turn again, and the run hands off once, as one session.
 func TestRestartMidTurnKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 1, time.Minute)
+	h := newRestartHarness(t, 1)
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
 	first := h.start()
@@ -568,7 +568,7 @@ func TestRestartMidTurnKeepsTheRun(t *testing.T) {
 // A restart between two turns keeps the run: the restarted Sortie runs
 // the second turn as the continuation, and only it.
 func TestRestartBetweenTurnsKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 2, time.Minute)
+	h := newRestartHarness(t, 2)
 	h.tracker.holdRefresh = true
 	w := newRestartWorker(h)
 	first := h.start()
@@ -605,7 +605,7 @@ func TestRestartBetweenTurnsKeepsTheRun(t *testing.T) {
 // Sortie runs the interrupted CI fix turn again from the same
 // continuation, and the run hands off once.
 func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 1, time.Minute)
+	h := newRestartHarness(t, 1)
 	starts := 0
 	h.prepare = func(o *Orchestrator) {
 		if starts++; starts > 1 {
@@ -669,7 +669,11 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 // once, as a new job attempt; with no worker checked in, that retry waits
 // for one.
 func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
-	h := newRestartHarness(t, 1, 1500*time.Millisecond)
+	// The first process gives the worker a lease too long to lapse while
+	// it waits for its job, since it checks in only once; the restarted
+	// one restores the lease with a short one, which lapses as the worker
+	// is gone.
+	h := newRestartHarness(t, 1)
 	w := newRestartWorker(h)
 	w.hold = func(int, string) bool { return true }
 	w.dieOnBreak = true
@@ -684,6 +688,7 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	h.stopAndGo(first)
 	waittest.Receive(t, worked, "the worker gone")
 
+	h.cfg.Environment.Remote.LeaseTTLMS = 1500
 	second := h.start()
 	waittest.Until(t, func() error {
 		snap, err := second.o.SnapshotFunc()()
