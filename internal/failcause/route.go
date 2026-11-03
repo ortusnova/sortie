@@ -134,7 +134,7 @@ var faultClasses = []FaultClass{
 		sig(`(?i)\bno_seed\b|configures no repository|only the agent runs in the job's workspace|closed to dispatch|no longer lists|^prompt_render`, workflowAction),
 	}},
 	{Name: "worker_lost", Route: RoutePlatform, Signatures: []FaultSignature{
-		sig(`(?i)lease expired|ended the attempt without returning|ended before its agent session started|stdio stream broke`, nil),
+		sig(`(?i)lease (?:held by worker \S+ )?expired|ended the attempt without returning|ended before its agent session started|stdio stream broke|worker daemon shut down`, nil),
 	}},
 	{Name: "environment", Route: RoutePlatform, Signatures: []FaultSignature{
 		sig(`(?i)^workspace_preparation \| [^|]* \| (?:workspace preparation: )?execution environment`, nil),
