@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/waittest"
@@ -173,6 +174,12 @@ func TestSeedOfAnotherAttemptRefused(t *testing.T) {
 // dialStdio opens the stdio stream of ONS-30 attempt 1 as a worker does.
 func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 	f.t.Helper()
+	return f.dialStdioAs(token, StdioProtocol)
+}
+
+// dialStdioAs opens the stream as a worker that asks for protocol.
+func (f *fixture) dialStdioAs(token, protocol string) (net.Conn, *bufio.Reader) {
+	f.t.Helper()
 	u, _ := url.Parse(f.srv.URL)
 	conn, err := net.Dial("tcp", u.Host)
 	if err != nil {
@@ -180,7 +187,7 @@ func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 	}
 	f.t.Cleanup(func() { _ = conn.Close() })
 	req := "GET " + Prefix + "stdio/jobs/ONS-30/attempts/1 HTTP/1.1\r\nHost: " + u.Host +
-		"\r\nAuthorization: Bearer " + token + "\r\nConnection: Upgrade\r\nUpgrade: " + StdioProtocol + "\r\n\r\n"
+		"\r\nAuthorization: Bearer " + token + "\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n"
 	if _, err := conn.Write([]byte(req)); err != nil {
 		f.t.Fatal(err)
 	}
@@ -190,8 +197,8 @@ func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 		f.t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		f.t.Fatalf("stdio upgrade: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), protocol) {
+		f.t.Fatalf("stdio upgrade: %d %q", resp.StatusCode, resp.Header.Get("Upgrade"))
 	}
 	return conn, in
 }
@@ -556,4 +563,74 @@ func TestKeepHoldsBackTheBridgesStdinClosed(t *testing.T) {
 	}
 	_ = conn.Close()
 	waittest.Receive(t, b.done, "bridge exit after the detach")
+}
+
+// A worker that speaks sortie-stdio/2 returns the agent's .sortie files
+// whenever Sortie asks between turns: the request reaches it as an S
+// frame, its F answer reaches Sortie and never the session.
+func TestSortieFilesBetweenTurns(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	conn, in := f.dialStdioAs(f.mint("ONS-30", 1)["stdio"], StdioProtocolFiles)
+	b := startBridge(a)
+
+	type answer struct {
+		files map[string][]byte
+		err   error
+	}
+	got := make(chan answer, 1)
+	go func() {
+		files, err := a.SortieFiles(context.Background())
+		got <- answer{files, err}
+	}()
+	typ, payload, err := ReadFrame(in)
+	if err != nil || typ != FrameSortieFilesRequest || len(payload) != 0 {
+		t.Fatalf("worker got %q %q %v, want the files request", typ, payload, err)
+	}
+	if err := WriteFrame(conn, FrameSortieFiles, []byte(`{"criteria.json":"eyJjcml0ZXJpYSI6W119","status":null}`)); err != nil {
+		t.Fatal(err)
+	}
+	ans := waittest.Receive(t, got, "the agent's .sortie files")
+	if ans.err != nil || string(ans.files["criteria.json"]) != `{"criteria":[]}` || len(ans.files) != 1 {
+		t.Fatalf("files %q %v, want the criteria verdict alone", ans.files, ans.err)
+	}
+
+	// The stream goes on: the agent's output still reaches the session,
+	// and nothing of the files answer did.
+	if err := WriteFrame(conn, FrameStdout, []byte("reply\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(b.stdout).ReadString('\n')
+	if err != nil || line != "reply\n" {
+		t.Fatalf("bridge stdout %q %v", line, err)
+	}
+}
+
+// A worker on sortie-stdio/1 is never sent a frame it does not know:
+// asking it for the files answers ErrNoSortieFiles at once.
+func TestSortieFilesNotAskedOfAnOlderWorker(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	_, _ = f.dialStdio(f.mint("ONS-30", 1)["stdio"])
+	if err := a.WaitStdio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SortieFiles(context.Background()); !errors.Is(err, ErrNoSortieFiles) {
+		t.Fatalf("err = %v, want ErrNoSortieFiles", err)
+	}
+}
+
+// A worker that does not answer leaves the request to its context.
+func TestSortieFilesWaitEndsWithTheContext(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	_, _ = f.dialStdioAs(f.mint("ONS-30", 1)["stdio"], StdioProtocolFiles)
+	if err := a.WaitStdio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := a.SortieFiles(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the deadline", err)
+	}
 }

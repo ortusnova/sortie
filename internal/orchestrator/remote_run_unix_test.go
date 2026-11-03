@@ -484,6 +484,14 @@ type fakeWorker struct {
 	toolCalls []toolCall
 	// noNested checks in without nested virtualization.
 	noNested bool
+	// files speaks sortie-stdio/2: it answers Sortie's request for the
+	// agent's .sortie files between turns.
+	files bool
+	// onPrompt runs in the agent's turn n, in its clone, before the turn
+	// ends.
+	onPrompt func(n int, clone string)
+	// maxTurns overrides the run's agent.max_turns when set.
+	maxTurns int
 }
 
 // toolCall is the answer to one tool call on the mcp flow.
@@ -616,7 +624,11 @@ func (w *fakeWorker) session() {
 		w.t.Fatal(err)
 	}
 	defer conn.Close() //nolint:errcheck // test
-	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", u.Path, u.Host, token, dataplane.StdioProtocol)
+	protocol := dataplane.StdioProtocol
+	if w.files {
+		protocol = dataplane.StdioProtocolFiles
+	}
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", u.Path, u.Host, token, protocol)
 	in := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(in, nil)
 	if err != nil {
@@ -627,9 +639,16 @@ func (w *fakeWorker) session() {
 		w.t.Fatalf("stdio upgrade: %d", resp.StatusCode)
 	}
 	stdinR, stdinW := io.Pipe()
+	out := frameWriter{conn: conn, broken: w.breakStdio}
 	go func() {
 		for {
 			typ, payload, err := dataplane.ReadFrame(in)
+			if err == nil && typ == dataplane.FrameSortieFilesRequest && w.files {
+				if err := out.frame(dataplane.FrameSortieFiles, w.sortieFiles()); err != nil {
+					w.t.Errorf("files answer: %v", err)
+				}
+				continue
+			}
 			if err != nil || typ == dataplane.FrameStdinClosed {
 				_ = stdinW.Close()
 				return
@@ -637,9 +656,11 @@ func (w *fakeWorker) session() {
 			_, _ = stdinW.Write(payload)
 		}
 	}()
-	out := frameWriter{conn: conn, broken: w.breakStdio}
 	err = fakeAgent(stdinR, &out, w.clone, w.reportUsage, func(p string) error {
 		w.received = append(w.received, p)
+		if w.onPrompt != nil {
+			w.onPrompt(len(w.received), w.clone)
+		}
 		if w.callTools && len(w.received) == 1 {
 			return w.makeToolCalls()
 		}
@@ -661,12 +682,32 @@ var errStreamBroken = errors.New("stdio stream broken by the test")
 // frameWriter writes the agent's output as stdout frames; with broken
 // set it closes the stream after the first write instead.
 type frameWriter struct {
+	mu     sync.Mutex
 	conn   net.Conn
 	broken bool
 }
 
+func (f *frameWriter) frame(typ byte, p []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return dataplane.WriteFrame(f.conn, typ, p)
+}
+
+// sortieFiles is the worker's answer to a files request: each file of
+// the clone's .sortie that Sortie takes back.
+func (w *fakeWorker) sortieFiles() []byte {
+	files := map[string][]byte{}
+	for _, name := range []string{"pr.json", "status", "criteria.json"} {
+		if data, err := os.ReadFile(filepath.Join(w.clone, ".sortie", name)); err == nil { //nolint:gosec // G304: the test's own clone
+			files[name] = data
+		}
+	}
+	raw, _ := json.Marshal(files)
+	return raw
+}
+
 func (f *frameWriter) Write(p []byte) (int, error) {
-	if err := dataplane.WriteFrame(f.conn, dataplane.FrameStdout, p); err != nil {
+	if err := f.frame(dataplane.FrameStdout, p); err != nil {
 		return 0, err
 	}
 	if f.broken {
@@ -784,6 +825,9 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, issuer: rw.tokens, ended: func() bool { return len(done) > 0 }}
 	if prepare != nil {
 		prepare(w)
+	}
+	if w.maxTurns > 0 {
+		cfg.Agent.MaxTurns = w.maxTurns
 	}
 	deps := runDeps(t, cfg, adapter, &run.runCapture, done)
 	if w.callTools {
@@ -916,6 +960,65 @@ func TestRemoteRunReturnsTheAgentsStatusAndVerdict(t *testing.T) {
 	}
 	if string(run.result.CriteriaFile) != verdict {
 		t.Errorf("criteria file %q, want the agent's verdict", run.result.CriteriaFile)
+	}
+}
+
+// writeSortieFile writes the agent's .sortie/<name> in clone.
+func writeSortieFile(t *testing.T, clone, name, content string) {
+	t.Helper()
+	dir := filepath.Join(clone, ".sortie")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Error(err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Error(err)
+	}
+}
+
+// A remote run ends after the turn whose agent wrote a terminal file in
+// the worker's machine, as a co-located run does: a review's criteria
+// verdict or a status. A review that has not written its verdict yet is
+// given its next turn. Before, the turns could not see the worker's
+// files, so a review that had recorded its verdict on turn 1 was sent
+// the same prompt until agent.max_turns.
+func TestRemoteRunEndsAfterTheTurnThatWritesATerminalFile(t *testing.T) {
+	const verdict = `{"criteria": [{"criterion": "a", "verdict": "met", "evidence": "go test ./... passed"}]}`
+	for name, tc := range map[string]struct {
+		files     bool
+		write     map[int][2]string
+		wantTurns int
+		wantStop  string
+	}{
+		"a verdict on turn 1 ends the run":        {files: true, write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 1},
+		"a blocked status on turn 1 ends the run": {files: true, write: map[int][2]string{1: {"status", "blocked\nWhich host list is right?\n"}}, wantTurns: 1, wantStop: "blocked"},
+		"a verdict on turn 2 takes two turns":     {files: true, write: map[int][2]string{2: {"criteria.json", verdict}}, wantTurns: 2},
+		"no verdict runs to max_turns":            {files: true, wantTurns: 4},
+		"an older worker's run goes to max_turns": {write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newGitFixture(t)
+			run := runRemoteONS30(t, f, func(w *fakeWorker) {
+				w.files, w.maxTurns = tc.files, 4
+				w.onPrompt = func(n int, clone string) {
+					if file, ok := tc.write[n]; ok {
+						writeSortieFile(t, clone, file[0], file[1])
+					}
+				}
+			}, nil)
+			if run.result.ExitKind != WorkerExitNormal || run.result.Error != nil {
+				t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+			}
+			if run.result.TurnsCompleted != tc.wantTurns || len(run.received) != tc.wantTurns {
+				t.Errorf("turns completed %d, prompts received %d; want %d", run.result.TurnsCompleted, len(run.received), tc.wantTurns)
+			}
+			if run.result.SoftStopReason != tc.wantStop {
+				t.Errorf("soft stop %q, want %q", run.result.SoftStopReason, tc.wantStop)
+			}
+			if file, ok := tc.write[1]; ok && file[0] == "criteria.json" && string(run.result.CriteriaFile) != verdict {
+				t.Errorf("criteria file %q, want the agent's verdict", run.result.CriteriaFile)
+			}
+		})
 	}
 }
 

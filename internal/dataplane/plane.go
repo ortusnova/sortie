@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -53,6 +54,17 @@ var Routes = []string{
 
 // StdioProtocol is the Upgrade token of the stdio flow.
 const StdioProtocol = "sortie-stdio/1"
+
+// StdioProtocolFiles is the Upgrade token of a worker that also answers
+// [FrameSortieFilesRequest] with [FrameSortieFiles], so Sortie reads the
+// agent's .sortie files between turns. A worker on [StdioProtocol] is
+// never sent the request.
+const StdioProtocolFiles = "sortie-stdio/2"
+
+// ErrNoSortieFiles reports an attempt whose worker cannot return the
+// agent's .sortie files before the session ends: it has no stream yet,
+// or it speaks [StdioProtocol].
+var ErrNoSortieFiles = errors.New("dataplane: the worker returns no .sortie files between turns")
 
 // MaxPRFile bounds the .sortie/pr.json a returned result carries.
 const MaxPRFile = 64 << 10
@@ -159,12 +171,20 @@ type Attempt struct {
 	sockDir  string
 	tools    *http.Transport
 
-	mu         sync.Mutex
-	result     *Result
-	resultSet  chan struct{}
-	worker     net.Conn
-	workerIn   *bufio.Reader
-	workerSet  chan struct{}
+	mu        sync.Mutex
+	result    *Result
+	resultSet chan struct{}
+	worker    net.Conn
+	workerIn  *bufio.Reader
+	workerSet chan struct{}
+	// workerFiles is set when the worker speaks StdioProtocolFiles.
+	workerFiles bool
+	// writeMu orders the frames written to the worker's stream.
+	writeMu sync.Mutex
+	// filesMu holds one files request at a time; files carries its
+	// answer.
+	filesMu    sync.Mutex
+	files      chan []byte
 	session    net.Conn
 	relaying   bool
 	toolBearer string
@@ -198,6 +218,7 @@ func (p *Plane) Open(job string, attempt int, opts Options) (*Attempt, error) {
 		plane: p, key: attemptKey{job: job, attempt: uint64(attempt)}, opts: opts, logger: logger,
 		listener: ln, sockDir: dir,
 		resultSet: make(chan struct{}), workerSet: make(chan struct{}), closed: make(chan struct{}),
+		files: make(chan []byte, 1),
 	}
 	a.tools = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -354,7 +375,7 @@ func (a *Attempt) acceptSession() {
 
 // attachWorker takes the worker's stdio stream, reporting false when the
 // attempt already has one or is closed.
-func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader) bool {
+func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader, files bool) bool {
 	a.mu.Lock()
 	select {
 	case <-a.closed:
@@ -366,7 +387,7 @@ func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader) bool {
 		a.mu.Unlock()
 		return false
 	}
-	a.worker, a.workerIn = conn, in
+	a.worker, a.workerIn, a.workerFiles = conn, in, files
 	close(a.workerSet)
 	a.mu.Unlock()
 	a.startRelay()
@@ -402,12 +423,55 @@ func (a *Attempt) relaySession(session, worker net.Conn) {
 		if err != nil || typ != FrameStdin {
 			break
 		}
-		if WriteFrame(worker, FrameStdin, payload) != nil {
+		if a.writeWorker(worker, FrameStdin, payload) != nil {
 			return
 		}
 	}
 	if !a.isDetached() {
-		_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+		_ = a.writeWorker(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+	}
+}
+
+// writeWorker writes one frame to the worker's stream.
+func (a *Attempt) writeWorker(worker net.Conn, typ byte, payload []byte) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return WriteFrame(worker, typ, payload)
+}
+
+// SortieFiles asks the worker for the agent's .sortie files as they are
+// now, as between two turns, and waits for its answer: each file the
+// agent wrote by its name in .sortie, a file it did not write left out.
+// A worker that cannot answer is [ErrNoSortieFiles]; one that does not
+// answer leaves the wait to ctx.
+func (a *Attempt) SortieFiles(ctx context.Context) (map[string][]byte, error) {
+	a.mu.Lock()
+	worker, capable := a.worker, a.workerFiles
+	a.mu.Unlock()
+	if worker == nil || !capable {
+		return nil, ErrNoSortieFiles
+	}
+	a.filesMu.Lock()
+	defer a.filesMu.Unlock()
+	select {
+	case <-a.files: // an answer to a request that gave up waiting
+	default:
+	}
+	if err := a.writeWorker(worker, FrameSortieFilesRequest, nil); err != nil {
+		return nil, fmt.Errorf("dataplane: ask the worker for the .sortie files: %w", err)
+	}
+	select {
+	case raw := <-a.files:
+		var answer map[string][]byte
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			return nil, fmt.Errorf("dataplane: the worker's .sortie files: %w", err)
+		}
+		maps.DeleteFunc(answer, func(_ string, v []byte) bool { return v == nil })
+		return answer, nil
+	case <-a.closed:
+		return nil, ErrClosed
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
 	}
 }
 
@@ -419,6 +483,13 @@ func (a *Attempt) relayWorker(worker net.Conn, in *bufio.Reader, session net.Con
 	defer worker.Close() //nolint:errcheck // the stream is done
 	for {
 		typ, payload, err := ReadFrame(in)
+		if err == nil && typ == FrameSortieFiles && a.speaksFiles() {
+			select {
+			case a.files <- payload:
+			default: // no request waits for it
+			}
+			continue
+		}
 		if err == nil && typ != FrameStdout && typ != FrameStderr && typ != FrameExit {
 			err = fmt.Errorf("dataplane: unexpected stdio frame type %q from the worker", typ)
 		}
@@ -433,6 +504,12 @@ func (a *Attempt) relayWorker(worker net.Conn, in *bufio.Reader, session net.Con
 			return
 		}
 	}
+}
+
+func (a *Attempt) speaksFiles() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.workerFiles
 }
 
 func (a *Attempt) broken(err error) {
@@ -642,7 +719,11 @@ func (a *Attempt) saveBundle(r io.Reader) (string, int, string) {
 }
 
 func serveStdio(a *Attempt, w http.ResponseWriter, r *http.Request) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), StdioProtocol) {
+	protocol := StdioProtocol
+	switch upgrade := r.Header.Get("Upgrade"); {
+	case strings.EqualFold(upgrade, StdioProtocolFiles):
+		protocol = StdioProtocolFiles
+	case !strings.EqualFold(upgrade, StdioProtocol):
 		w.Header().Set("Upgrade", StdioProtocol)
 		problem(w, http.StatusUpgradeRequired, "upgrade_required", "the stdio flow needs Upgrade: "+StdioProtocol)
 		return
@@ -659,11 +740,11 @@ func serveStdio(a *Attempt, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{}) //nolint:errcheck // a stream has no deadline
-	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + StdioProtocol + "\r\n\r\n"); err != nil || rw.Flush() != nil {
+	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n"); err != nil || rw.Flush() != nil {
 		_ = conn.Close() //nolint:errcheck // the worker is gone
 		return
 	}
-	if !a.attachWorker(conn, rw.Reader) {
+	if !a.attachWorker(conn, rw.Reader, protocol == StdioProtocolFiles) {
 		_ = conn.Close() //nolint:errcheck // a second stream is refused
 	}
 }

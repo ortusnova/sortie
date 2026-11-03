@@ -1125,6 +1125,48 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 	return r.syncer.ImportReturned(ctx, ws.Key, res.Bundle, *seed)
 }
 
+// sortieFilesBound bounds the wait for the worker's .sortie files after
+// a turn.
+const sortieFilesBound = 30 * time.Second
+
+// syncSortieFiles brings the agent's .sortie files from the worker's
+// machine into the workspace at hostPath after a turn, so the turn loop
+// reads the agent's status and criteria verdict as a co-located run
+// does: each returned file is written, and one the agent has not written
+// is removed. A worker that cannot return them before the session ends
+// leaves the workspace as it is; its files come back with the result.
+func (r *remoteRepository) syncSortieFiles(ctx context.Context, hostPath string) {
+	a := r.attempt
+	a.mu.Lock()
+	dp := a.dp
+	a.mu.Unlock()
+	if dp == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(ctx, sortieFilesBound)
+	defer cancel()
+	files, err := dp.SortieFiles(wctx)
+	if errors.Is(err, dataplane.ErrNoSortieFiles) {
+		return
+	}
+	if err != nil {
+		a.logger.Warn("the agent's .sortie files did not come back after the turn", slog.Any("error", err))
+		return
+	}
+	for _, name := range returnedSortieFiles {
+		data, ok := files[name]
+		if !ok {
+			if err := workspacekit.RemoveSortieFile(hostPath, name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				a.logger.Warn("stale .sortie file not removed", slog.String("file", name), slog.Any("error", err))
+			}
+			continue
+		}
+		if err := workspacekit.WriteSortieFile(hostPath, name, data); err != nil {
+			a.logger.Warn("returned .sortie file not stored", slog.String("file", name), slog.Any("error", err))
+		}
+	}
+}
+
 // awaitResult waits for the worker's returned result. A worker that
 // ended the attempt without returning one fails the export.
 func (a *remoteAttempt) awaitResult(ctx context.Context, dp *dataplane.Attempt, outcome <-chan struct{}) (dataplane.Result, error) {
