@@ -399,6 +399,7 @@ The backend packages obey the adapter-family boundary rules: no cross-adapter im
 | `stage.advanced` | a hop decision's result is `advanced` or `partial`: the issue moved to the next stage | `info` |
 | `stage.not_advanced` | a hop decision's result is `failed` or `ceiling`: a due move was not made, and `Reason` carries the result | `warning` |
 | `session.escalated` | a caller acting for a running session posts to the escalate route (Section 13.7) and the issue's 60-second window has passed | `warning` |
+| `hold.expired` | a poll tick finds a lease on an issue that is not running past its expiry with no renewal (Section 13.7); the body names the holder, the reason, the last evidence, and the last renewal | `warning` |
 | `agent.message` | the agent calls `notify_operator` | set by the agent |
 
 A cancelled run publishes no session event.

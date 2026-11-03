@@ -1500,7 +1500,9 @@
             "monthly_spend_ceiling",
             "stage_hop_unconfirmed",
             "usage_limit",
-            "park_comments_unread"
+            "park_comments_unread",
+            "standing_hold",
+            "standing_hold_expired"
           ],
           "type": "string"
         },
@@ -5639,6 +5641,64 @@
       ],
       "type": "object"
     },
+    "StandingHoldResponse": {
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "expired": {
+          "type": "boolean"
+        },
+        "expired_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "held_since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "renewed_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "until": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id",
+        "issue_identifier",
+        "by",
+        "reason",
+        "evidence",
+        "held_since",
+        "renewed_at",
+        "until",
+        "expired",
+        "expired_at"
+      ],
+      "type": "object"
+    },
     "State": {
       "properties": {
         "leases": {
@@ -5860,6 +5920,19 @@
             }
           ]
         },
+        "holds": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/StandingHoldResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "host": {
           "$ref": "#/$defs/Host"
         },
@@ -5993,6 +6066,7 @@
         "between_stages",
         "active",
         "held",
+        "holds",
         "attention",
         "agent_totals",
         "rate_limits",

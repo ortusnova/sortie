@@ -334,7 +334,7 @@ export interface HoldBlockerResponse {
 }
 
 export interface HoldResponse {
-  reason: "agent_slots_full" | "ssh_hosts_full" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread";
+  reason: "agent_slots_full" | "ssh_hosts_full" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
   held_since: string;
   blockers: HoldBlockerResponse[] | null;
   slot: HoldSlotResponse | null;
@@ -1180,6 +1180,19 @@ export interface StagePositionResponse {
   hop_ceiling: number;
 }
 
+export interface StandingHoldResponse {
+  issue_id: string;
+  issue_identifier: string;
+  by: string;
+  reason: string;
+  evidence: string;
+  held_since: string;
+  renewed_at: string;
+  until: string;
+  expired: boolean;
+  expired_at: string | null;
+}
+
 export interface State {
   workers: Worker[] | null;
   queue: Queued[] | null;
@@ -1218,6 +1231,7 @@ export interface StateResponse {
   between_stages: StageHopResponse[] | null;
   active: ActiveIssueResponse[] | null;
   held: HeldIssueResponse[] | null;
+  holds: StandingHoldResponse[] | null;
   attention: AttentionItemResponse[] | null;
   agent_totals: SnapshotAgentTotals;
   rate_limits: Record<string, AgentUsageWindowsResponse>;

@@ -1697,6 +1697,7 @@ The catalog is closed. Validation accepts exactly these names and rejects any ot
 | `budget.held` | An issue is held out of dispatch by `agent.max_sessions`, `agent.max_tokens`, or `agent.max_cost_usd`. | `warning` |
 | `stage.advanced` | A stage hop is made: the issue moves to the next stage, even when removing an old stage label failed ([Stage chains](#stage-chains)). | `info` |
 | `stage.not_advanced` | A stage hop is due and not made, because the label add failed or the hop ceiling is reached. The event carries the reason, `failed` or `ceiling`. | `warning` |
+| `hold.expired` | A lease on an issue that is not running ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)) reached its `until` without a renewal. The body names the holder, the reason, the last evidence, and when it was last renewed. A destination receives it only when its `events` lists it. | `warning` |
 | `session.escalated` | A caller acting for a running session, normally an ACP broker relaying an agent's question or permission request, posts to `POST /api/v1/{identifier}/escalate` ([Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token)). At most one per issue per 60 seconds. The caller's text arrives masked of registered secrets as `agent_text`, and the event carries the kind, the run's rule, and the session link. A destination receives it only when its `events` lists it; nothing subscribes to it implicitly. | `warning` |
 | `agent.message` | The agent calls `notify_operator`. | Set by the agent. |
 
@@ -2584,6 +2585,8 @@ Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observab
 | `merge` | `POST /api/v1/{identifier}/merge` | Merge the issue's pull request once its review and CI passed, unless it is a `review: ui` story, whose merge the operator keeps. |
 | `file_issue` | `POST /api/v1/issues` | File an open issue in the tracker. |
 | `live_proof` | `POST /api/v1/{identifier}/live-proof` | Request a live proof of the issue. |
+| `hold` | `POST /api/v1/{identifier}/hold` | Place or renew a lease on an issue that is not running, which keeps it out of dispatch while the supervisor proves it ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)). The route also takes the issue's own session token. |
+| `release_hold` | `POST /api/v1/{identifier}/release` | End a lease. |
 
 Every other control route, the plan routes included, answers the supervisor token `403` `forbidden` and does nothing: so the supervisor cannot approve a story (`POST /api/v1/plan/sync`), change a spec, or touch a credential, a key, or a pushed commit, since Sortie offers it no route that does. A request the supervisor token makes carries the evidence it is based on as an `evidence` string in its JSON body, beside the route's own members; one without evidence gets `400` `evidence_required` and does nothing. Sortie stores every request the supervisor token makes to a control route, refused ones included, with its evidence (masked, at most 8192 characters), its result and its time, and `GET /api/v1/state` serves the 50 newest as `supervisor_actions`. Sortie removes every variable of its own environment that holds the supervisor token's value at startup, as it does for the control token. The read-only endpoints need no token, so the supervisor reads `/api/v1/state` and the per-issue detail without one. The routes Sortie added for the supervisor, `unpark`, `merge-record`, `fix`, `draft`, `merge`, `issues` and `live-proof`, answer `200` with `{"action", "issue_identifier", "issue_id", "pull_request", "merge_commit"}`, the last two `null` when the action named none, and an error with the codes listed for each route in the table below; `503` (`orchestrator_unavailable`) during shutdown.
 
@@ -2614,7 +2617,7 @@ A reverse proxy in front of Sortie must pass on the `Host` header the browser se
 | POST   | `/api/v1/attention/{id}/acknowledge` | Record that a person has seen an item that needs a person: it leaves the attention count and stays listed with the time it was acknowledged until its cause clears, and a new cause shows as a new item. Changes nothing in the tracker or the pull request. Returns 200 OK, 404 when no current item has the ID, and 409 Conflict during graceful shutdown. Every 200 and 409 response says in one sentence what it did. |
 | POST   | `/api/v1/reactions/{identifier}/{kind}/check` | Make a pending pull request reaction check its pull request on the next poll tick instead of at its scheduled time. The check follows every rule of the reaction, and the request itself starts no agent and changes nothing in the tracker or the pull request. A reaction still waiting after that check keeps the time its next check was due before, so asking early never makes it wait longer. Returns 202 Accepted, 404 when the issue has no pending reaction of that kind, and 409 Conflict during graceful shutdown. Every 202 and 409 response says in one sentence what it did. |
 | GET    | `/api/v1/events`         | Server-sent event stream: one `change` event each time anything the JSON API serves changes, at most one a second, a `heartbeat` event every 15 seconds, and, for each run named with `run`, the run's agent events. A change signal carries no data; a client refetches what it shows. See [`GET /api/v1/events`: change signals and agent events](#get-apiv1events-change-signals-and-agent-events). Requires the control token when one is set; a session token receives 403. |
-| POST   | `/api/v1/{identifier}/hold`    | Hold the issue's running worker: pause its stall and turn clocks while a person works in its session. Optional body `{"reason": "...", "holder": "..."}`. 200 with the held state, 409 when the issue has no running worker, 404 when the identifier is unknown. Holding a held run keeps its original start. Control token or the issue's own session token. |
+| POST   | `/api/v1/{identifier}/hold`    | Hold the issue's running worker: pause its stall and turn clocks while a person works in its session. Optional body `{"reason": "...", "holder": "..."}`. For an issue that is not running, place or renew a lease that keeps it out of dispatch: body `{"by": "...", "reason": "...", "evidence": "...", "until": "...", "minutes": N}`, `evidence` required. 200 with the held state, 400 for a lease without evidence or new evidence, 404 when the identifier is unknown. Holding a held run keeps its original start. Control token or the issue's own session token. |
 | POST   | `/api/v1/{identifier}/release` | End the issue's hold. 200 with the hold state, also when the run was not held (nothing changes); 409 and 404 as for hold. Control token or the issue's own session token. |
 | POST   | `/api/v1/{identifier}/escalate` | Escalate the running issue to people through the `session.escalated` notification event. Body `{"message": "...", "kind": "question|permission|other", "url": "..."}`. 202 accepted (also when no destination lists the event), 400 for an empty message or an unknown kind, 409 when the issue has no running worker, 404 when the identifier is unknown, 429 within 60 seconds of the issue's last escalation. Control token or the issue's own session token. |
 | POST   | `/api/v1/{identifier}/answer` | Answer a parked issue. Body `{"text": "...", "author": "..."}`, both required. Posts the text on the issue as a comment attributed to the author and releases the park as a person's gesture in the tracker does, so the issue's next run resumes its session with the stop statement and the comments made since the park. 200 with the park answered, 409 `issue_not_parked` for an issue that is not parked (nothing is posted), 400 for an empty text or author, 502 `tracker_error` when the comment fails (the park stays). Control token or the supervisor token; a session token gets 403. See [`POST /api/v1/{identifier}/answer`](#post-apiv1identifieranswer--answer-a-parked-issue). |
@@ -3551,6 +3554,22 @@ Each row of `between_stages`, and the `between_stages` object of the per-issue r
 
 A hop record stores the type, labels, and state with the hop, and Sortie restores them at startup. A hop recorded before the upgrade that introduced them serves none of them until the next stage dispatches.
 
+**Leases (`holds`):**
+
+Each element of `holds` is one lease on an issue that is not running ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)), live or expired. The list is always present, `[]` when there is none, and sorted by `issue_identifier` and then `issue_id`. Leases are stored, so the list survives a restart. An issue under a lease also appears in its own place: `parked` while its park stands, else `held` with the reason `standing_hold` or `standing_hold_expired`.
+
+| Field                | Type             | Description |
+| -------------------- | ---------------- | ----------- |
+| `issue_id`, `issue_identifier` | string | The issue the lease holds. |
+| `by`                 | string           | Who holds the issue, as the hold request said; may be empty. |
+| `reason`             | string           | Why, as the latest request that gave one said; may be empty. |
+| `evidence`           | string           | What the holder is doing for the issue, as the latest hold or renewal said. |
+| `held_since`         | string           | When the lease was placed, in UTC. |
+| `renewed_at`         | string           | The latest hold or renewal, in UTC. |
+| `until`              | string           | When the lease ends unless a renewal moves it, in UTC. |
+| `expired`            | boolean          | True once the lease ended without a renewal. |
+| `expired_at`         | string or `null` | When the lease expired, equal to its `until`; `null` while it is live. |
+
 **Held issues (`held`):**
 
 Each element of `held` describes one eligible issue in an active state that the latest dispatch pass held back instead of dispatching, with why and what releases it. The list is always present, `[]` when the pass held nothing, and sorted by `issue_identifier` and then `issue_id`; `counts.held` equals its length. An issue appears in one place: it is not listed here while it is running, scheduled for a retry, held by a budget, parked, waiting on a pending reaction, or between stages, and an issue between stages serves its hold on its `between_stages` row. A held issue is not an active issue, so it is not in `active` and adds nothing to `counts.attention` or `attention`. Sortie keeps the list in memory only: it is empty until a poll tick has run the dispatch loop and after a restart, and a tick that returns before the loop, because its dispatch preflight or its candidate fetch failed, leaves it as it was.
@@ -3595,6 +3614,8 @@ The `hold` object of a held row and of a between-stages row has these members.
 | `stage_hop_unconfirmed`                                       | The read that should confirm the issue's stage move failed or did not show the hop's label. |
 | `usage_limit`                                                 | The agent provider refused a session because the account's usage limit is reached, and Sortie starts no session of the issue's agent kind (on that model alone, for a hold with `model_only`) until it resets. |
 | `park_comments_unread`                                        | A person released the issue's park, and the read of the comments the next run receives failed. |
+| `standing_hold`                                               | A live lease holds the issue ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)). It ranks above every other reason. |
+| `standing_hold_expired`                                       | The issue's lease expired without a renewal, and the issue waits for a person to release it. |
 
 While a spend window holds, an issue whose blockers are clear shows the spend reason, and so does every issue a full capacity limit stops, because a freed slot would not dispatch it while the window holds. A usage-limit hold on an issue's agent kind does the same with the reason `usage_limit`, and a spend window ranks above it. Without a spend window, a full global agent slot limit or SSH capacity stops the pass before it checks blockers, so an issue that also has an open blocker shows the capacity reason until a pass reaches it with capacity free; the pass reads no blocker for the issues it classifies this way.
 
@@ -3658,12 +3679,13 @@ Each element of `attention` describes one thing that needs a person. Sortie deri
 
 | `kind`                   | Cause | `since` | `severity` | `action.kind` |
 | ------------------------ | ----- | ------- | ---------- | ------------- |
-| `parked`                 | A row of `parked` | `parked_at`, truncated to whole seconds | `warning` | `open_issue`; `acknowledge` when the row has no `issue_url` |
+| `parked`                 | A row of `parked` whose issue has no live lease in `holds` | `parked_at`, truncated to whole seconds | `warning` | `open_issue`; `acknowledge` when the row has no `issue_url` |
 | `budget_held`            | A row of `budget_exhausted` | `exhausted_at` | `warning` | `acknowledge` |
 | `reaction_escalated`     | A row of `pending_reactions` whose `escalated_at` is non-null, whatever its kind | `escalated_at` | `warning` | For `merge-completion`: `open_issue`, else `acknowledge`. For every other kind: `open_pull_request`, else `open_issue`, else `acknowledge` |
 | `workflow_reload_failed` | `health.workflow.consecutive_failures` above `0` | `health.workflow.failing_since` | `critical` | `acknowledge` |
 | `preflight_failed`       | `health.preflight.consecutive_failures` above `0`, unless the latest failed run failed because the workflow file did not load | `health.preflight.failing_since` | `critical` | `acknowledge` |
 | `spend_ceiling_reached`  | A window of `spend_ceiling` whose `holds_dispatch` is true, one item per holding window | The first evaluation that found the window at its ceiling; after a restart, the first evaluation after it | `critical` | `acknowledge` |
+| `hold_expired`           | A row of `holds` whose `expired` is true | `expired_at` | `warning` | `acknowledge` |
 
 `action` keys: `kind` is `open_issue`, `open_pull_request`, or `acknowledge`. `url` is present exactly for `open_issue` (the issue's link) and `open_pull_request` (the pull request's link). `acknowledge` is the action of an item with nothing to open. Every item can be acknowledged, whatever its `action`.
 
@@ -3673,7 +3695,7 @@ A preflight that fails because the workflow file did not load yields no `preflig
 
 | Member | Kind | Value |
 | ------ | ---- | ----- |
-| `reason` | `parked`, `budget_held`, `spend_ceiling_reached` | The row's `reason`: `agent_blocked`, `handoff_absence`, or `repeated_failure`; `money_budget`, `token_budget`, or `session_budget`. For a spend ceiling hold, `daily_spend_ceiling`, `weekly_spend_ceiling`, or `monthly_spend_ceiling`. |
+| `reason` | `parked`, `budget_held`, `spend_ceiling_reached`, `hold_expired` | For `hold_expired`, the lease's `reason`. Otherwise the row's `reason`: `agent_blocked`, `handoff_absence`, or `repeated_failure`; `money_budget`, `token_budget`, or `session_budget`. For a spend ceiling hold, `daily_spend_ceiling`, `weekly_spend_ceiling`, or `monthly_spend_ceiling`. |
 | `label` | `parked` | The row's `label`. |
 | `used_sessions`, `budget_sessions` | `budget_held` with `session_budget` | The row's values. |
 | `used_tokens`, `used_tokens_complete`, `budget_tokens` | `budget_held` with `token_budget` | The row's `used_tokens` and `budget_tokens`. `used_tokens_complete` is `false` exactly when `used_tokens` is a lower bound. |
@@ -3693,6 +3715,7 @@ A preflight that fails because the workflow file did not load yields no `preflig
 | `parked`                 | The issue ID; the park time truncated to whole seconds in RFC 3339, or `""` when the stored time cannot be read. |
 | `budget_held`            | The issue ID; the `reason`; the ceiling the reason names as a decimal number, `budget_usd` for `money_budget`, `budget_tokens` for `token_budget`, and `budget_sessions` for `session_budget`. A `money_budget` ceiling is written in its shortest decimal form, with no exponent and no trailing zeros, so `5`, `5.0`, and `5.00` all give `5`. |
 | `reaction_escalated`     | The issue ID; the row's `kind`; `escalated_at` in RFC 3339 with nanoseconds. |
+| `hold_expired`           | The issue ID; `expired_at` in RFC 3339 with nanoseconds. |
 | `spend_ceiling_reached`  | The window (`daily`, `weekly`, or `monthly`); the window's start in UTC in RFC 3339; the window's ceiling in its shortest decimal form, as a `money_budget` ceiling is written. |
 | `workflow_reload_failed` | `failing_since` in RFC 3339 with nanoseconds. |
 | `preflight_failed`       | `failing_since` in RFC 3339 with nanoseconds. |
@@ -3709,6 +3732,7 @@ Items are ordered by `severity` (`critical` before `warning`), then by `since` (
 | ------ | ------------- |
 | `parked` | `Parked: the agent needs a person` for `agent_blocked`; `Parked: no evidence of work` for `handoff_absence`; `Parked: the same failure twice` for `repeated_failure`. |
 | `budget_held` | `Money budget reached` for `money_budget`; `Token budget reached` for `token_budget`; `Session budget reached` for `session_budget`. |
+| `hold_expired` | `<by>'s hold expired`, or `The hold expired` for a lease without a holder. |
 | `spend_ceiling_reached` | `Daily spend ceiling reached` for the daily window; `Weekly spend ceiling reached` for the weekly window; `Monthly spend ceiling reached` for the monthly window. |
 | `reaction_escalated` | `CI escalated on #<number>`, `Review comments escalated on #<number>`, `Bot review escalated on #<number>`, `Merge conflict escalated on #<number>`, `Auto-merge escalated on #<number>`, or `Merge completion escalated on #<number>`, by reaction kind. |
 | `workflow_reload_failed` | `<file> failed to load`. |
@@ -5123,7 +5147,7 @@ A hold tells Sortie that a person is working in an issue's running session, typi
 - Its current turn is not ended for `agent.turn_timeout_ms`. The turn's deadline moves out by the time the turn spent held, so a 30-minute turn held for 10 minutes ends for timeout no earlier than 40 minutes after it began.
 - Tracker reconciliation and the `agent.max_tokens` ceiling still apply. An issue that turns terminal or leaves the active states is stopped as an unheld one is, and its hold ends.
 
-A hold ends on release, when reconciliation stops the run, or when its worker exits for any reason; the run's total held time is stored in run history as `held_ms`. Holds live in memory and do not survive a restart, as running workers do not. There is no time limit on a hold: watch `sortie_runs_held` and `held_since` to alert on a forgotten one.
+A hold of a running worker ends on release, when reconciliation stops the run, or when its worker exits for any reason; the run's total held time is stored in run history as `held_ms`. Such holds live in memory and do not survive a restart, as running workers do not. There is no time limit on a hold: watch `sortie_runs_held` and `held_since` to alert on a forgotten one.
 
 ```http
 POST /api/v1/LIVE-1/hold
@@ -5136,6 +5160,30 @@ HTTP/1.1 200 OK
 ```
 
 `release` takes no body and answers with the same shape, `held` false and `held_since` null.
+
+##### Leases on issues that are not running
+
+A hold on an issue that is not running, such as a parked issue a supervisor is proving by hand, is a **lease, not a label**. It keeps the issue out of dispatch: Sortie starts no run, retry, or continuation for it. It lasts only while its holder shows it is taking care of the issue, so it must be renewed with new evidence before it ends:
+
+- The body is `{"by": "supervisor", "reason": "...", "evidence": "...", "until": "<RFC 3339>"}`. `holder` is another name for `by`. `evidence` is required: what is being done for the issue, such as a sandbox run, a pull request, or a step. `until` is when the lease ends; `minutes` gives it as a duration instead. With neither, the lease lasts 60 minutes. A lease may not end in the past or more than 4 hours after the request (`400`, `invalid_request`).
+- Holding an issue under a live lease renews it. A renewal needs evidence other than the lease's current evidence (`400` otherwise), sets `renewed_at`, and moves `until`. It keeps the lease's start and holder, and replaces the reason when it gives one.
+- When `until` passes without a renewal, the lease **expires**. Sortie logs `issue hold expired without a renewal`, publishes a `hold.expired` event ([Event catalog](#event-catalog)), and raises a `hold_expired` attention item for a person. The issue stays out of dispatch, with the held reason `standing_hold_expired`, until someone releases the hold or the holder places a new lease with new evidence.
+- `release` ends a lease, live or expired. Releasing an issue that is not running and has no lease answers `409` (`issue_not_running`).
+- A lease does not release a park. Answer the park too ([`POST /api/v1/{identifier}/answer`](#post-apiv1identifieranswer--answer-a-parked-issue)), before or after the hold: the issue then waits for the lease instead of running. While a lease is live, the park raises no `parked` attention item.
+- Leases are stored and survive a restart with their expiry. The first poll tick after a restart expires a lease whose `until` passed while Sortie was down.
+
+```http
+POST /api/v1/ONS-54/hold
+Authorization: Bearer <token>
+
+{"by": "supervisor", "reason": "full vm chain proof running", "evidence": "sandbox hl-ons-54-proof-1 on taichi", "minutes": 60}
+
+HTTP/1.1 200 OK
+{"issue_identifier": "ONS-54", "issue_id": "10054", "held": true, "hold_reason": "full vm chain proof running", "holder": "supervisor", "held_since": "2026-11-03T13:00:00Z", "held_total_ms": 0,
+ "lease": {"issue_id": "10054", "issue_identifier": "ONS-54", "by": "supervisor", "reason": "full vm chain proof running", "evidence": "sandbox hl-ons-54-proof-1 on taichi", "held_since": "2026-11-03T13:00:00Z", "renewed_at": "2026-11-03T13:00:00Z", "until": "2026-11-03T14:00:00Z", "expired": false, "expired_at": null}}
+```
+
+`GET /api/v1/state` lists every lease, live or expired, in `holds`, with the members of `lease` above.
 
 #### `POST /api/v1/{identifier}/escalate` — Operator Escalation
 

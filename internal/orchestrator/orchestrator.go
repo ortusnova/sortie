@@ -1157,6 +1157,13 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	cfg := o.workflowManager.Config()
 	o.updateRouter(cfg)
 	o.state.Rates = o.workflowManager.Rates()
+	expireStandingHolds(o.state, time.Now().UTC(), standingHoldExpiry{
+		Store:  standingHoldStoreOf(o.store),
+		Router: o.router,
+		Wg:     &o.state.TrackerOpsWg,
+		Ctx:    ctx,
+		Log:    o.logger,
+	})
 
 	// Applied unconditionally, not gated on preflight success.
 	o.state.PollIntervalMS = cfg.Polling.IntervalMS
@@ -1339,6 +1346,11 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var heldByBlockers, blockersUnresolvedHeld, blockersNotReadHeld, blockersIncompleteHeld int
 	var readFailures int
 	for i, issue := range input {
+		if standing := o.state.StandingHolds[issue.ID]; standing != nil && passesEligibilityGates(issue, o.state, activeSet, terminalSet) {
+			held.hold(issue, standingHeldEntry(standing))
+			o.once.declined(issue, SkipStandingHold)
+			continue
+		}
 		if GlobalAvailableSlots(o.state.MaxConcurrentAgents, len(o.state.Running)) == 0 {
 			held.holdEligible(input[i:], o.state, activeSet, terminalSet, HeldEntry{
 				Reason: SkipAgentSlotsFull,
@@ -2892,9 +2904,12 @@ func (o *Orchestrator) handleControl(ctx context.Context, req controlRequest) Co
 	var reply ControlReply
 	switch req.Kind {
 	case controlHold:
-		reply = applyHold(o.state, req.Identifier, req.Reason, req.Holder, now, o.logger)
+		reply = applyHold(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, req.Hold, now, o.logger)
 	case controlRelease:
-		reply = applyRelease(o.state, req.Identifier, now, o.metrics, o.logger)
+		reply = applyRelease(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, now, o.metrics, o.logger)
+		if reply.Outcome == ControlDone && !reply.Hold.Held && o.state.Running[reply.Hold.IssueID] == nil {
+			o.RefreshFunc()()
+		}
 	case controlEscalate:
 		reply = applyEscalate(o.state, req.Identifier, req.Escalation, now, escalationParams{
 			Router: o.router,
@@ -2953,10 +2968,11 @@ func (o *Orchestrator) sendControl(req controlRequest) ControlReply {
 }
 
 // HoldFunc returns the function the HTTP server calls to hold the
-// running issue named by identifier. Safe to call from any goroutine.
-func (o *Orchestrator) HoldFunc() func(identifier, reason, holder string) ControlReply {
-	return func(identifier, reason, holder string) ControlReply {
-		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Reason: reason, Holder: holder})
+// running issue named by identifier, or to place or renew the lease on a
+// known issue that is not running. Safe to call from any goroutine.
+func (o *Orchestrator) HoldFunc() func(identifier string, req HoldRequest) ControlReply {
+	return func(identifier string, req HoldRequest) ControlReply {
+		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Hold: req})
 	}
 }
 

@@ -172,6 +172,17 @@ type SessionEscalatedFacts struct {
 	URL  string
 }
 
+// HoldExpiredFacts is the content of hold.expired: the lease that ran out
+// without a renewal. By, Reason, and Evidence are as the last hold or
+// renewal request said.
+type HoldExpiredFacts struct {
+	By        string
+	Reason    string
+	Evidence  string
+	RenewedAt time.Time
+	Until     time.Time
+}
+
 func (SessionStartedFacts) messageFacts()            {}
 func (SessionCompletedFacts) messageFacts()          {}
 func (SessionStoppedFacts) messageFacts()            {}
@@ -188,3 +199,4 @@ func (MergeCompletionMissingSHAFacts) messageFacts() {}
 func (StageFacts) messageFacts()                     {}
 func (BudgetHeldFacts) messageFacts()                {}
 func (SessionEscalatedFacts) messageFacts()          {}
+func (HoldExpiredFacts) messageFacts()               {}

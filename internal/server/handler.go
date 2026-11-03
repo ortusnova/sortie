@@ -31,6 +31,7 @@ type stateResponse struct {
 	BetweenStages          []stageHopResponse                   `json:"between_stages"`
 	Active                 []activeIssueResponse                `json:"active"`
 	Held                   []heldIssueResponse                  `json:"held"`
+	Holds                  []standingHoldResponse               `json:"holds"`
 	Attention              []attentionItemResponse              `json:"attention"`
 	AgentTotals            orchestrator.SnapshotAgentTotals     `json:"agent_totals"`
 	RateLimits             map[string]agentUsageWindowsResponse `json:"rate_limits"`
@@ -329,6 +330,8 @@ func nonNil(s []string) []string {
 // hold, Worker exactly for a no_worker hold, and ResetsAt exactly for a
 // spend ceiling hold or a usage_limit hold.
 // AgentKind, ModelOnly, and Model are served for a usage_limit hold only. A
+// standing_hold or standing_hold_expired row has its lease in the state's
+// holds list. A
 // client MUST tolerate a Reason it does not know and show the served texts.
 // Used by GET /api/v1/state and GET /api/v1/{identifier}.
 type holdResponse struct {
@@ -416,6 +419,41 @@ type parkedEntryResponse struct {
 
 	StatusText     string `json:"status_text"`
 	StatusTextFull string `json:"status_text_full"`
+}
+
+// standingHoldResponse is the JSON wire format for a standing hold: a
+// lease on an issue that is not running. By, Reason, and Evidence are as
+// the latest hold or renewal request said. Until is when the lease ends
+// unless a renewal with new evidence moves it. ExpiredAt is null while the
+// lease is live, and set once it ended without a renewal; an expired hold
+// keeps the issue out of dispatch until a release or a new hold. Used by
+// GET /api/v1/state and the hold and release routes.
+type standingHoldResponse struct {
+	IssueID         string     `json:"issue_id"`
+	IssueIdentifier string     `json:"issue_identifier"`
+	By              string     `json:"by"`
+	Reason          string     `json:"reason"`
+	Evidence        string     `json:"evidence"`
+	HeldSince       time.Time  `json:"held_since"`
+	RenewedAt       time.Time  `json:"renewed_at"`
+	Until           time.Time  `json:"until"`
+	Expired         bool       `json:"expired"`
+	ExpiredAt       *time.Time `json:"expired_at"`
+}
+
+func toStandingHoldResponse(h orchestrator.SnapshotStandingHold) standingHoldResponse {
+	return standingHoldResponse{
+		IssueID:         h.IssueID,
+		IssueIdentifier: h.Identifier,
+		By:              h.Holder,
+		Reason:          h.Reason,
+		Evidence:        h.Evidence,
+		HeldSince:       h.Since.UTC(),
+		RenewedAt:       h.RenewedAt.UTC(),
+		Until:           h.Until.UTC(),
+		Expired:         !h.ExpiredAt.IsZero(),
+		ExpiredAt:       utcOrNil(h.ExpiredAt),
+	}
 }
 
 // pendingReactionResponse is the JSON wire format for one pending pull
@@ -1324,6 +1362,11 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 		held = append(held, toHeldIssueResponse(e, words))
 	}
 
+	holds := make([]standingHoldResponse, 0, len(snap.Holds))
+	for _, h := range snap.Holds {
+		holds = append(holds, toStandingHoldResponse(h))
+	}
+
 	attention := toAttentionResponses(sentence.Attention(snap, health, words))
 
 	rateLimits := make(map[string]agentUsageWindowsResponse, len(snap.UsageWindows))
@@ -1350,6 +1393,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 		PendingReactions: pendingReactions,
 		BetweenStages:    betweenStages,
 		Held:             held,
+		Holds:            holds,
 		Attention:        attention,
 		AgentTotals:      snap.AgentTotals,
 		RateLimits:       rateLimits,
