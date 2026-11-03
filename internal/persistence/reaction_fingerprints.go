@@ -118,12 +118,33 @@ func (s *Store) GetReactionFingerprint(ctx context.Context, issueID, kind string
 	return fingerprint, dispatchedInt != 0, nil
 }
 
-// MarkReactionDispatched sets dispatched=1 for the given issue and kind.
-// No-op if the row does not exist.
+// GetReactionDispatches returns the stored fingerprint and the number of
+// times it was marked dispatched for the given issue and kind. Returns
+// ("", 0, nil) when no row exists.
+func (s *Store) GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT fingerprint, dispatched FROM reaction_fingerprints
+		WHERE issue_id = ? AND kind = ?`,
+		issueID, kind,
+	).Scan(&fingerprint, &dispatches)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	return fingerprint, dispatches, nil
+}
+
+// MarkReactionDispatched counts one dispatch of the stored fingerprint
+// for the given issue and kind: dispatched is the number of dispatches
+// since the fingerprint was stored, read as a flag by
+// [Store.GetReactionFingerprint] and as a count by
+// [Store.GetReactionDispatches]. No-op if the row does not exist.
 func (s *Store) MarkReactionDispatched(ctx context.Context, issueID, kind string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE reaction_fingerprints SET dispatched = 1, updated_at = ?
+		UPDATE reaction_fingerprints SET dispatched = dispatched + 1, updated_at = ?
 		WHERE issue_id = ? AND kind = ?`,
 		now, issueID, kind,
 	)

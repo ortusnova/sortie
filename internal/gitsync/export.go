@@ -109,13 +109,15 @@ func (s *Syncer) Export(ctx context.Context, env environment.Environment, ws env
 		return res, nil
 	}
 
-	return s.importAndPush(ctx, ws.Key, bundle, "", res)
+	return s.importAndPush(ctx, ws.Key, bundle, "", nil, res)
 }
 
 // importAndPush imports the bundle at bundlePath into the mirror and
 // pushes it, as [Syncer.Export] describes, with the branch's commit
-// required to descend from onTopOf when that is not empty.
-func (s *Syncer) importAndPush(ctx context.Context, key, bundlePath, onTopOf string, res ExportResult) (ExportResult, error) {
+// required to descend from onTopOf when that is not empty. A non-nil
+// lease is the commit the upstream branch must hold for the push;
+// otherwise the push leases on Sortie's last push.
+func (s *Syncer) importAndPush(ctx context.Context, key, bundlePath, onTopOf string, lease *string, res ExportResult) (ExportResult, error) {
 	branch := res.Branch
 	l, err := s.mirror.Lock(ctx)
 	if err != nil {
@@ -128,7 +130,12 @@ func (s *Syncer) importAndPush(ctx context.Context, key, bundlePath, onTopOf str
 	if err != nil || !needPush {
 		return res, err
 	}
-	if err := s.push(ctx, l, key, branch, commit); err != nil {
+	if lease != nil {
+		err = s.pushOver(ctx, l, key, branch, commit, *lease)
+	} else {
+		err = s.push(ctx, l, key, branch, commit)
+	}
+	if err != nil {
 		return res, err
 	}
 	res.Pushed = true
@@ -168,15 +175,22 @@ func (s *Syncer) PushIncoming(ctx context.Context, key string) (bool, error) {
 // lease on [PushedRef], then records commit as Sortie's last push and
 // as the mirror's copy of the upstream branch.
 func (s *Syncer) push(ctx context.Context, l *Locked, key, branch, commit string) error {
-	pushed := PushedRef(key)
-	expected, _, err := l.RefValue(ctx, pushed)
+	expected, _, err := l.RefValue(ctx, PushedRef(key))
 	if err != nil {
 		return err
 	}
+	return s.pushOver(ctx, l, key, branch, commit, expected)
+}
+
+// pushOver pushes the incoming ref of key to the upstream's branch while
+// the branch holds expected, or is absent when expected is empty, then
+// records commit as Sortie's last push and as the mirror's copy of the
+// upstream branch.
+func (s *Syncer) pushOver(ctx context.Context, l *Locked, key, branch, commit, expected string) error {
 	if err := l.Push(ctx, IncomingRef(key), branch, expected); err != nil {
 		return err
 	}
-	if err := l.SetRef(ctx, pushed, commit); err != nil {
+	if err := l.SetRef(ctx, PushedRef(key), commit); err != nil {
 		return err
 	}
 	return l.SetRef(ctx, "refs/heads/"+branch, commit)
