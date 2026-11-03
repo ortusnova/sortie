@@ -40,6 +40,7 @@ const (
 	triggerTimer        = "timer"
 	triggerStall        = "stall"
 	triggerCIFix        = "ci_fix"
+	triggerStoryFault   = "story_fault"
 
 	actionStop         = "stop"
 	actionCleanup      = "cleanup"
@@ -442,6 +443,11 @@ type RetryEntry struct {
 	// provider usage-limit refusal, so the next run publishes no session.started
 	// event and, if refused, no session.failed event.
 	UsageLimitNotified bool
+
+	// Failure is the failure a story-fault retry hands to its session;
+	// nil for every other retry. Runtime-only: a retry restored from the
+	// store hands over its Error instead.
+	Failure *StoryFailure
 
 	// RuleName is the dispatch rule of the run this retry follows.
 	RuleName string
@@ -928,6 +934,9 @@ type AutoMergeReactionData struct {
 	Repo     string
 	Branch   string
 	SHA      string
+
+	// story is what the entry's story is, set by the review gate.
+	story reviewStory
 }
 
 // AutoMergeReactionConfig holds validated auto-merge-specific
@@ -1354,9 +1363,18 @@ type State struct {
 	// them before the tracker confirms the move.
 	DispatchBlocks map[string]DispatchBlock
 
+	// StandingHolds maps issue ID to the hold someone placed on an issue
+	// that was not running. It keeps the issue out of dispatch, retry and
+	// continuation until a release removes it, and survives a restart.
+	StandingHolds map[string]*StandingHold
+
 	// CriteriaReviewWarned holds the plan stories already warned that the
 	// forge requires a review their criteria gate cannot give.
 	CriteriaReviewWarned map[string]struct{}
+
+	// ClickProofsAsked holds, per ui story, the head commit whose
+	// click-proofs the tracker was last asked for.
+	ClickProofsAsked map[string]string
 
 	// WorkerWg tracks in-flight worker goroutines spawned by
 	// [DispatchIssue]. Callers dispatching outside the Run() loop can
@@ -1635,6 +1653,15 @@ type State struct {
 	// runs. Owned by the event loop.
 	dispatchPause *dispatchPauseState
 
+	// PlatformFaults maps the ID of each open platform fault to the fault.
+	// The durable mirror is the platform_faults table. Only the event loop
+	// mutates this map.
+	PlatformFaults map[string]*PlatformFault
+
+	// FaultHolds maps the ID of each issue an open platform fault holds out
+	// of dispatch to that fault's ID. Only the event loop mutates this map.
+	FaultHolds map[string]string
+
 	// sessionGrants is what the store holds of the sessions operators
 	// granted beyond agent.max_sessions. Owned by the event loop.
 	sessionGrants sessionGrantCache
@@ -1709,6 +1736,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		BudgetHoldNoticed:         make(map[string]string),
 		Parked:                    make(map[string]*ParkedEntry),
 		ParkReleases:              make(map[string]*ParkedEntry),
+		StandingHolds:             make(map[string]*StandingHold),
 		AttentionAcknowledgements: make(map[string]time.Time),
 		UsageLimitHolds:           make(map[UsageLimitHoldKey]UsageLimitHold),
 		StageHops:                 make(map[string]*StageHopEntry),
@@ -1723,7 +1751,10 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		TokenBudgetIncomplete:     make(map[string]struct{}),
 		DispatchBlocks:            make(map[string]DispatchBlock),
 		CriteriaReviewWarned:      make(map[string]struct{}),
+		ClickProofsAsked:          make(map[string]string),
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
+		PlatformFaults:            make(map[string]*PlatformFault),
+		FaultHolds:                make(map[string]string),
 	}
 }
 
@@ -1798,8 +1829,8 @@ type SnapshotSlotHold struct {
 // SnapshotHold is a read-only view of the hold the latest dispatch pass gave
 // one candidate. Blockers is nil unless Reason is [SkipBlockedBy], Slot is nil
 // unless it is [SkipAgentSlotsFull], ResetsAt is zero unless it is a spend
-// reason or [SkipUsageLimit], and AgentKind, ModelOnly, and Model are set for
-// [SkipUsageLimit] only.
+// reason or [SkipUsageLimit], AgentKind, ModelOnly, and Model are set for
+// [SkipUsageLimit] only, and Holder and Note for [SkipStandingHold] only.
 type SnapshotHold struct {
 	Reason    SkipReason        `json:"reason"`
 	Since     time.Time         `json:"held_since"`
@@ -1809,6 +1840,8 @@ type SnapshotHold struct {
 	AgentKind string            `json:"agent_kind,omitempty"`
 	ModelOnly bool              `json:"model_only,omitempty"`
 	Model     string            `json:"model,omitempty"`
+	Holder    string            `json:"holder,omitempty"`
+	Note      string            `json:"note,omitempty"`
 }
 
 // SnapshotHeldEntry is a read-only view of one held candidate. IssueTitle,
@@ -2156,6 +2189,9 @@ type RuntimeSnapshotResult struct {
 	ParkedCount          int                             `json:"parked_count"`
 	Parked               []SnapshotParkedEntry           `json:"parked"`
 
+	// Holds lists every standing hold, live or expired. Never nil.
+	Holds []SnapshotStandingHold `json:"holds"`
+
 	// PendingReactions is never nil.
 	PendingReactions []SnapshotPendingReaction `json:"pending_reactions"`
 
@@ -2189,6 +2225,10 @@ type RuntimeSnapshotResult struct {
 	// DispatchPause is a copy of the pause of dispatch in force; nil when
 	// dispatch runs.
 	DispatchPause *DispatchPause `json:"-"`
+
+	// PlatformFaults is a copy of every open platform fault, oldest first;
+	// empty when there is none.
+	PlatformFaults []SnapshotPlatformFault `json:"-"`
 
 	// SessionGrants is the sessions granted to each issue beyond
 	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
@@ -2483,6 +2523,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.AttentionAcknowledgements = maps.Clone(state.AttentionAcknowledgements)
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
 	snap.DispatchPause = state.dispatchPause.snapshot()
+	snap.PlatformFaults = snapshotPlatformFaults(state)
 	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
@@ -2554,6 +2595,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 		return cmp.Or(cmp.Compare(a.Identifier, b.Identifier), cmp.Compare(a.IssueID, b.IssueID))
 	})
 	snap.Parked = parked
+	snap.Holds = snapshotStandingHolds(state)
 
 	snap.PendingReactions = snapshotPendingReactions(state)
 	snap.BetweenStages = snapshotBetweenStages(state)
@@ -2633,7 +2675,7 @@ func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
 			row.EscalatedAt = &escalatedAt
 			row.EscalationTrigger = string(entry.EscalationTrigger)
 		}
-		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !waitsForOperator(entry) {
+		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !watchesUIStory(entry) {
 			watchEndsAt := watchBasis(entry).Add(window)
 			row.WatchEndsAt = &watchEndsAt
 		}

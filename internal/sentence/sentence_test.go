@@ -124,6 +124,7 @@ func TestFor(t *testing.T) {
 		{"retry after a stall", retry(orchestrator.SnapshotRetryEntry{Trigger: "stall"}), "Retry 2 in 40s: the agent stalled", ""},
 		{"retry timer", retry(orchestrator.SnapshotRetryEntry{Trigger: "timer", Error: "no available orchestrator slots"}), "Retry 2 in 40s: no agent slot was free", ""},
 		{"retry CI fix", retry(orchestrator.SnapshotRetryEntry{Trigger: "ci_fix"}), "CI fix run in 40s", ""},
+		{"retry story fault", retry(orchestrator.SnapshotRetryEntry{Trigger: "story_fault"}), "Fix run in 40s after the same failure twice", ""},
 		{"retry reaction", retry(orchestrator.SnapshotRetryEntry{ReactionKind: "review"}), "Review fix run in 40s", ""},
 		{"retry without a trigger", retry(orchestrator.SnapshotRetryEntry{}), "Retry 2 in 40s", ""},
 

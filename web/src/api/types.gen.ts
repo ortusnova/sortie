@@ -334,7 +334,7 @@ export interface HoldBlockerResponse {
 }
 
 export interface HoldResponse {
-  reason: "agent_slots_full" | "ssh_hosts_full" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread";
+  reason: "agent_slots_full" | "ssh_hosts_full" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
   held_since: string;
   blockers: HoldBlockerResponse[] | null;
   slot: HoldSlotResponse | null;
@@ -562,6 +562,36 @@ export interface PendingReactionResponse {
   configured_model?: string;
   status_text: string;
   status_text_full: string;
+}
+
+export interface PersonActionResponse {
+  action: string;
+  where: string;
+  done_at: string | null;
+  done_by: string;
+}
+
+export interface PlatformFaultResponse {
+  id: string;
+  class: string;
+  step: string;
+  signature: string;
+  cause: string;
+  detail: string;
+  person_action: PersonActionResponse | null;
+  stories: PlatformFaultStoryResponse[] | null;
+  recorded_at: string;
+  last_check_at: string | null;
+  last_check_error: string;
+  next_check_at: string;
+  checking: boolean;
+}
+
+export interface PlatformFaultStoryResponse {
+  issue_id: string;
+  issue_identifier: string;
+  display_identifier?: string;
+  held_at: string;
 }
 
 export interface PollHealthResponse {
@@ -1147,6 +1177,19 @@ export interface StagePositionResponse {
   hop_ceiling: number;
 }
 
+export interface StandingHoldResponse {
+  issue_id: string;
+  issue_identifier: string;
+  by: string;
+  reason: string;
+  evidence: string;
+  held_since: string;
+  renewed_at: string;
+  until: string;
+  expired: boolean;
+  expired_at: string | null;
+}
+
 export interface State {
   workers: Worker[] | null;
   queue: Queued[] | null;
@@ -1185,6 +1228,7 @@ export interface StateResponse {
   between_stages: StageHopResponse[] | null;
   active: ActiveIssueResponse[] | null;
   held: HeldIssueResponse[] | null;
+  holds: StandingHoldResponse[] | null;
   attention: AttentionItemResponse[] | null;
   agent_totals: SnapshotAgentTotals;
   rate_limits: Record<string, AgentUsageWindowsResponse>;
@@ -1192,6 +1236,7 @@ export interface StateResponse {
   cost_unpriced_running?: number;
   spend_ceiling?: SpendCeilingResponse;
   dispatch_paused: DispatchPausedResponse | null;
+  platform_faults: PlatformFaultResponse[] | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;

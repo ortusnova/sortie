@@ -3266,3 +3266,7 @@ func (m *mockReconcileStore) DeleteStageHop(context.Context, string) error { ret
 func (unsupportedReactionObservationStore) LatestRunFailureSignature(context.Context, string) (string, error) {
 	return "", nil
 }
+
+func (unsupportedReactionObservationStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}

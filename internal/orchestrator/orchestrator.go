@@ -71,6 +71,7 @@ type OrchestratorStore interface {
 	MarkReactionObservationDispatched(ctx context.Context, issueID, kind, fingerprint string) error
 	CountWorkerRunsCompletedSince(ctx context.Context, issueID string, since time.Time) (int, error)
 	LatestRunFailureSignature(ctx context.Context, issueID string) (string, error)
+	SavePlatformFault(ctx context.Context, fault persistence.PlatformFault) error
 	LatestRunCompletionByIdentifier(ctx context.Context, identifiers []string) (map[string]string, error)
 	UpsertParkedIssue(ctx context.Context, entry persistence.ParkedIssue) error
 	DeleteParkedIssue(ctx context.Context, issueID string) error
@@ -313,6 +314,14 @@ type OrchestratorParams struct {
 	// Once makes Run dispatch from one candidate poll and return when that
 	// work settles. See [Orchestrator.OnceResult].
 	Once bool
+
+	// HostName names the host Sortie runs on in the person action of a
+	// platform fault. Empty names this machine by its host name.
+	HostName string
+
+	// PlatformFaultChecker checks an open platform fault again. Nil uses
+	// the default check.
+	PlatformFaultChecker PlatformFaultChecker
 }
 
 // Orchestrator owns the poll-and-dispatch event loop and all runtime state.
@@ -442,6 +451,13 @@ type Orchestrator struct {
 	// completed" record, nil before the first. Read and written only by
 	// handleTick.
 	lastTickSummary []slog.Attr
+
+	// hostName names the host Sortie runs on in a person action.
+	hostName string
+
+	// faultChecker checks an open platform fault again; nil uses
+	// [Orchestrator.checkPlatformFault].
+	faultChecker PlatformFaultChecker
 }
 
 // NewOrchestrator creates an [Orchestrator] with all dependencies wired.
@@ -586,6 +602,8 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		ciTriage:                          ciTriage,
 		blockerResolver:                   params.BlockerResolver,
 		abandonCh:                         params.AbandonCh,
+		hostName:                          faultHostName(params.HostName),
+		faultChecker:                      params.PlatformFaultChecker,
 	}
 	workflowPath := ""
 	if params.WorkflowManager != nil {
@@ -777,6 +795,8 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			MaxConsecutiveAbsences:            cfg.Agent.MaxConsecutiveAbsences,
 			HandoffParkingLabel:               o.handoffParkingLabel,
 			OnRetryFire:                       o.onRetryFire,
+			FaultHost:                         o.hostName,
+			FaultForge:                        faultForge(RepositoryProvider(cfg.Environment)),
 			Ctx:                               ctx,
 			Logger:                            o.logger,
 			BeforeRemoveHook:                  cfg.Hooks.BeforeRemove,
@@ -921,6 +941,13 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				ReleaseHeld:            o.once != nil,
 				Dispatches: func(issue domain.Issue) bool {
 					return dispatchesIssue(cfg.Environment, cfg.Workspace.Root, issue)
+				},
+				CompleteMerged: func(issue domain.Issue) (domain.Issue, bool) {
+					completed := o.completeMerged(ctx, cfg, []domain.Issue{issue})
+					if len(completed) == 0 {
+						return issue, false
+					}
+					return completed[0], true
 				},
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
@@ -1134,6 +1161,13 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	cfg := o.workflowManager.Config()
 	o.updateRouter(cfg)
 	o.state.Rates = o.workflowManager.Rates()
+	expireStandingHolds(o.state, time.Now().UTC(), standingHoldExpiry{
+		Store:  standingHoldStoreOf(o.store),
+		Router: o.router,
+		Wg:     &o.state.TrackerOpsWg,
+		Ctx:    ctx,
+		Log:    o.logger,
+	})
 
 	// Applied unconditionally, not gated on preflight success.
 	o.state.PollIntervalMS = cfg.Polling.IntervalMS
@@ -1161,11 +1195,14 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		o.databaseHealth.record(time.Now(), err)
 	}
 
+	o.startDueFaultChecks(ctx, time.Now())
+
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
 		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
 		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
+		ClickProofs:                       planClickProofs(cfg, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,
 		Router:                            o.router,
 		ActiveStates:                      cfg.Tracker.ActiveStates,
@@ -1281,6 +1318,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var dispatchable []domain.Issue
 	dispatchable, o.leftAlone = dispatchableIssues(cfg.Environment, cfg.Workspace.Root, issues, o.leftAlone, o.logger)
 	sorted := SortForDispatch(dispatchable)
+	sorted = o.completeMerged(ctx, cfg, sorted)
 	clearDispatchBlocks(o.state, sorted, time.Now(), o.logger)
 	o.once.setCandidates(sorted)
 	input := pausedDispatchInput(o.state, o.once.dispatchInput(sorted))
@@ -1312,6 +1350,11 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var heldByBlockers, blockersUnresolvedHeld, blockersNotReadHeld, blockersIncompleteHeld int
 	var readFailures int
 	for i, issue := range input {
+		if standing := o.state.StandingHolds[issue.ID]; standing != nil && passesEligibilityGates(issue, o.state, activeSet, terminalSet) {
+			held.hold(issue, standingHeldEntry(standing))
+			o.once.declined(issue, SkipStandingHold)
+			continue
+		}
 		if GlobalAvailableSlots(o.state.MaxConcurrentAgents, len(o.state.Running)) == 0 {
 			held.holdEligible(input[i:], o.state, activeSet, terminalSet, HeldEntry{
 				Reason: SkipAgentSlotsFull,
@@ -2866,9 +2909,12 @@ func (o *Orchestrator) handleControl(ctx context.Context, req controlRequest) Co
 	var reply ControlReply
 	switch req.Kind {
 	case controlHold:
-		reply = applyHold(o.state, req.Identifier, req.Reason, req.Holder, now, o.logger)
+		reply = applyHold(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, req.Hold, now, o.logger)
 	case controlRelease:
-		reply = applyRelease(o.state, req.Identifier, now, o.metrics, o.logger)
+		reply = applyRelease(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, now, o.metrics, o.logger)
+		if reply.Outcome == ControlDone && !reply.Hold.Held && o.state.Running[reply.Hold.IssueID] == nil {
+			o.RefreshFunc()()
+		}
 	case controlEscalate:
 		reply = applyEscalate(o.state, req.Identifier, req.Escalation, now, escalationParams{
 			Router: o.router,
@@ -2930,10 +2976,11 @@ func (o *Orchestrator) sendControl(req controlRequest) ControlReply {
 }
 
 // HoldFunc returns the function the HTTP server calls to hold the
-// running issue named by identifier. Safe to call from any goroutine.
-func (o *Orchestrator) HoldFunc() func(identifier, reason, holder string) ControlReply {
-	return func(identifier, reason, holder string) ControlReply {
-		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Reason: reason, Holder: holder})
+// running issue named by identifier, or to place or renew the lease on a
+// known issue that is not running. Safe to call from any goroutine.
+func (o *Orchestrator) HoldFunc() func(identifier string, req HoldRequest) ControlReply {
+	return func(identifier string, req HoldRequest) ControlReply {
+		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Hold: req})
 	}
 }
 

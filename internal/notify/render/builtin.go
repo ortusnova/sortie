@@ -63,6 +63,8 @@ func bodyOf(n domain.Notification) string {
 		return budgetHeldBody(f)
 	case domain.SessionEscalatedFacts:
 		return sessionEscalatedBody(f)
+	case domain.HoldExpiredFacts:
+		return holdExpiredBody(f)
 	case domain.StageFacts:
 		return stageBody(n.Envelope.EventType, n.Envelope.Stage)
 	default:

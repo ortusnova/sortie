@@ -29,8 +29,9 @@ type SlotHold struct {
 
 // HeldEntry is the hold the latest dispatch pass gave one candidate. Blockers
 // is set for [SkipBlockedBy] only, Slot for [SkipAgentSlotsFull] only,
-// ResetsAt for the spend reasons and [SkipUsageLimit] only, and AgentKind,
-// ModelOnly, and Model for [SkipUsageLimit] only.
+// ResetsAt for the spend reasons and [SkipUsageLimit] only, AgentKind,
+// ModelOnly, and Model for [SkipUsageLimit] only, and Holder and Note for
+// [SkipStandingHold] only.
 type HeldEntry struct {
 	Identifier string
 	DisplayID  string
@@ -43,6 +44,8 @@ type HeldEntry struct {
 	AgentKind  string
 	ModelOnly  bool
 	Model      string
+	Holder     string
+	Note       string
 }
 
 // HeldBlocker is a blocker that holds a candidate, with the reason the
@@ -101,6 +104,10 @@ func (p *heldPass) holdEligible(rest []domain.Issue, state *State, activeSet, te
 			continue
 		}
 		held := entry
+		if standing := state.StandingHolds[candidate.ID]; standing != nil {
+			p.hold(candidate, standingHeldEntry(standing))
+			continue
+		}
 		if p.spend == nil && p.usageHold != nil {
 			if usage := p.usageHold(candidate); usage != nil {
 				held = *usage
@@ -214,6 +221,8 @@ func snapshotHold(e *HeldEntry) SnapshotHold {
 		AgentKind: e.AgentKind,
 		ModelOnly: e.ModelOnly,
 		Model:     e.Model,
+		Holder:    e.Holder,
+		Note:      e.Note,
 	}
 	if e.Reason == SkipBlockedBy {
 		hold.Blockers = make([]SnapshotBlocker, 0, len(e.Blockers))

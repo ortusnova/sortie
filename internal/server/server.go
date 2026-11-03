@@ -485,6 +485,12 @@ type Params struct {
 	// 503.
 	DispatchPauseFn DispatchPauseFunc
 
+	// PlatformFaultDoneFn marks the person action of a platform fault done
+	// and checks the fault again. Called on POST
+	// /api/v1/platform-faults/{id}/action-done. When nil, that route
+	// answers 503.
+	PlatformFaultDoneFn PlatformFaultDoneFunc
+
 	// SessionGrantFn grants an issue more sessions. Called on POST
 	// /api/v1/{identifier}/sessions. When nil, that route answers 503.
 	SessionGrantFn SessionGrantFunc
@@ -570,25 +576,26 @@ type Server struct {
 	changes *changeFeed
 	timing  streamTiming
 
-	controlToken     string
-	sessionTokenFn   SessionTokenFunc
-	holdFn           HoldFunc
-	releaseFn        ReleaseFunc
-	escalateFn       EscalateFunc
-	answerFn         AnswerFunc
-	dispatchPauseFn  DispatchPauseFunc
-	sessionGrantFn   SessionGrantFunc
-	hostFn           HostFunc
-	workerView       workerViewState
-	pullBackFn       PlanControlFunc
-	brokerReportFn   BrokerReportFunc
-	planStatesFn     func() domain.TrackerStates
-	planSatisfaction orchestrator.PlanSatisfactionLoader
-	planElsewhereFn  func() func(domain.BlockerRef) bool
-	brokerReadFn     BrokerReadFunc
-	planCancelFn     PlanControlFunc
-	planProjects     *plan.Projects
-	terminalStatesFn func() []string
+	controlToken        string
+	sessionTokenFn      SessionTokenFunc
+	holdFn              HoldFunc
+	releaseFn           ReleaseFunc
+	escalateFn          EscalateFunc
+	answerFn            AnswerFunc
+	dispatchPauseFn     DispatchPauseFunc
+	platformFaultDoneFn PlatformFaultDoneFunc
+	sessionGrantFn      SessionGrantFunc
+	hostFn              HostFunc
+	workerView          workerViewState
+	pullBackFn          PlanControlFunc
+	brokerReportFn      BrokerReportFunc
+	planStatesFn        func() domain.TrackerStates
+	planSatisfaction    orchestrator.PlanSatisfactionLoader
+	planElsewhereFn     func() func(domain.BlockerRef) bool
+	brokerReadFn        BrokerReadFunc
+	planCancelFn        PlanControlFunc
+	planProjects        *plan.Projects
+	terminalStatesFn    func() []string
 
 	supervisorToken      string
 	supervisorSessionCap int
@@ -619,42 +626,43 @@ func New(params Params) *Server {
 	mux := http.NewServeMux()
 
 	s := &Server{
-		mux:              mux,
-		logger:           logger,
-		snapshotFn:       params.SnapshotFn,
-		refreshFn:        params.RefreshFn,
-		retryNowFn:       params.RetryNowFn,
-		acknowledgeFn:    params.AcknowledgeFn,
-		checkNowFn:       params.CheckNowFn,
-		workflowShapeFn:  params.WorkflowShapeFn,
-		healthFn:         params.HealthFn,
-		version:          params.Version,
-		startedAt:        params.StartedAt,
-		dbPingFn:         params.DBPingFn,
-		preflightFn:      params.PreflightFn,
-		workflowLoadedFn: params.WorkflowLoadedFn,
-		controlToken:     params.ControlToken,
-		sessionTokenFn:   params.SessionTokenFn,
-		holdFn:           params.HoldFn,
-		pullBackFn:       params.PullBackFn,
-		brokerReportFn:   params.BrokerReportFn,
-		planStatesFn:     params.PlanStatesFn,
-		planSatisfaction: params.PlanSatisfaction,
-		planElsewhereFn:  params.PlanRunsElsewhereFn,
-		brokerReadFn:     params.BrokerReadFn,
-		planCancelFn:     params.PlanCancelFn,
-		releaseFn:        params.ReleaseFn,
-		escalateFn:       params.EscalateFn,
-		answerFn:         params.AnswerFn,
-		dispatchPauseFn:  params.DispatchPauseFn,
-		sessionGrantFn:   params.SessionGrantFn,
-		hostFn:           params.HostFn,
-		planProjects:     params.PlanProjects,
-		terminalStatesFn: params.TerminalStatesFn,
-		runHistory:       params.RunHistory,
-		runEventsFn:      params.RunEventsFn,
-		runEventsAfterFn: params.RunEventsAfterFn,
-		stats:            params.Stats,
+		mux:                 mux,
+		logger:              logger,
+		snapshotFn:          params.SnapshotFn,
+		refreshFn:           params.RefreshFn,
+		retryNowFn:          params.RetryNowFn,
+		acknowledgeFn:       params.AcknowledgeFn,
+		checkNowFn:          params.CheckNowFn,
+		workflowShapeFn:     params.WorkflowShapeFn,
+		healthFn:            params.HealthFn,
+		version:             params.Version,
+		startedAt:           params.StartedAt,
+		dbPingFn:            params.DBPingFn,
+		preflightFn:         params.PreflightFn,
+		workflowLoadedFn:    params.WorkflowLoadedFn,
+		controlToken:        params.ControlToken,
+		sessionTokenFn:      params.SessionTokenFn,
+		holdFn:              params.HoldFn,
+		pullBackFn:          params.PullBackFn,
+		brokerReportFn:      params.BrokerReportFn,
+		planStatesFn:        params.PlanStatesFn,
+		planSatisfaction:    params.PlanSatisfaction,
+		planElsewhereFn:     params.PlanRunsElsewhereFn,
+		brokerReadFn:        params.BrokerReadFn,
+		planCancelFn:        params.PlanCancelFn,
+		releaseFn:           params.ReleaseFn,
+		escalateFn:          params.EscalateFn,
+		answerFn:            params.AnswerFn,
+		dispatchPauseFn:     params.DispatchPauseFn,
+		platformFaultDoneFn: params.PlatformFaultDoneFn,
+		sessionGrantFn:      params.SessionGrantFn,
+		hostFn:              params.HostFn,
+		planProjects:        params.PlanProjects,
+		terminalStatesFn:    params.TerminalStatesFn,
+		runHistory:          params.RunHistory,
+		runEventsFn:         params.RunEventsFn,
+		runEventsAfterFn:    params.RunEventsAfterFn,
+		stats:               params.Stats,
 
 		supervisorToken:      params.SupervisorToken,
 		supervisorSessionCap: params.SupervisorSessionCap,
@@ -708,6 +716,7 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/refresh", s.controlRoute(scopeOperator, s.handleRefresh))
 	mux.HandleFunc("/api/v1/dispatch/pause", s.controlRoute(scopeOperator, s.handleDispatchPause))
 	mux.HandleFunc("/api/v1/dispatch/resume", s.controlRoute(scopeOperator, s.handleDispatchResume))
+	mux.HandleFunc("/api/v1/platform-faults/{id}/action-done", s.controlRoute(scopeOperator, s.handlePlatformFaultDone))
 	mux.HandleFunc("/api/v1/retries/{identifier}/run", s.controlRoute(scopeOperator, s.handleRetryNow))
 	mux.HandleFunc("/api/v1/attention/{id}/acknowledge", s.controlRoute(scopeOperator, s.handleAcknowledge))
 	mux.HandleFunc("/api/v1/reactions/{identifier}/{kind}/check", s.controlRoute(scopeOperator, s.handleCheckNow))
@@ -720,8 +729,8 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/tokens/introspect", s.controlRoute(scopeOperator, s.handleIntrospect))
 	mux.HandleFunc("/api/v1/events", s.routeEvents)
 	mux.HandleFunc("/api/v1/{identifier}", s.routeIssueDetail)
-	mux.HandleFunc("/api/v1/{identifier}/hold", s.controlRoute(scopeSession, s.handleHold))
-	mux.HandleFunc("/api/v1/{identifier}/release", s.controlRoute(scopeSession, s.handleRelease))
+	mux.HandleFunc("/api/v1/{identifier}/hold", s.controlRoute(scopeSessionSupervisor, s.recordSupervised(supervisorActionHold, s.handleHold)))
+	mux.HandleFunc("/api/v1/{identifier}/release", s.controlRoute(scopeSessionSupervisor, s.recordSupervised(supervisorActionReleaseHold, s.handleRelease)))
 	mux.HandleFunc("/api/v1/{identifier}/escalate", s.controlRoute(scopeSession, s.handleEscalate))
 	mux.HandleFunc("/api/v1/{identifier}/answer", s.supervisorRoute(supervisorActionAnswer, s.handleAnswer))
 	mux.HandleFunc("/api/v1/{identifier}/sessions", s.supervisorRoute(supervisorActionGrant, s.handleSessionGrant))

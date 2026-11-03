@@ -71,10 +71,10 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 		rkey := ReactionKey(pending.IssueID, ReactionKindReview)
 
 		// A standing escalation is never aged out; its own facts end it.
-		// A ui story waits for the operator, who takes longer than the
-		// window: the pull request read below ends its watch when the pull
-		// request ends.
-		windowElapsed := ttl > 0 && !pending.escalationStands() && !waitsForOperator(pending) && now.Sub(watchWindowStart(pending)) > ttl
+		// A ui story waits for its preview and click-proofs, which take
+		// longer than the window: the pull request read below ends its watch
+		// when the pull request ends.
+		windowElapsed := ttl > 0 && !pending.escalationStands() && !watchesUIStory(pending) && now.Sub(watchWindowStart(pending)) > ttl
 
 		dropWatch := func() {
 			cancelReactionTriage(pending)
@@ -135,7 +135,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 				continue
 			}
 			read.made = true
-		case awaits(pending.LastCheck) || waitsForOperator(pending):
+		case awaits(pending.LastCheck) || watchesUIStory(pending):
 			read = readPullRequest(ctx, params.SCMAdapter, pending, entryLog)
 			if pullRequestEnded(read.status, read.err) {
 				dropEnded()
@@ -147,9 +147,9 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 
 		// Fetch reviews from SCM.
 		comments, err := params.SCMAdapter.FetchPendingReviews(ctx, reviewData.PRNumber, reviewData.Owner, reviewData.Repo)
-		// A story that waits for the operator takes every comment on its
-		// pull request as feedback, and its watch lasts until the pull
-		// request ends, as a wait for an approval does.
+		// A ui story takes every comment on its pull request as feedback,
+		// apart from its click-proofs record, and its watch lasts until the
+		// pull request ends, as a wait for an approval does.
 		operator := false
 		if err == nil && params.OperatorComments != nil {
 			var more []domain.ReviewComment

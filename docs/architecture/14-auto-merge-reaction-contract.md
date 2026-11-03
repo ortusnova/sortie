@@ -47,7 +47,7 @@ The auto-merge reconcile loop imposes merge-specific dispositions on this kind. 
 
 The auto-merge reconcile loop runs as Part G of active run reconciliation (see §8.5 Part G for the algorithm). The loop processes entries from `pending_reactions` whose kind discriminator is `"merge"`.
 
-The loop drops an entry whose age, measured from the entry's creation, exceeds the configured `reactions.auto_merge.watch_window_ms` (default `1800000`, thirty minutes; `0` removes the bound), and deletes the `merge`-kind attempt counter with it. The drop logs at WARN and performs no escalation, so an entry that never satisfies its preconditions produces no tracker-visible signal. The window never drops an entry whose escalation stands (§11C.6).
+The loop drops an entry whose age, measured from the entry's creation, exceeds the configured `reactions.auto_merge.watch_window_ms` (default `1800000`, thirty minutes; `0` removes the bound), and deletes the `merge`-kind attempt counter with it. The drop logs at WARN and performs no escalation, so an entry that never satisfies its preconditions produces no tracker-visible signal. The window never drops an entry whose escalation stands (§11C.6), nor, under plan control, the entry of a `sortie-review:ui` story, which ends when its pull request merges or closes.
 
 The loop also drops an entry whose `GetMergeability` read reports the pull request already merged, whatever its mergeability: a pull request a person or a forge merged first reads `unknown` on some forges, and without this drop the merge call would never run and the entry would live until its watch window ends, or without end under `0`. The drop records the merged outcome with the `merge` path (Section 4.1.8), deletes the `merge`-kind attempt counter and fingerprint, and logs at INFO. It performs no escalation, emits no `auto_merge.merged` event, and deletes no branch.
 
@@ -69,7 +69,9 @@ The auto-merge reconcile loop evaluates the merge preconditions reported by `Get
 | Pending | `Mergeability` not in (`clean`, `unstable`) | Pending | Re-enqueue with poll interval. |
 | Pending | `ReviewDecision != APPROVED` and `!= NOT_REQUIRED` | Pending | Re-enqueue with poll interval. |
 | Pending | `require_ci == true` and `CI` is neither `success` nor the empty no-checks value | Pending | Re-enqueue with poll interval. |
-| Pending | All preconditions satisfied (`Mergeability` in (`clean`, `unstable`); `!Draft`; review and CI satisfied) | Merging | Call `SCMAdapter.MergePR`. |
+| Pending | Under plan control, a `sortie-review:ui` story whose pull request is closed unmerged | Done | Remove the pending entry; clear the attempt counter. |
+| Pending | Under plan control, a `sortie-review:ui` story whose other preconditions hold and whose pull request holds no click-proofs record naming its head SHA | Pending | Re-enqueue with poll interval; comment on the story, once per head SHA, asking for the click-proofs on the preview. A failed conversation read re-enqueues with backoff. |
+| Pending | All preconditions satisfied (`Mergeability` in (`clean`, `unstable`); `!Draft`; review and CI satisfied; for a ui story, its click-proofs recorded) | Merging | Call `SCMAdapter.MergePR`. |
 | Merging | Merge succeeded | Done | Record the merged outcome (Section 4.1.8); emit the `auto_merge.merged` event, whose body is the merge-success comment, to its subscribers (§11C.6); delete branch when `delete_branch == true`; clear fingerprint; increment `sortie_reactions_auto_merge_total{result="merged"}`. |
 | Merging | `ErrSCMConflict` ("already merged") | Done | Treat as idempotent success; same actions as merge succeeded. |
 | Merging | `ErrSCMConflict` (head SHA mismatch) | Pending | Re-enqueue with poll interval; next tick refreshes fingerprint. |

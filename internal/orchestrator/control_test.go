@@ -25,14 +25,14 @@ func TestApplyHold(t *testing.T) {
 		wantHeld   bool
 	}{
 		{"running issue", "LIVE-1", ControlDone, true},
-		{"known issue that is not running", "LIVE-2", ControlNotRunning, false},
+		{"known issue that is not running, with no evidence", "LIVE-2", ControlInvalid, false},
 		{"unknown issue", "NOPE-9", ControlUnknownIssue, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			state := heldTestState()
-			reply := applyHold(state, tt.identifier, "human takeover", "acp-broker", reconcileBaseTime, discardLogger())
+			reply := applyHold(context.Background(), state, nil, tt.identifier, HoldRequest{Reason: "human takeover", Holder: "acp-broker"}, reconcileBaseTime, discardLogger())
 			if reply.Outcome != tt.want {
 				t.Fatalf("applyHold(%s) outcome = %v, want %v", tt.identifier, reply.Outcome, tt.want)
 			}
@@ -53,8 +53,8 @@ func TestApplyHold_TwiceKeepsStart(t *testing.T) {
 	t.Parallel()
 
 	state := heldTestState()
-	applyHold(state, "LIVE-1", "first", "a", reconcileBaseTime, discardLogger())
-	reply := applyHold(state, "LIVE-1", "second", "b", reconcileBaseTime.Add(5*time.Minute), discardLogger())
+	applyHold(context.Background(), state, nil, "LIVE-1", HoldRequest{Reason: "first", Holder: "a"}, reconcileBaseTime, discardLogger())
+	reply := applyHold(context.Background(), state, nil, "LIVE-1", HoldRequest{Reason: "second", Holder: "b"}, reconcileBaseTime.Add(5*time.Minute), discardLogger())
 
 	if reply.Outcome != ControlDone || !reply.Hold.HeldSince.Equal(reconcileBaseTime) || reply.Hold.Reason != "first" {
 		t.Errorf("second hold = %+v, want ControlDone keeping start %v and reason %q", reply, reconcileBaseTime, "first")
@@ -68,10 +68,10 @@ func TestApplyRelease(t *testing.T) {
 		t.Parallel()
 		state := heldTestState()
 		spy := &spyMetrics{}
-		applyHold(state, "LIVE-1", "human takeover", "acp-broker", reconcileBaseTime, discardLogger())
+		applyHold(context.Background(), state, nil, "LIVE-1", HoldRequest{Reason: "human takeover", Holder: "acp-broker"}, reconcileBaseTime, discardLogger())
 		releaseAt := reconcileBaseTime.Add(90 * time.Second)
 
-		reply := applyRelease(state, "LIVE-1", releaseAt, spy, discardLogger())
+		reply := applyRelease(context.Background(), state, nil, "LIVE-1", releaseAt, spy, discardLogger())
 
 		entry := state.Running["id-run"]
 		if reply.Outcome != ControlDone || reply.Hold.Held || !entry.HeldSince.IsZero() {
@@ -92,7 +92,7 @@ func TestApplyRelease(t *testing.T) {
 		t.Parallel()
 		state := heldTestState()
 		spy := &spyMetrics{}
-		reply := applyRelease(state, "LIVE-1", reconcileBaseTime, spy, discardLogger())
+		reply := applyRelease(context.Background(), state, nil, "LIVE-1", reconcileBaseTime, spy, discardLogger())
 		entry := state.Running["id-run"]
 		if reply.Outcome != ControlDone || entry.HeldTotal != 0 || !entry.HoldReleasedAt.IsZero() || len(spy.holdSeconds) != 0 {
 			t.Errorf("release of an unheld run = %+v, entry %+v, metrics %+v, want no change", reply, entry, spy.holdSeconds)
@@ -102,10 +102,10 @@ func TestApplyRelease(t *testing.T) {
 	t.Run("not running and unknown", func(t *testing.T) {
 		t.Parallel()
 		state := heldTestState()
-		if got := applyRelease(state, "LIVE-2", reconcileBaseTime, nil, discardLogger()).Outcome; got != ControlNotRunning {
+		if got := applyRelease(context.Background(), state, nil, "LIVE-2", reconcileBaseTime, nil, discardLogger()).Outcome; got != ControlNotRunning {
 			t.Errorf("release(LIVE-2) = %v, want ControlNotRunning", got)
 		}
-		if got := applyRelease(state, "NOPE-9", reconcileBaseTime, nil, discardLogger()).Outcome; got != ControlUnknownIssue {
+		if got := applyRelease(context.Background(), state, nil, "NOPE-9", reconcileBaseTime, nil, discardLogger()).Outcome; got != ControlUnknownIssue {
 			t.Errorf("release(NOPE-9) = %v, want ControlUnknownIssue", got)
 		}
 	})
@@ -252,7 +252,7 @@ func TestHandleControl_ThroughTheEventLoop(t *testing.T) {
 	h.waitForSessions(1)
 
 	hold, rel := h.o.HoldFunc(), h.o.ReleaseFunc()
-	first := hold("S-1", "human takeover", "acp-broker")
+	first := hold("S-1", HoldRequest{Reason: "human takeover", Holder: "acp-broker"})
 	if first.Outcome != ControlDone || !first.Hold.Held {
 		t.Fatalf("hold(S-1) = %+v, want held", first)
 	}
@@ -264,7 +264,7 @@ func TestHandleControl_ThroughTheEventLoop(t *testing.T) {
 		t.Errorf("snapshot running = %+v, want S-1 held for human takeover", snap.Running)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if got := hold("NOPE-1", "", "").Outcome; got != ControlUnknownIssue {
+	if got := hold("NOPE-1", HoldRequest{}).Outcome; got != ControlUnknownIssue {
 		t.Errorf("hold(NOPE-1) = %v, want ControlUnknownIssue", got)
 	}
 	if got := rel("S-1"); got.Outcome != ControlDone || got.Hold.Held {
@@ -291,7 +291,7 @@ func TestHandleWorkerExit_EndsOpenHoldAndRecordsHeldTime(t *testing.T) {
 	h.tracker.candidates = []domain.Issue{candidate("id-1", "S-1")}
 	h.run()
 	h.waitForSessions(1)
-	if got := h.o.HoldFunc()("S-1", "takeover", "test"); got.Outcome != ControlDone {
+	if got := h.o.HoldFunc()("S-1", HoldRequest{Reason: "takeover", Holder: "test"}); got.Outcome != ControlDone {
 		t.Fatalf("hold = %+v", got)
 	}
 	close(held)

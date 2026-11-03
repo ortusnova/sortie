@@ -3,6 +3,9 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,48 +49,207 @@ func uiReviewParams(forge *commentForge, tracker domain.TrackerAdapter) Reconcil
 	return params
 }
 
-// Scenario "A UI story from spec to merge": the criteria check passed and
-// the pull request is clean, approved, and green, yet Sortie does not
-// merge a ui story.
-func TestUIStory_ReviewGateNeverMerges(t *testing.T) {
-	t.Parallel()
-	gate := planReviewGate(gateConfig(), &labelTracker{labels: []string{config.ReviewUILabel}})
-	for _, rule := range []string{"check", "implement"} {
-		if ok, why, err := gate(context.Background(), &PendingReaction{IssueID: "i", RuleName: rule}); ok || err != nil {
-			t.Errorf("gate after %s = %v (%s), %v, want refused", rule, ok, why, err)
-		}
-	}
+// uiMergeTracker is a fake tracker holding a ui story that records the
+// comments written on it.
+type uiMergeTracker struct {
+	labelTracker
+	mu       sync.Mutex
+	comments []string
+}
 
-	state := stateWithAutoMergePending(t, "AM-UI", 45)
-	state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)].RuleName = "check"
-	merged := false
-	scm := &controlledSCMAdapter{
+func (u *uiMergeTracker) CommentIssue(_ context.Context, _ string, body string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.comments = append(u.comments, body)
+	return nil
+}
+
+func (u *uiMergeTracker) written() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.comments)
+}
+
+const uiHeadSHA = "0123456789abcdef0123456789abcdef01234567"
+
+// uiMergeForge is a fake forge whose pull request is clean, approved and
+// green at uiHeadSHA, and counts its merges.
+func uiMergeForge(merges *int) *controlledSCMAdapter {
+	return &controlledSCMAdapter{
 		getMergeabilityFn: func(context.Context, int, string, string) (domain.PRMergeStatus, error) {
-			return domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: "sha"}, nil
+			return domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: uiHeadSHA}, nil
 		},
 		getReviewDecisionFn: func(context.Context, int, string, string) (domain.ReviewDecision, error) {
-			return domain.ReviewDecisionApproved, nil
+			return domain.ReviewDecisionNotRequired, nil
 		},
 		getCIStatusFn: func(context.Context, int, string, string) (string, error) { return "success", nil },
-		mergePRFn: func(context.Context, int, string, string, domain.MergeStrategy, string, string, string) (domain.MergeResult, error) {
-			merged = true
+		mergePRFn: func(_ context.Context, _ int, _, _ string, _ domain.MergeStrategy, _, _, expected string) (domain.MergeResult, error) {
+			if expected != uiHeadSHA {
+				return domain.MergeResult{}, errors.New("unexpected head")
+			}
+			*merges++
 			return domain.MergeResult{SHA: "m"}, nil
 		},
 	}
-	params := autoMergeParams(&reviewReconcileStore{}, scm, &reviewTrackerStub{})
-	params.ReviewGate = gate
+}
+
+// uiMergeRun runs one auto-merge pass over a ui story's entry, after a run
+// of rule, with the given conversation on its pull request.
+func uiMergeRun(t *testing.T, state *State, rule string, conversation []domain.ReviewComment, tracker *uiMergeTracker, now time.Time) (merges int) {
+	t.Helper()
+	state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)].RuleName = rule
+	params := autoMergeParams(&reviewReconcileStore{}, uiMergeForge(&merges), tracker)
+	params.ReviewGate = planReviewGate(gateConfig(), tracker)
+	params.ClickProofs = planClickProofs(gateConfig(), &commentForge{conversation: conversation})
+	params.AutoMergePendingTTL = time.Minute
+	params.NowFunc = func() time.Time { return now }
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	state.TrackerOpsWg.Wait()
-	if merged {
-		t.Error("auto-merge merged a ui story")
-	}
-	if _, ok := state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)]; ok {
-		t.Error("auto-merge entry kept, want it dropped: the operator merges")
+	return merges
+}
+
+func clickProofsComment(sha string) domain.ReviewComment {
+	return domain.ReviewComment{
+		ID: "issuecomment-7", Reviewer: "reviewer",
+		Body: "Click-proofs on https://pr-45.preview.example: all pass.\n\n`" + ClickProofsMarker + " " + sha + "`",
 	}
 }
 
-// Scenario "The operator asks for a change": a comment on the pull
-// request of a ui story starts a fix run on the branch that carries it.
+// Scenarios "A built UI story" and "A UI story from spec to merge": once
+// its criteria review and CI passed and its pull request records the
+// click-proofs on the preview, Sortie merges a ui story, and nobody is
+// asked to approve it.
+func TestUIStory_MergesAfterReviewCIAndClickProofs(t *testing.T) {
+	t.Parallel()
+	state := stateWithAutoMergePending(t, "AM-UI", 45)
+	tracker := &uiMergeTracker{labelTracker: labelTracker{labels: []string{config.ReviewUILabel}}}
+
+	merges := uiMergeRun(t, state, "check", []domain.ReviewComment{clickProofsComment(uiHeadSHA[:12])}, tracker, autoMergeBaseTime)
+
+	if merges != 1 {
+		t.Fatalf("merges = %d, want Sortie to merge the ui story", merges)
+	}
+	if _, ok := state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)]; ok {
+		t.Error("auto-merge entry kept after the merge")
+	}
+	if got := tracker.written(); len(got) != 0 {
+		t.Errorf("tracker comments = %q, want none asking anyone", got)
+	}
+}
+
+// Without a record of the click-proofs Sortie does not merge a ui story:
+// it asks for them once per head commit and keeps waiting, past the watch
+// window, until a record names the head commit.
+func TestUIStory_NoMergeWithoutClickProofs(t *testing.T) {
+	t.Parallel()
+	state := stateWithAutoMergePending(t, "AM-UI", 45)
+	key := ReactionKey("AM-UI", ReactionKindAutoMerge)
+	tracker := &uiMergeTracker{labelTracker: labelTracker{labels: []string{config.ReviewUILabel}}}
+	operator := domain.ReviewComment{ID: "issuecomment-1", Reviewer: "ana", Body: "Looks fine to me, approve."}
+	stale := clickProofsComment("fedcba9876543210")
+
+	if merges := uiMergeRun(t, state, "check", []domain.ReviewComment{operator, stale}, tracker, autoMergeBaseTime); merges != 0 {
+		t.Fatalf("merges = %d without a click-proofs record for the head", merges)
+	}
+	if _, ok := state.PendingReactions[key]; !ok {
+		t.Fatal("auto-merge entry dropped, want it waiting for the click-proofs")
+	}
+	got := tracker.written()
+	if len(got) != 1 || !strings.Contains(got[0], "click-proofs on its preview") || !strings.Contains(got[0], ClickProofsMarker+" "+uiHeadSHA) {
+		t.Fatalf("tracker comments = %q, want one asking for the click-proofs on the head", got)
+	}
+
+	// Long past the watch window, it still waits and does not ask again.
+	later := autoMergeBaseTime.Add(48 * time.Hour)
+	state.PendingReactions[key].PendingRetryAt = time.Time{}
+	if merges := uiMergeRun(t, state, "check", nil, tracker, later); merges != 0 {
+		t.Fatalf("merges = %d without a click-proofs record", merges)
+	}
+	if _, ok := state.PendingReactions[key]; !ok {
+		t.Fatal("auto-merge entry aged out, want it held for the click-proofs")
+	}
+	if got := tracker.written(); len(got) != 1 {
+		t.Errorf("tracker comments = %d, want the request made once per head", len(got))
+	}
+
+	state.PendingReactions[key].PendingRetryAt = time.Time{}
+	if merges := uiMergeRun(t, state, "check", []domain.ReviewComment{clickProofsComment(uiHeadSHA)}, tracker, later.Add(time.Hour)); merges != 1 {
+		t.Errorf("merges = %d once the record names the head, want 1", merges)
+	}
+}
+
+// A ui story whose pull request was opened by a run that was not its
+// criteria review is not merged, records or not.
+func TestUIStory_NoMergeWithoutCriteriaReview(t *testing.T) {
+	t.Parallel()
+	state := stateWithAutoMergePending(t, "AM-UI", 45)
+	tracker := &uiMergeTracker{labelTracker: labelTracker{labels: []string{config.ReviewUILabel}}}
+	if merges := uiMergeRun(t, state, "implement", []domain.ReviewComment{clickProofsComment(uiHeadSHA)}, tracker, autoMergeBaseTime); merges != 0 {
+		t.Errorf("merges = %d after a run that was not the criteria review", merges)
+	}
+}
+
+// A story that is not a ui story needs no click-proofs.
+func TestPlanClickProofs_OnlyUIStories(t *testing.T) {
+	t.Parallel()
+	forge := &commentForge{}
+	check := planClickProofs(gateConfig(), forge)
+	ok, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyOther}, uiHeadSHA)
+	if !ok || err != nil || forge.commentCalls != 0 {
+		t.Errorf("other story = %v, %v after %d reads, want allowed without a read", ok, err, forge.commentCalls)
+	}
+	ok, _ = planClickProofs(gateConfig(), nil)(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA)
+	if ok {
+		t.Error("ui story allowed on a forge that cannot read its record")
+	}
+	forge.commentErr = &domain.SCMError{Kind: domain.ErrSCMTransport, Message: "down"}
+	if _, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA); err == nil {
+		t.Error("failed read reported no error")
+	}
+	if planClickProofs(config.ServiceConfig{}, forge) != nil {
+		t.Error("click-proofs check set with plan control off")
+	}
+}
+
+func TestClickProofsRecord(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		body string
+		sha  string
+		ok   bool
+	}{
+		{"sortie:click-proofs passed abcdef1", "abcdef1", true},
+		{"Done.\n> `Sortie:Click-Proofs PASSED ABCDEF12`\n", "abcdef12", true},
+		{"sortie:click-proofs passed abc", "", false},
+		{"sortie:click-proofs failed abcdef1", "", false},
+		{"sortie:click-proofs passed not-a-sha", "", false},
+		{"the click-proofs passed", "", false},
+	}
+	for _, tt := range tests {
+		sha, ok := clickProofsRecord(tt.body)
+		if sha != tt.sha || ok != tt.ok {
+			t.Errorf("clickProofsRecord(%q) = %q, %v, want %q, %v", tt.body, sha, ok, tt.sha, tt.ok)
+		}
+	}
+}
+
+// A click-proofs record on a ui story's pull request is not review
+// feedback: it starts no fix run.
+func TestUIStory_ClickProofsRecordIsNoFeedback(t *testing.T) {
+	t.Parallel()
+	state := stateWithReviewReaction(t, "UI-6", 27)
+	record := clickProofsComment(uiHeadSHA)
+	record.SubmittedAt = reviewBaseTime.Add(-5 * time.Minute)
+	forge := &commentForge{conversation: []domain.ReviewComment{record}}
+	forge.decision = domain.ReviewDecisionNotRequired
+	reconcileReviewComments(state, uiReviewParams(forge, &labelTracker{labels: []string{config.ReviewUILabel}}), discardLogger(), context.Background(), newReviewMetricsSpy())
+	if _, ok := state.RetryAttempts["UI-6"]; ok {
+		t.Error("fix run scheduled for a click-proofs record")
+	}
+}
+
+// A comment on the pull request of a ui story starts a fix run on the
+// branch that carries it.
 func TestUIStory_OperatorCommentStartsFixRun(t *testing.T) {
 	t.Parallel()
 	state := stateWithReviewReaction(t, "UI-1", 21)
@@ -149,8 +311,8 @@ func TestUIStory_OtherStoriesIgnoreConversationComments(t *testing.T) {
 	}
 }
 
-// A ui story with no comment waits for the operator past the watch
-// window, and its watch ends when the operator merges.
+// A ui story with no comment keeps its review watch past the watch
+// window, and the watch ends when its pull request merges.
 func TestUIStory_WaitsForTheOperatorUntilMerge(t *testing.T) {
 	t.Parallel()
 	state := stateWithReviewReaction(t, "UI-2", 23)
@@ -207,9 +369,8 @@ func TestUIStory_CommentReadFailureBacksOff(t *testing.T) {
 	}
 }
 
-// Scenario "The operator is satisfied": the operator's merge moves the ui
-// story to Done.
-func TestUIStory_OperatorMergeIsDone(t *testing.T) {
+// The merge of its pull request moves the ui story to Done.
+func TestUIStory_MergeIsDone(t *testing.T) {
 	t.Parallel()
 	state := mgcStateWithPending("UI-5", 26)
 	tracker := &mgcTrackerFake{states: map[string]string{"UI-5": "In Review"}}
@@ -221,5 +382,27 @@ func TestUIStory_OperatorMergeIsDone(t *testing.T) {
 
 	if len(tracker.transitionCalls) != 1 || tracker.transitionCalls[0].target != "done" {
 		t.Errorf("transitions = %+v, want the story moved to done", tracker.transitionCalls)
+	}
+}
+
+// The auto-merge watch of a ui story, held past its window, ends when its
+// pull request closes unmerged.
+func TestUIStory_ClosedPullRequestEndsTheWatch(t *testing.T) {
+	t.Parallel()
+	state := stateWithAutoMergePending(t, "AM-UI", 45)
+	state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)].RuleName = "check"
+	tracker := &uiMergeTracker{labelTracker: labelTracker{labels: []string{config.ReviewUILabel}}}
+	merges := 0
+	forge := uiMergeForge(&merges)
+	forge.getMergeabilityFn = func(context.Context, int, string, string) (domain.PRMergeStatus, error) {
+		return domain.PRMergeStatus{Closed: true, Mergeability: domain.MergeabilityUnknown, HeadSHA: uiHeadSHA}, nil
+	}
+	params := autoMergeParams(&reviewReconcileStore{}, forge, tracker)
+	params.ReviewGate = planReviewGate(gateConfig(), tracker)
+	params.ClickProofs = planClickProofs(gateConfig(), &commentForge{})
+	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
+	state.TrackerOpsWg.Wait()
+	if _, ok := state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)]; ok || merges != 0 {
+		t.Errorf("entry kept %v, merges %d, want the watch ended without a merge", ok, merges)
 	}
 }

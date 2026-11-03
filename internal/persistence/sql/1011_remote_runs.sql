@@ -1,4 +1,4 @@
--- Migration 1009 (fork range): the runs workers hold under the remote kind
+-- Migration 1011 (fork range): the runs workers hold under the remote kind
 --
 -- One row per running remote attempt, from its lease grant to its end. A
 -- process that restarts re-adopts every row: it restores the attempt's

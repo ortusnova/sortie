@@ -36,7 +36,7 @@ func newAuthHarness(t *testing.T, controlToken string, sessions map[string]strin
 			identifier, ok := sessions[token]
 			return identifier, ok
 		},
-		HoldFn: func(identifier, _, _ string) orchestrator.ControlReply {
+		HoldFn: func(identifier string, _ orchestrator.HoldRequest) orchestrator.ControlReply {
 			h.controls.Add(1)
 			return orchestrator.ControlReply{Outcome: orchestrator.ControlDone, Hold: orchestrator.HoldState{Identifier: identifier, Held: true}}
 		},

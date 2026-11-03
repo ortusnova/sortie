@@ -166,6 +166,12 @@ type HandleRetryTimerParams struct {
 	// one now left to another workflow, has its claim released.
 	Dispatches func(domain.Issue) bool
 
+	// CompleteMerged moves the re-fetched issue to the done state when its
+	// pull request already merged, and returns it with its new state. It
+	// returns false when the move failed; the retry is then rescheduled.
+	// Nil leaves every issue as fetched.
+	CompleteMerged func(domain.Issue) (domain.Issue, bool)
+
 	// ResolveAttemptSettings resolves the retry attempt's settings from the
 	// configuration in force now; sshHost is empty for a local launch.
 	// Required. An attempt whose settings carry refusals is rescheduled.
@@ -264,6 +270,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			Trigger:             triggerTimer,
 			OriginTrigger:       popped.OriginTrigger,
 			UsageLimitNotified:  popped.UsageLimitNotified,
+			Failure:             popped.Failure,
 		}, params.OnRetryFire)
 	}
 
@@ -328,6 +335,19 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			delete(state.Claimed, issueID)
 			if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
 				log.Error("failed to delete retry entry for parked issue",
+					slog.Any("error", err),
+				)
+			}
+			return
+		}
+
+		if faultID, held := state.FaultHolds[issueID]; held {
+			log.Info("issue held by a platform fault, releasing claim",
+				slog.String("platform_fault_id", faultID),
+			)
+			delete(state.Claimed, issueID)
+			if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+				log.Error("failed to delete retry entry for an issue a platform fault holds",
 					slog.Any("error", err),
 				)
 			}
@@ -636,6 +656,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		return
 	}
 
+	if params.CompleteMerged != nil {
+		completed, moved := params.CompleteMerged(issue)
+		if !moved {
+			attempt, delayMS := putBackSchedule(popped, popped.Attempt, params.MaxRetryBackoffMS)
+			log.Warn("merged issue not yet moved to the done state, rescheduling retry",
+				slog.Int("attempt", attempt),
+				slog.Int64("delay_ms", delayMS),
+			)
+			reschedule(attempt, delayMS, "merged issue not yet moved to the done state")
+			return
+		}
+		issue = completed
+	}
+
 	activeSet := stateSet(params.ActiveStates)
 	terminalSet := stateSet(params.TerminalStates)
 	normalizedState := strings.ToLower(issue.State)
@@ -712,6 +746,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		recordIssueOutcome(ctx, params.Store, terminalOutcome(issueID, issue.State, time.Now()), log)
 		delete(state.Claimed, issueID)
 
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry from store",
+				slog.Any("error", err),
+			)
+		}
+		return
+	}
+
+	if standing := state.StandingHolds[issueID]; standing != nil && isActive {
+		log.Info("issue held, releasing claim",
+			slog.String("issue_state", issue.State),
+			slog.String("holder", standing.Holder),
+		)
+		delete(state.Claimed, issueID)
 		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
 			log.Error("failed to delete retry entry from store",
 				slog.Any("error", err),
@@ -958,6 +1006,9 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 	if popped.UsageLimitNotified {
 		dispatchCtx = withUsageLimitNotified(dispatchCtx)
+	}
+	if failure, ok := storyFailureOfRetry(popped); ok {
+		dispatchCtx = withFailureRender(dispatchCtx, failure)
 	}
 	lineage := popped.StageLineage
 	if ruleName != popped.RuleName {

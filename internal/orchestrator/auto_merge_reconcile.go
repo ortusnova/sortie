@@ -118,7 +118,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			}
 		}
 
-		if ttl > 0 && !pending.escalationStands() && now.Sub(pending.CreatedAt) > ttl {
+		if ttl > 0 && !pending.escalationStands() && !watchesUIStory(pending) && now.Sub(pending.CreatedAt) > ttl {
 			delete(state.ReactionAttempts, ReactionKey(pending.IssueID, ReactionKindAutoMerge))
 			entryLog.Warn("auto_merge watch window elapsed, dropping",
 				slog.Int64("window_ms", int64(ttl/time.Millisecond)),
@@ -168,6 +168,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			recordIssueOutcome(ctx, params.Store, mergedOutcome(pending.IssueID, ReactionKindAutoMerge, autoMergeData.PRNumber, autoMergeData.Owner, autoMergeData.Repo, now), entryLog)
 			endEscalation(ctx, params.Store, pending, entryLog)
 			delete(state.ReactionAttempts, rkey)
+			delete(state.ClickProofsAsked, pending.IssueID)
 			if err := params.Store.DeleteReactionFingerprint(ctx, pending.IssueID, ReactionKindAutoMerge); err != nil {
 				entryLog.Warn("auto_merge fingerprint delete failed",
 					slog.Any("error", err),
@@ -189,6 +190,15 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			}
 			pending.PendingRetryAt = now.Add(pollInterval)
 			requeueReaction(state, key, pending, waitPollInterval)
+			continue
+		}
+
+		if mergeStatus.Closed && watchesUIStory(pending) {
+			delete(state.ReactionAttempts, rkey)
+			delete(state.ClickProofsAsked, pending.IssueID)
+			entryLog.Info("auto_merge pr found closed, dropping ui story entry",
+				slog.Int("pr_number", autoMergeData.PRNumber),
+			)
 			continue
 		}
 
@@ -281,6 +291,30 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 				slog.Int("pr_number", autoMergeData.PRNumber),
 			)
 			continue
+		}
+
+		if params.ClickProofs != nil {
+			recorded, proofErr := params.ClickProofs(ctx, pending, autoMergeData, mergeStatus.HeadSHA)
+			if proofErr != nil {
+				delay := applyAutoMergeBackoff(state, key, pending, now, pollInterval)
+				entryLog.Warn("auto_merge click-proofs read failed",
+					slog.Any("error", proofErr),
+					slog.Int("pending_attempts", pending.PendingAttempts),
+					slog.Int64("retry_after_ms", int64(delay/time.Millisecond)),
+				)
+				metrics.IncAutoMergeReactions(outcomeError)
+				continue
+			}
+			if !recorded {
+				pending.PendingRetryAt = now.Add(pollInterval)
+				requeueReaction(state, key, pending, waitPollInterval)
+				askForClickProofs(state, params, pending, autoMergeData.PRNumber, mergeStatus.HeadSHA, entryLog, ctx)
+				entryLog.Debug("auto_merge deferred: click-proofs not recorded",
+					slog.Int("pr_number", autoMergeData.PRNumber),
+					slog.String("head_sha", mergeStatus.HeadSHA),
+				)
+				continue
+			}
 		}
 
 		fingerprint := buildAutoMergeFingerprint(mergeStatus.HeadSHA, reviewDecision)
@@ -394,6 +428,7 @@ func buildAutoMergeFingerprint(headSHA string, decision domain.ReviewDecision) s
 // for the same issue are preserved.
 func postAutoMergeSuccess(state *State, params ReconcileParams, pending *PendingReaction, autoMergeData *AutoMergeReactionData, mergeResult domain.MergeResult, log *slog.Logger, ctx context.Context) {
 	delete(state.PendingReactions, ReactionKey(pending.IssueID, ReactionKindAutoMerge))
+	delete(state.ClickProofsAsked, pending.IssueID)
 
 	if params.AutoMergeConfig.DeleteBranch {
 		owner := autoMergeData.Owner

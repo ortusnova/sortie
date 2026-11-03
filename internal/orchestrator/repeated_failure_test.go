@@ -32,15 +32,21 @@ func openRepeatedFailureStore(t *testing.T) *persistence.Store {
 }
 
 // failRun puts a run of issueID in state as dispatched by its retry, or as
-// the first dispatch when retryAttempt is nil, and ends it on err.
+// the first dispatch when retryAttempt is nil, and ends it on err. A run a
+// pending retry dispatches carries that retry's trigger.
 func failRun(t *testing.T, state *State, store WorkerExitStore, issueID, identifier string, retryAttempt *int, err error) {
 	t.Helper()
+	var trigger string
+	if pending, ok := state.RetryAttempts[issueID]; ok && retryAttempt != nil {
+		trigger = pending.OriginTrigger
+	}
 	CancelRetry(state, issueID)
 	state.Running[issueID] = &RunningEntry{
 		Identifier:   identifier,
 		Issue:        domain.Issue{ID: issueID, Identifier: identifier, State: "In Progress"},
 		StartedAt:    baseTime,
 		RetryAttempt: retryAttempt,
+		Trigger:      trigger,
 	}
 	state.Claimed[issueID] = struct{}{}
 	params := HandleWorkerExitParams{
@@ -51,6 +57,8 @@ func failRun(t *testing.T, state *State, store WorkerExitStore, issueID, identif
 		Logger:              discardLogger(),
 		Ctx:                 context.Background(),
 		HandoffParkingLabel: "needs-human",
+		FaultHost:           "taichi",
+		FaultForge:          "GitHub",
 	}
 	HandleWorkerExit(state, WorkerResult{
 		IssueID:      issueID,
@@ -87,40 +95,39 @@ func github502() error {
 	}
 }
 
-func TestHandleWorkerExit_TheSecondRefusedPush(t *testing.T) {
+func TestHandleWorkerExit_TheThirdSameStoryFaultParks(t *testing.T) {
 	t.Parallel()
 
-	const issueID, identifier, maxSessions = "issue-49", "ONS-49", 16
+	const issueID, identifier, maxSessions = "issue-60", "ONS-60", 16
 	ctx := context.Background()
 	store := openRepeatedFailureStore(t)
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 
-	failRun(t, state, store, issueID, identifier, nil, refusedPush())
-	first, retried := state.RetryAttempts[issueID]
-	if !retried || first.Attempt != 1 {
-		t.Fatalf("after the first refused push: retry = %+v, %v, want attempt 1", first, retried)
-	}
-	if _, parked := state.Parked[issueID]; parked {
-		t.Fatal("the first refused push parked the issue, want a retry")
+	failRun(t, state, store, issueID, identifier, nil, failingTests())
+	first := state.RetryAttempts[issueID]
+	failRun(t, state, store, issueID, identifier, new(first.Attempt), failingTests())
+	fix, ok := state.RetryAttempts[issueID]
+	if !ok || fix.OriginTrigger != triggerStoryFault {
+		t.Fatalf("after the second failure: retry = %+v, %v, want the story-fault session", fix, ok)
 	}
 
-	failRun(t, state, store, issueID, identifier, new(first.Attempt), refusedPush())
+	failRun(t, state, store, issueID, identifier, new(fix.Attempt), failingTests())
 
 	if retry, ok := state.RetryAttempts[issueID]; ok {
-		t.Errorf("after the second refused push: retry %+v scheduled, want no third run", retry)
+		t.Errorf("after the third failure: retry %+v scheduled, want no fourth run", retry)
 	}
 	if _, claimed := state.Claimed[issueID]; claimed {
-		t.Error("after the second refused push the claim is held, want it released")
+		t.Error("after the third failure the claim is held, want it released")
 	}
 	parked, ok := state.Parked[issueID]
 	if !ok {
-		t.Fatal("after the second refused push the issue is not parked, want the failure routed to a person")
+		t.Fatal("after the third failure the issue is not parked, want the failure routed to a person")
 	}
 	if parked.Reason != parkReasonRepeatedFailure || parked.Label != "needs-human" {
 		t.Errorf("park = reason %q, label %q, want %q under needs-human", parked.Reason, parked.Label, parkReasonRepeatedFailure)
 	}
-	if !strings.Contains(parked.Statement, "[remote rejected]") {
-		t.Errorf("park statement = %q, want the refusal", parked.Statement)
+	if !strings.Contains(parked.Statement, "make test") {
+		t.Errorf("park statement = %q, want the failure", parked.Statement)
 	}
 
 	rows, err := store.ListParkedIssues(ctx)
@@ -131,22 +138,16 @@ func TestHandleWorkerExit_TheSecondRefusedPush(t *testing.T) {
 	if err != nil || len(retries) != 0 {
 		t.Errorf("LoadRetryEntries() = %+v, %v, want none", retries, err)
 	}
-
 	used, err := store.CountRunHistoryByIssue(ctx, issueID)
-	if err != nil || used != 2 {
-		t.Fatalf("CountRunHistoryByIssue() = %d, %v, want 2 sessions used", used, err)
+	if err != nil || used != 3 {
+		t.Fatalf("CountRunHistoryByIssue() = %d, %v, want 3 sessions used", used, err)
 	}
-	if left := maxSessions - used; left != 14 {
-		t.Errorf("sessions left = %d, want 14 of %d", left, maxSessions)
-	}
-
-	runs, err := store.QueryRunHistoryByIssue(ctx, issueID)
-	if err != nil || len(runs) != 2 {
-		t.Fatalf("QueryRunHistoryByIssue() = %d runs, %v, want 2", len(runs), err)
+	if left := maxSessions - used; left != 13 {
+		t.Errorf("sessions left = %d, want 13 of %d", left, maxSessions)
 	}
 	signature, err := store.LatestRunFailureSignature(ctx, issueID)
-	if err != nil || !strings.HasPrefix(signature, "export | error | ") || strings.Contains(signature, identifier) {
-		t.Errorf("LatestRunFailureSignature() = %q, %v, want an export signature without the issue key", signature, err)
+	if err != nil || !strings.HasPrefix(signature, "agent_turn | turn_failed | ") || strings.Contains(signature, identifier) {
+		t.Errorf("LatestRunFailureSignature() = %q, %v, want an agent turn signature without the issue key", signature, err)
 	}
 }
 

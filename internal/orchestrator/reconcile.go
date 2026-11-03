@@ -64,6 +64,11 @@ type ReconcileParams struct {
 	// read them.
 	OperatorComments OperatorCommentsFunc
 
+	// ClickProofs, when non-nil, holds auto-merge of a ui story until its
+	// pull request records the click-proofs on its preview. Plan control
+	// sets it.
+	ClickProofs ClickProofsFunc
+
 	// TrackerAdapter fetches current issue states for running issues.
 	TrackerAdapter domain.TrackerAdapter
 
@@ -388,6 +393,7 @@ func reconcileOverdueRetries(state *State, params ReconcileParams, log *slog.Log
 			Trigger:             entry.Trigger,
 			OriginTrigger:       entry.OriginTrigger,
 			UsageLimitNotified:  entry.UsageLimitNotified,
+			Failure:             entry.Failure,
 		}, params.OnRetryFire)
 
 		if rearmed, ok := state.RetryAttempts[issueID]; ok {
