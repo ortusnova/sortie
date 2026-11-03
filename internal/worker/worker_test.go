@@ -1021,6 +1021,23 @@ func TestPlaceable(t *testing.T) {
 	}
 }
 
+// A waiting job's reason gives what is free in hundredths, as the worker
+// declared it, not the float noise of the jobs charged against it (live,
+// 2026-11-03: "11.430000000000007 of 20 GiB disk free").
+func TestWaitingRoundsWhatIsFree(t *testing.T) {
+	m := newM(&clock{t: time.Unix(0, 0)})
+	d := host()
+	d.Free.DiskGiB = 71.43
+	m.CheckIn("taichi", d)
+	for _, id := range []string{"ONS-1", "ONS-2", "ONS-3"} {
+		m.Submit(Job{ID: id, Requires: Requires{DiskGiB: 20}})
+	}
+	want := []string{"worker taichi: 11.43 of 20 GiB disk free"}
+	if why, ok := m.Placeable(Requires{DiskGiB: 20}); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() = %v, %v; want %v", why, ok, want)
+	}
+}
+
 // Jobs dispatched but not yet queued are charged after the queued ones:
 // with one slot free on each of two workers, a third dispatch in the
 // same pass waits (live, 2026-11-03: a cap of 16 sent ONS-101, ONS-105
