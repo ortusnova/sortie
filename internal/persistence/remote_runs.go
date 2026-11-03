@@ -69,6 +69,17 @@ func (s *Store) UpdateRemoteRunSession(ctx context.Context, issueID, sessionID s
 	return nil
 }
 
+// UpdateRemoteRunRecord replaces the record of the issue's remote run,
+// as when its worker resumed the attempt with new job tokens. An issue
+// with no row is left without one.
+func (s *Store) UpdateRemoteRunRecord(ctx context.Context, issueID, record string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE remote_runs SET record = ?, updated_at = ? WHERE issue_id = ?`,
+		record, nowText(), issueID); err != nil {
+		return fmt.Errorf("update remote run record: %w", err)
+	}
+	return nil
+}
+
 // DeleteRemoteRun forgets the issue's remote run, once it ended.
 func (s *Store) DeleteRemoteRun(ctx context.Context, issueID string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM remote_runs WHERE issue_id = ?`, issueID); err != nil {

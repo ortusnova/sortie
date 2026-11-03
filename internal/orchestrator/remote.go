@@ -58,6 +58,17 @@ type remoteWorkers struct {
 	kept map[string]struct{}
 	// adoptions holds the runs restored at start, until adopted.
 	adoptions []*remoteAdoption
+	// rehomes holds, by issue ID, the outcome channel of each attempt
+	// whose worker broke its stdio stream while it held the job, until
+	// the attempt's exit adopts the run again.
+	rehomes map[string]rehome
+}
+
+// rehome is an attempt left with its worker for this process to adopt
+// again: its job and the channel the job's outcome arrives on.
+type rehome struct {
+	jobID string
+	ended <-chan worker.Outcome
 }
 
 func newRemoteWorkers(now func() time.Time) *remoteWorkers {
@@ -68,7 +79,9 @@ func newRemoteWorkers(now func() time.Time) *remoteWorkers {
 	// A job this process does not know may be one a previous process
 	// left with its worker, until the runs restored at start are adopted.
 	matcher.Recovering()
-	return &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(), matcher: matcher}
+	r := &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(), matcher: matcher}
+	matcher.OnResume(r.resumed)
+	return r
 }
 
 // started records the context of the process's event loop.
@@ -101,6 +114,35 @@ func (r *remoteWorkers) wasKept(issueID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.kept[issueID]
 	return ok
+}
+
+// unkeep ends the keep of issueID: its next exit records as any other.
+func (r *remoteWorkers) unkeep(issueID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.kept, issueID)
+}
+
+// rehoming records that the attempt of issueID is left with its worker
+// for this process to adopt again, with the channel its job's outcome
+// arrives on.
+func (r *remoteWorkers) rehoming(issueID string, h rehome) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rehomes == nil {
+		r.rehomes = map[string]rehome{}
+	}
+	r.rehomes[issueID] = h
+}
+
+// takeRehome returns and forgets an attempt left with its worker for
+// this process to adopt again.
+func (r *remoteWorkers) takeRehome(issueID string) (rehome, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h, ok := r.rehomes[issueID]
+	delete(r.rehomes, issueID)
+	return h, ok
 }
 
 func (r *remoteWorkers) track(a *remoteAttempt) {
@@ -421,8 +463,9 @@ type RemoteAttemptParams struct {
 	DefaultCommand string
 
 	// OnStreamBroken is called with the issue ID when the job's stdio
-	// stream breaks before the agent's exit, so the orchestrator ends
-	// the turn as it ends a stalled agent's. Nil ignores the break, and
+	// stream breaks before the agent's exit and the attempt has no record
+	// to adopt it again from, so the orchestrator ends the turn as it
+	// ends a stalled agent's. Nil ignores the break, and
 	// stall detection ends the silent session in its own time.
 	OnStreamBroken func(issueID string)
 
@@ -572,6 +615,8 @@ type remoteAttempt struct {
 	detached  bool
 	sessionID string
 	turns     int
+	// endedCh is the channel the job's outcome arrives on.
+	endedCh <-chan worker.Outcome
 
 	usageMu sync.Mutex
 	pending []dataplane.Usage
@@ -631,6 +676,9 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 		OnUsage: a.receiveUsage,
 		Keep:    a.leaving,
 		OnStdioBroken: func(error) {
+			if a.rehome() {
+				return
+			}
 			if a.onBroken != nil {
 				a.onBroken(a.issueID)
 			}
@@ -644,6 +692,7 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 	a.submitted = true
 	if a.adopt != nil {
 		ended := a.adopt.ended
+		a.endedCh = ended
 		a.mu.Unlock()
 		go a.watch(ended, dp)
 		a.logger.Info("remote job adopted", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt),
@@ -654,6 +703,7 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 		return a.waitStdio(ctx, dp)
 	}
 	ended := a.workers.matcher.Submit(a.job)
+	a.endedCh = ended
 	granted := a.workers.matcher.Granted(a.job.ID)
 	a.mu.Unlock()
 	go a.watch(ended, dp)
@@ -780,6 +830,37 @@ func (a *remoteAttempt) detach() bool {
 	if dp != nil {
 		dp.Detach()
 	}
+	return true
+}
+
+// errRemoteRehome is the cause a remote run is cancelled with when its
+// worker broke the stdio stream while it held the job: the run is
+// adopted again, as after a restart.
+var errRemoteRehome = errors.New("the worker broke the stdio stream while it held the job; the run is adopted again")
+
+// rehome takes a stdio stream the worker broke while it held the job, as
+// a worker daemon that restarts breaks it: the attempt is left with its
+// worker, as at shutdown, its run is cancelled with [errRemoteRehome],
+// and its exit adopts the run again in this process, so the worker dials
+// the stream again and the session resumes. It reports false for an
+// attempt with no record to adopt it from, or while the process stops.
+func (a *remoteAttempt) rehome() bool {
+	a.mu.Lock()
+	if !a.recorded || a.finished || a.detached || a.workers.runs == nil || a.workers.stopping() || a.endedCh == nil {
+		a.mu.Unlock()
+		return false
+	}
+	a.detached = true
+	dp, ended := a.dp, a.endedCh
+	a.mu.Unlock()
+	a.workers.keep(a.issueID)
+	a.workers.rehoming(a.issueID, rehome{jobID: a.job.ID, ended: ended})
+	a.logger.Info("remote job stdio stream broken by its worker; the run is kept and adopted again",
+		slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt))
+	if dp != nil {
+		dp.Detach()
+	}
+	a.cancel(errRemoteRehome)
 	return true
 }
 

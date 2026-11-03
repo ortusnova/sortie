@@ -14,6 +14,7 @@ var workerRoutes = []string{
 	"/api/v1/workers/poll",
 	"/api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat",
 	"/api/v1/workers/jobs/{job}/attempts/{attempt}/report",
+	"/api/v1/workers/jobs/{job}/attempts/{attempt}/resume",
 }
 
 // routeWorker serves the worker API while the remote environment kind
