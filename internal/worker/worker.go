@@ -371,6 +371,9 @@ type Matcher struct {
 	pending []Job
 	leased  map[string]Job
 	ends    map[string]chan Outcome
+	// granted holds, per queued job, the channel its worker's ID
+	// arrives on when it is leased.
+	granted map[string]chan string
 	// steps holds the step each leased job last reported.
 	steps map[string]Step
 }
@@ -383,7 +386,7 @@ func NewMatcher(leaser Leaser, now func() time.Time, tokens Tokens) *Matcher {
 	}
 	return &Matcher{leaser: leaser, now: now, tokens: tokens,
 		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{},
-		steps: map[string]Step{}}
+		granted: map[string]chan string{}, steps: map[string]Step{}}
 }
 
 // Timings returns how often a worker should check in and renew, and how
@@ -404,9 +407,37 @@ func (m *Matcher) Submit(j Job) <-chan Outcome {
 	}
 	ch := make(chan Outcome, 1)
 	m.ends[j.ID] = ch
+	m.granted[j.ID] = make(chan string, 1)
 	m.pending = append(m.pending, j)
 	sort.SliceStable(m.pending, func(a, b int) bool { return before(m.pending[a], m.pending[b]) })
 	return ch
+}
+
+// Granted returns the channel the ID of the worker that leases the
+// submitted job arrives on, once; nil for a job not queued.
+func (m *Matcher) Granted(jobID string) <-chan string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.granted[jobID]
+}
+
+// Adopt holds j as leased by workerID from now on, as if a poll had
+// granted it, and returns the channel its outcome arrives on, once. A
+// process that restarts adopts each job a worker still runs for it: the
+// lease lasts its TTL, so the worker's next heartbeat keeps it and a
+// worker that is gone lets it expire. It returns [ErrLeaseHeld] while
+// another lease on j exists.
+func (m *Matcher) Adopt(j Job, workerID string) (<-chan Outcome, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, err := m.leaser.Acquire(j.ID, workerID, m.now()); err != nil {
+		return nil, err
+	}
+	m.leased[j.ID] = j
+	delete(m.steps, j.ID)
+	ch := make(chan Outcome, 1)
+	m.ends[j.ID] = ch
+	return ch, nil
 }
 
 // before orders jobs by priority, a set priority ahead of none, then
@@ -517,6 +548,10 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 		m.pending = append(m.pending[:i:i], m.pending[i+1:]...)
 		m.leased[j.ID] = j
 		delete(m.steps, j.ID)
+		if ch, ok := m.granted[j.ID]; ok {
+			delete(m.granted, j.ID)
+			ch <- workerID
+		}
 		w.take(j.Requires)
 		flows := make(map[string]FlowAccess, len(j.Flows))
 		for name, u := range j.Flows {
@@ -591,6 +626,7 @@ func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error
 }
 
 func (m *Matcher) endLocked(jobID string, out Outcome) {
+	delete(m.granted, jobID)
 	if ch, ok := m.ends[jobID]; ok {
 		delete(m.ends, jobID)
 		ch <- out
