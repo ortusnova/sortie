@@ -29,6 +29,10 @@ const (
 
 	// scopeSupervisor also admits the supervisor token.
 	scopeSupervisor
+
+	// scopeSessionSupervisor admits both the session token of the issue
+	// the path names and the supervisor token.
+	scopeSessionSupervisor
 )
 
 func constantTimeEqual(a, b string) bool {
@@ -53,10 +57,12 @@ func bearerToken(r *http.Request) (string, bool) {
 // authentication:
 //
 //   - The control token is accepted on every wrapped route.
-//   - A session token is accepted only on a [scopeSession] route whose
-//     path names the issue it was minted for, and answered 403 elsewhere.
-//   - The supervisor token is accepted only on a [scopeSupervisor] route,
-//     and answered 403 elsewhere; either way the request is recorded.
+//   - A session token is accepted only on a [scopeSession] or
+//     [scopeSessionSupervisor] route whose path names the issue it was
+//     minted for, and answered 403 elsewhere.
+//   - The supervisor token is accepted only on a [scopeSupervisor] or
+//     [scopeSessionSupervisor] route, and answered 403 elsewhere; either
+//     way the request is recorded.
 //   - Any other presented credential is answered 401.
 //   - A request with no credential is accepted only when no control
 //     token is configured, which startup allows only on a loopback bind.
@@ -80,7 +86,7 @@ func (s *Server) requireControl(scope controlScope, next http.HandlerFunc) http.
 			next(w, r)
 			return
 		case s.isSupervisorToken(token):
-			if scope != scopeSupervisor {
+			if scope != scopeSupervisor && scope != scopeSessionSupervisor {
 				s.refuseSupervisor(w, r)
 				return
 			}
@@ -93,7 +99,7 @@ func (s *Server) requireControl(scope controlScope, next http.HandlerFunc) http.
 			s.rejectControl(w, r, http.StatusUnauthorized, "unauthorized", "unknown or expired token")
 			return
 		}
-		if scope != scopeSession || r.PathValue("identifier") != identifier {
+		if (scope != scopeSession && scope != scopeSessionSupervisor) || r.PathValue("identifier") != identifier {
 			s.rejectControl(w, r, http.StatusForbidden, "forbidden", "a session token may only hold, release, or escalate its own issue, or report its broker")
 			return
 		}

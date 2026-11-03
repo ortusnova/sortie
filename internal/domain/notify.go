@@ -43,6 +43,7 @@ const (
 	EventStageNotAdvanced          EventType = "stage.not_advanced"
 	EventAgentMessage              EventType = "agent.message"
 	EventSessionEscalated          EventType = "session.escalated"
+	EventHoldExpired               EventType = "hold.expired"
 )
 
 // TrackerCommentKind is the reserved notifications kind of the built-in
@@ -66,6 +67,7 @@ var eventTypes = []EventType{
 	EventStageNotAdvanced,
 	EventAgentMessage,
 	EventSessionEscalated,
+	EventHoldExpired,
 }
 
 // EventTypes returns the catalog in declaration order. The caller may
@@ -101,7 +103,8 @@ func (t EventType) Severity() string {
 		EventEscalationMergeCompletion,
 		EventBudgetHeld,
 		EventStageNotAdvanced,
-		EventSessionEscalated:
+		EventSessionEscalated,
+		EventHoldExpired:
 		return "warning"
 	default:
 		return ""

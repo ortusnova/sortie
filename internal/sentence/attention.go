@@ -11,7 +11,7 @@ import (
 
 // AttentionItem is one thing that needs a person, worded and ready to serve.
 // Kind is parked, budget_held, reaction_escalated, workflow_reload_failed,
-// preflight_failed, or spend_ceiling_reached; Severity is critical or warning. Since is nil only for a
+// preflight_failed, spend_ceiling_reached, or hold_expired; Severity is critical or warning. Since is nil only for a
 // park whose stored time did not parse. AcknowledgedAt is nil while no person
 // has acknowledged the item. The issue fields are empty on a process-wide item.
 type AttentionItem struct {
@@ -131,6 +131,8 @@ func attentionItem(cause orchestrator.AttentionCause, c Context) AttentionItem {
 		return preflightItem(cause)
 	case orchestrator.AttentionKindSpendCeilingReached:
 		return spendCeilingItem(cause)
+	case orchestrator.AttentionKindHoldExpired:
+		return holdExpiredItem(cause)
 	}
 	return AttentionItem{ID: cause.ID, Kind: cause.Kind, Since: cause.Since}
 }
@@ -305,6 +307,29 @@ func preflightItem(cause orchestrator.AttentionCause) AttentionItem {
 	return failingCheckItem(cause, "attn_preflight",
 		map[string]any{"Error": leadless},
 		AttentionEvidence{Error: check.Error})
+}
+
+func holdExpiredItem(cause orchestrator.AttentionCause) AttentionItem {
+	h := cause.Hold
+	reason, why, clears := attentionTexts("attn_hold_expired", map[string]any{
+		"By":       strings.TrimSpace(h.Holder),
+		"Reason":   strings.TrimSpace(h.Reason),
+		"Evidence": strings.TrimSpace(h.Evidence),
+		"Until":    h.Until.UTC().Format(time.RFC3339),
+	})
+	return AttentionItem{
+		ID:              cause.ID,
+		Kind:            cause.Kind,
+		Severity:        severityWarning,
+		Since:           cause.Since,
+		IssueID:         h.IssueID,
+		IssueIdentifier: h.Identifier,
+		ReasonText:      reason,
+		WhyText:         why,
+		ClearsText:      clears,
+		Action:          AttentionAction{Kind: actionAcknowledge},
+		Evidence:        AttentionEvidence{Reason: h.Reason},
+	}
 }
 
 func spendCeilingItem(cause orchestrator.AttentionCause) AttentionItem {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,26 +13,41 @@ import (
 	"github.com/sortie-ai/sortie/internal/parkanswer"
 )
 
-// HoldFunc holds the running issue named by identifier. It must be safe
-// to call from any goroutine.
-type HoldFunc func(identifier, reason, holder string) orchestrator.ControlReply
+// HoldFunc holds the running issue named by identifier, or places a
+// standing hold on a known issue that is not running. It must be safe to
+// call from any goroutine.
+type HoldFunc func(identifier string, req orchestrator.HoldRequest) orchestrator.ControlReply
 
 // ReleaseFunc releases the hold on the running issue named by
-// identifier. It must be safe to call from any goroutine.
+// identifier, or its standing hold. It must be safe to call from any
+// goroutine.
 type ReleaseFunc func(identifier string) orchestrator.ControlReply
 
 // maxControlBodyBytes bounds the JSON body of a control request.
 const maxControlBodyBytes = 64 << 10
 
+// holdRequest is the body of a hold request. By is another name for
+// Holder; Holder wins when both are set. Evidence, Until (RFC 3339), and
+// Minutes apply to a hold on an issue that is not running: a lease that
+// must be renewed with new evidence before it ends. Until wins over
+// Minutes; with neither the lease lasts the default.
 type holdRequest struct {
-	Reason string `json:"reason"`
-	Holder string `json:"holder"`
+	Reason   string `json:"reason"`
+	Holder   string `json:"holder"`
+	By       string `json:"by"`
+	Evidence string `json:"evidence"`
+	Until    string `json:"until"`
+	Minutes  int    `json:"minutes"`
 }
 
+// runHoldResponse is the reply of the hold and release routes. Lease is
+// the standing hold after a hold or renewal of an issue that is not
+// running, and null otherwise.
 type runHoldResponse struct {
 	IssueIdentifier string `json:"issue_identifier"`
 	IssueID         string `json:"issue_id"`
 	holdFields
+	Lease *standingHoldResponse `json:"lease"`
 }
 
 // controlRoute returns a handler that answers 405 with the JSON error
@@ -110,11 +126,18 @@ func (s *Server) writeControlReply(w http.ResponseWriter, r *http.Request, start
 }
 
 func toRunHoldResponse(h orchestrator.HoldState) runHoldResponse {
-	return runHoldResponse{
+	resp := runHoldResponse{
 		IssueIdentifier: h.Identifier,
 		IssueID:         h.IssueID,
 		holdFields:      newHoldFields(h.Held, h.Reason, h.Holder, h.HeldSince, h.HeldTotal),
 	}
+	if l := h.Lease; l != nil {
+		resp.Lease = new(toStandingHoldResponse(orchestrator.SnapshotStandingHold{
+			IssueID: h.IssueID, Identifier: l.Identifier, Holder: l.Holder, Reason: l.Reason, Evidence: l.Evidence,
+			Since: l.Since, RenewedAt: l.RenewedAt, Until: l.Until, ExpiredAt: l.ExpiredAt,
+		}))
+	}
+	return resp
 }
 
 func (s *Server) handleHold(w http.ResponseWriter, r *http.Request) {
@@ -125,10 +148,28 @@ func (s *Server) handleHold(w http.ResponseWriter, r *http.Request) {
 	}
 	var req holdRequest
 	if err := decodeControlBody(r, &req); err != nil {
-		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with optional reason and holder")
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with optional reason, holder (or by), evidence, until, and minutes")
 		return
 	}
-	reply := s.holdFn(r.PathValue("identifier"), req.Reason, req.Holder)
+	hold := orchestrator.HoldRequest{
+		Reason:   req.Reason,
+		Holder:   cmp.Or(req.Holder, req.By),
+		Evidence: req.Evidence,
+		For:      time.Duration(req.Minutes) * time.Minute,
+	}
+	if req.Until != "" {
+		until, err := time.Parse(time.RFC3339, req.Until)
+		if err != nil {
+			writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "until must be an RFC 3339 time")
+			return
+		}
+		hold.Until = until
+	}
+	if req.Minutes < 0 {
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "minutes must not be negative")
+		return
+	}
+	reply := s.holdFn(r.PathValue("identifier"), hold)
 	s.writeControlReply(w, r, start, reply, toRunHoldResponse(reply.Hold))
 }
 

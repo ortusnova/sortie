@@ -291,6 +291,8 @@ const (
 	SkipStageHopUnconfirmed SkipReason = "stage_hop_unconfirmed"
 	SkipUsageLimit          SkipReason = "usage_limit"
 	SkipParkCommentsUnread  SkipReason = "park_comments_unread"
+	SkipStandingHold        SkipReason = "standing_hold"
+	SkipStandingHoldExpired SkipReason = "standing_hold_expired"
 )
 
 // HoldReasons returns every reason a [HeldEntry] can carry, in the order of
@@ -309,6 +311,8 @@ func HoldReasons() []SkipReason {
 		SkipStageHopUnconfirmed,
 		SkipUsageLimit,
 		SkipParkCommentsUnread,
+		SkipStandingHold,
+		SkipStandingHoldExpired,
 	}
 }
 
