@@ -888,6 +888,15 @@
         },
         "running": {
           "type": "integer"
+        },
+        "unmanaged": {
+          "items": {
+            "$ref": "#/$defs/Unmanaged"
+          },
+          "type": "array"
+        },
+        "used": {
+          "$ref": "#/$defs/Free"
         }
       },
       "required": [
@@ -1585,6 +1594,29 @@
       ],
       "type": "object"
     },
+    "Host": {
+      "properties": {
+        "capacity": {
+          "$ref": "#/$defs/Size"
+        },
+        "name": {
+          "type": "string"
+        },
+        "unmanaged": {
+          "items": {
+            "$ref": "#/$defs/Machine"
+          },
+          "type": "array"
+        },
+        "used": {
+          "$ref": "#/$defs/Size"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "Issue": {
       "properties": {
         "id": {
@@ -2112,6 +2144,16 @@
         "job": {
           "type": "string"
         },
+        "phase": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "step_at": {
+          "format": "date-time",
+          "type": "string"
+        },
         "worker": {
           "type": "string"
         }
@@ -2121,6 +2163,25 @@
         "attempt",
         "worker",
         "expires"
+      ],
+      "type": "object"
+    },
+    "Machine": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "since"
       ],
       "type": "object"
     },
@@ -2728,6 +2789,51 @@
       "required": [
         "number",
         "repository"
+      ],
+      "type": "object"
+    },
+    "PullWaitResponse": {
+      "properties": {
+        "issue_identifier": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "waits_on": {
+          "enum": [
+            "review",
+            "ci",
+            "conflict",
+            "person",
+            "none"
+          ],
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_identifier",
+        "number",
+        "repository",
+        "waits_on",
+        "reason",
+        "since"
       ],
       "type": "object"
     },
@@ -3839,6 +3945,10 @@
             }
           ]
         },
+        "estimated_end": {
+          "format": "date-time",
+          "type": "string"
+        },
         "granted_sessions": {
           "type": "integer"
         },
@@ -3934,6 +4044,9 @@
           "type": "string"
         },
         "model_name": {
+          "type": "string"
+        },
+        "phase": {
           "type": "string"
         },
         "pull_request": {
@@ -4063,6 +4176,13 @@
         "status_text_full": {
           "type": "string"
         },
+        "step": {
+          "type": "string"
+        },
+        "step_at": {
+          "format": "date-time",
+          "type": "string"
+        },
         "tokens": {
           "$ref": "#/$defs/TokenInfo"
         },
@@ -4136,6 +4256,9 @@
         },
         "used_tokens_complete": {
           "type": "boolean"
+        },
+        "worker": {
+          "type": "string"
         },
         "workflow_file": {
           "type": "string"
@@ -4951,6 +5074,25 @@
       ],
       "type": "object"
     },
+    "Size": {
+      "properties": {
+        "cpu": {
+          "type": "number"
+        },
+        "disk_gib": {
+          "type": "number"
+        },
+        "mem_gib": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cpu",
+        "mem_gib",
+        "disk_gib"
+      ],
+      "type": "object"
+    },
     "SkillCall": {
       "properties": {
         "skill": {
@@ -5567,6 +5709,9 @@
             }
           ]
         },
+        "host": {
+          "$ref": "#/$defs/Host"
+        },
         "parked": {
           "anyOf": [
             {
@@ -5592,6 +5737,12 @@
               "type": "null"
             }
           ]
+        },
+        "pulls": {
+          "items": {
+            "$ref": "#/$defs/PullWaitResponse"
+          },
+          "type": "array"
         },
         "rate_limits": {
           "additionalProperties": {
@@ -5642,6 +5793,12 @@
         "version": {
           "type": "string"
         },
+        "waits": {
+          "items": {
+            "$ref": "#/$defs/WaitResponse"
+          },
+          "type": "array"
+        },
         "workers": {
           "$ref": "#/$defs/State"
         }
@@ -5662,7 +5819,9 @@
         "attention",
         "agent_totals",
         "rate_limits",
-        "dispatch_paused"
+        "dispatch_paused",
+        "waits",
+        "pulls"
       ],
       "type": "object"
     },
@@ -6084,6 +6243,25 @@
       ],
       "type": "object"
     },
+    "Unmanaged": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "since"
+      ],
+      "type": "object"
+    },
     "UsageWindowAmountResponse": {
       "properties": {
         "limit": {
@@ -6181,6 +6359,41 @@
       "required": [
         "verdict",
         "runs"
+      ],
+      "type": "object"
+    },
+    "WaitResponse": {
+      "properties": {
+        "issue_identifier": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "slot",
+            "capability",
+            "drain"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "worker": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reason",
+        "release",
+        "since"
       ],
       "type": "object"
     },
