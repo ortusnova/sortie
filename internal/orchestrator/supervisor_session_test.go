@@ -533,11 +533,20 @@ func TestSupervisor_StartsOnTheSweep(t *testing.T) {
 func TestScenario_TheSupervisorNeverTakesAStorysSlot(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Agent.MaxConcurrentAgents = 1 })
+	// Only ONS-A's turn is released; any other story's turn runs until it
+	// is stopped, so ONS-C stays running for the wait below to see it.
 	releaseStory := make(chan struct{})
 	h.story = &mockAgentAdapter{
+		startSessionFn: func(_ context.Context, params domain.StartSessionParams) (domain.Session, error) {
+			return domain.Session{ID: filepath.Base(params.WorkspacePath)}, nil
+		},
 		runTurnFn: func(ctx context.Context, session domain.Session, _ domain.RunTurnParams) (domain.TurnResult, error) {
+			release := releaseStory
+			if session.ID != "ONS-A" {
+				release = nil
+			}
 			select {
-			case <-releaseStory:
+			case <-release:
 				return domain.TurnResult{SessionID: session.ID, ExitReason: domain.EventTurnCompleted}, nil
 			case <-ctx.Done():
 				return domain.TurnResult{SessionID: session.ID, ExitReason: domain.EventTurnCancelled}, ctx.Err()
