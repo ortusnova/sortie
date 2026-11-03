@@ -119,6 +119,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The JSON API schema now lists every reason a held issue can report; clients should still accept reasons they do not know. ([#1523](https://github.com/sortie-ai/sortie/issues/1523))
 - The dashboard now labels a run that stopped while its agent waited for an answer as 'Needed input', and a run whose agent asked for a person as 'Action required'.
 
+### Removed
+
+- **Breaking:** the `smolvm` environment kind is gone, now that one Sortie runs every repository's jobs on workers under `environment.kind: remote`. A workflow with `environment.kind: smolvm` fails validation at start and at reload with an error on `environment.kind` that names `smolvm` and the `remote` kind, and a reload keeps the previous workflow; an `environment.smolvm` block under another kind is ignored with an `unknown_sub_key` warning. With the kind go its VM per issue, its pack, sizing, allowlist, credential bindings (`file` and `command` sources included), `pass_env`, `ssh_agent`, `nested`, `net_backend`, `mounts` and `user`, the per-issue tool socket mounted in the VM, its smolvm version check, the rule that it excludes `worker.ssh_hosts`, the machine listing behind `host.used` and `host.unmanaged` on `GET /api/v1/state`, and the smolvm environment guide. `make check-latest` no longer checks the `smolvm` on `PATH`. Sortie can no longer remove a workspace the kind created: delete its VM and directory by hand. Move such a workflow to `kind: remote`, with its repositories under `environment.remote`.
+
 ### Fixed
 
 - Under `environment.kind: remote`, a run adopted after a restart that ends before its job reaches the data plane, such as a run cancelled at its adoption, now withdraws its job. The job stayed leased to its worker, whose heartbeats kept the lease while it dialed the `stdio` flow forever, so the machine and its reserved resources were held and the issue's retry waited for a worker that never freed them.

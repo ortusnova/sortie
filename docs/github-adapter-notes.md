@@ -120,7 +120,7 @@ The job log is one stream. Nothing in a line names its step, so the step has to 
 
 ## Opening a pull request for an issue branch
 
-The SCM adapter also implements the optional `domain.PullRequestOpener`. Its one method, `EnsurePullRequest`, serves the repository export of the `smolvm` execution environment: after Sortie pushes an issue branch, it needs the open pull request for that branch, or a new one. It is not part of `SCMAdapter`, so no other implementer or fake changed.
+The SCM adapter also implements the optional `domain.PullRequestOpener`. Its one method, `EnsurePullRequest`, serves the repository export of the `remote` execution environment: after Sortie pushes an issue branch, it needs the open pull request for that branch, or a new one. It is not part of `SCMAdapter`, so no other implementer or fake changed.
 
 **Find first, then create.** The adapter lists the open pull requests filtered by `head=<owner>:<branch>` and returns the one whose head ref is the branch, unchanged, with `Created` false. Only when there is none does it create one with the given title, body, head, and base. The `owner:` qualifier keeps a fork's branch of the same name out of the result.
 

@@ -80,8 +80,8 @@ func exportWorkerConfig(t *testing.T) config.ServiceConfig {
 	cfg.Hooks.AfterRun = "echo finished > after-run.txt"
 	cfg.Tracker.HandoffEvidence = config.HandoffEvidenceOff
 	cfg.Environment = config.EnvironmentConfig{
-		Kind: config.EnvironmentKindSmolvm,
-		Smolvm: config.SmolvmConfig{Repository: &config.SmolvmRepository{
+		Kind: config.EnvironmentKindRemote,
+		Remote: config.RemoteConfig{Repository: &config.Repository{
 			URL: "https://example.com/org/app.git", Base: "main", BranchPrefix: "sortie/", MaxBundleMiB: 512,
 		}},
 	}
@@ -242,7 +242,7 @@ func TestRunWorkerAttempt_NoExportWithoutARepository(t *testing.T) {
 	}{
 		{name: "local kind", mutate: func(cfg *config.ServiceConfig) { cfg.Environment.Kind = config.EnvironmentKindLocal }},
 		{name: "default kind", mutate: func(cfg *config.ServiceConfig) { cfg.Environment.Kind = "" }},
-		{name: "smolvm without repository", mutate: func(cfg *config.ServiceConfig) { cfg.Environment.Smolvm.Repository = nil }},
+		{name: "smolvm without repository", mutate: func(cfg *config.ServiceConfig) { cfg.Environment.Remote.Repository = nil }},
 		{name: "scratch dispatch", mutate: func(*config.ServiceConfig) {}, posture: PostureReview},
 	}
 	for _, tt := range tests {
@@ -602,8 +602,8 @@ func TestExportIssueBranch_EnsuresThePullRequest(t *testing.T) {
 
 func TestRunWorkerAttempt_OpensThePullRequestAfterThePush(t *testing.T) {
 	cfg := exportWorkerConfig(t)
-	cfg.Environment.Smolvm.Repository.Provider = "github"
-	cfg.Environment.Smolvm.Repository.Project = "org/app"
+	cfg.Environment.Remote.Repository.Provider = "github"
+	cfg.Environment.Remote.Repository.Project = "org/app"
 	env := recordingEnvironment(t)
 	repo := &fakeRepository{env: env, result: gitsync.ExportResult{Branch: "sortie/TEST-1", Commit: "aaa", Pushed: true}}
 
@@ -648,7 +648,7 @@ func TestRunWorkerAttempt_OpensThePullRequestAfterThePush(t *testing.T) {
 	if len(calls) != 1 || calls[0].Head != "sortie/TEST-1" || calls[0].Base != "main" || calls[0].Title != "TEST-1: Test issue" {
 		t.Errorf("EnsurePullRequest calls = %+v, want one for sortie/TEST-1 into main", calls)
 	}
-	if len(seen) != 1 || seen[0].Environment.Smolvm.Repository.Provider != "github" {
+	if len(seen) != 1 || seen[0].Environment.Remote.Repository.Provider != "github" {
 		t.Errorf("opener built for %d configurations, want the attempt's one", len(seen))
 	}
 	if got := workspace.ReadHostSCMRecord(result.WorkspacePath, nil); got.PRNumber != 3 || got.Owner != "org" || got.Repo != "app" || got.Branch != "sortie/TEST-1" {

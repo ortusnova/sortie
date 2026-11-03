@@ -2960,8 +2960,6 @@ var contractAnchorSortieDirSites = []contractSiteEntry{
 	{importPath: "github.com/sortie-ai/sortie/internal/orchestrator", name: "RunWorkerAttempt", reason: "exported summary path"},
 	{importPath: "github.com/sortie-ai/sortie/tools/qualify/probe", name: "writeToolServerMCPConfig", reason: "fixture path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/agent/agenttest", name: "NewSortieTools", reason: "returned path"},
-	{importPath: "github.com/sortie-ai/sortie/internal/environment/smolvm", name: "Environment.preparePaths", reason: "VM mount source"},
-	{importPath: "github.com/sortie-ai/sortie/internal/environment/smolvm", name: "guestControlLink", reason: "guest path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/agent/claude", name: "writeDerivedConfig", reason: "returned path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/agent/copilot", name: "writeDerivedConfig", reason: "returned path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/agent/agenttest", name: "WriteSeededMCPConfig", reason: "returned path"},

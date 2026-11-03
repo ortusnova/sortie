@@ -44,7 +44,7 @@ func remoteRepositoriesConfig(t *testing.T, srvURL, header, homelab, sortie stri
 	for _, fl := range config.RemoteFlows {
 		flows[fl] = srvURL + dataplane.Prefix + fl
 	}
-	repos := []config.SmolvmRepository{
+	repos := []config.Repository{
 		{Name: "homelab", URL: homelab, Base: "trunk", BranchPrefix: "sortie/", Provider: "github", Project: "o/homelab", MaxBundleMiB: 16,
 			Image: "ghcr.io/ortusnova/homelab:1", Requires: &config.RemoteRequirements{Capabilities: []string{"nested"}}},
 		{Name: "sortie", URL: sortie, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/sortie", MaxBundleMiB: 16,

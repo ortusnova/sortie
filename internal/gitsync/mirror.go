@@ -60,7 +60,7 @@ func OpenMirror(stateDir, url string) (*Mirror, error) {
 	}
 	// git may repeat the URL in its messages; registering its
 	// credentials masks them in every error and log that carries one.
-	redact.AddURLCredentials("environment.smolvm.repository.url", url)
+	redact.AddURLCredentials("environment.remote.repository.url", url)
 	dir := MirrorPath(filepath.Clean(stateDir), url)
 	return &Mirror{
 		url:  url,

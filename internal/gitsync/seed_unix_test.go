@@ -47,7 +47,7 @@ func (f *syncFixture) buildSeed() (Seed, string) {
 // remote-runs: Seed. git clone of the seed gives the repository on the
 // issue branch, at the base branch for a new issue branch.
 func TestBuildSeed_NewIssueBranchCheckedOut(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 
 	main := f.up.git("rev-parse", "main")
@@ -70,7 +70,7 @@ func TestBuildSeed_NewIssueBranchCheckedOut(t *testing.T) {
 }
 
 func TestBuildSeed_ExistingUpstreamBranchAtItsTip(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	tip := f.humanCommit("sortie/ONS-30", "earlier.txt")
 	seed, path := f.buildSeed()
 	if seed.Commit != tip {
@@ -93,7 +93,7 @@ func (f *syncFixture) returnBundle(dir string, refs ...string) string {
 // remote-runs: Pull request. Two commits on the issue branch come back
 // as a bundle and are pushed.
 func TestImportReturned_PushesTheNewCommits(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 	dir := f.workerClone(path)
 	f.workerCommit(dir, "one.txt")
@@ -116,7 +116,7 @@ func TestImportReturned_PushesTheNewCommits(t *testing.T) {
 }
 
 func TestImportReturned_UnchangedBranchPushesNothing(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 	bundle := f.returnBundle(f.workerClone(path), "refs/heads/sortie/ONS-30")
 	res, err := f.syncer.ImportReturned(context.Background(), "ONS-30", bundle, seed)
@@ -146,7 +146,7 @@ func TestImportReturned_RefusesNotTheBranch(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+			f := newSyncFixture(t, "ONS-30", config.Repository{})
 			seed, path := f.buildSeed()
 			bundle, ref := prepare(f, f.workerClone(path))
 			before := f.refs()
@@ -190,7 +190,7 @@ func (f *syncFixture) workerSeed(seed, branch string) (string, []string) {
 // as a local workspace's does, so a run told to merge origin/<base>
 // finds it.
 func TestBuildSeed_WorkerWorkspaceHoldsTheBaseAsOrigin(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	tip := f.humanCommit("sortie/ONS-30", "earlier.txt")
 	main := f.up.commit("later.txt", "the base moved on\n")
 	_, path := f.buildSeed()
@@ -207,7 +207,7 @@ func TestBuildSeed_WorkerWorkspaceHoldsTheBaseAsOrigin(t *testing.T) {
 // conflicting issue branch in the worker's workspace, and the returned
 // merge is pushed: the upstream issue branch then holds the base.
 func TestImportReturned_PushesAMergeOfTheBase(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	f.humanCommit("sortie/ONS-30", "shared.txt")
 	main := f.up.commit("shared.txt", "the base changed it too\n")
 	seed, path := f.buildSeed()
@@ -253,7 +253,7 @@ func TestImportReturned_LeaseIsTheSeededUpstreamCommit(t *testing.T) {
 		"upstream moved after the seed":     {pushAfterSeed: true, wantErr: ErrBranchMoved},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+			f := newSyncFixture(t, "ONS-30", config.Repository{})
 			seeded := f.humanCommit("sortie/ONS-30", "human.txt")
 			seed, path := f.buildSeed()
 			dir, tips := f.workerSeed(path, "sortie/ONS-30")

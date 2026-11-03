@@ -13,19 +13,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/registry"
 	"github.com/sortie-ai/sortie/internal/workflow"
 )
 
-// repositoryWorkflow returns a workflow under the smolvm kind, with a
-// fake binary and pack, whose repository names provider, followed by
-// extra top-level YAML.
+// repositoryWorkflow returns a workflow under the remote kind whose
+// repository names provider, followed by extra top-level YAML.
 func repositoryWorkflow(t *testing.T, provider, extra string) (dir, path string) {
 	t.Helper()
-	dir, binary, pack := writeSmolvmFixture(t, "1.32.4")
+	dir = t.TempDir()
 	issues := filepath.Join(dir, "issues.json")
 	if err := os.WriteFile(issues, []byte("[]"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	var flows strings.Builder
+	for _, f := range config.RemoteFlows {
+		fmt.Fprintf(&flows, "      %s: { url: https://edge.example/%s }\n", f, f)
 	}
 	content := fmt.Sprintf(`---
 tracker:
@@ -46,11 +50,11 @@ polling:
 workspace:
   root: %q
 environment:
-  kind: smolvm
-  smolvm:
-    binary: %q
-    pack: %q
-    repository:
+  kind: remote
+  remote:
+    image: ghcr.io/ortusnova/agent:1
+    flows:
+%s    repository:
       url: https://example.com/org/app.git
       base: main
       provider: %s
@@ -58,7 +62,7 @@ environment:
 %s
 ---
 Fix issue {{ .issue.identifier }}.
-`, issues, filepath.Join(dir, "workspaces"), binary, pack, provider, extra)
+`, issues, filepath.Join(dir, "workspaces"), flows.String(), provider, extra)
 	return dir, writeCustomWorkflowFile(t, dir, []byte(content))
 }
 
