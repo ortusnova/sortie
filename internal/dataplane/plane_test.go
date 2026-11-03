@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sortie-ai/sortie/internal/jobtoken"
@@ -459,4 +460,45 @@ func TestDetachLeavesTheWorkerWithoutStdinClosed(t *testing.T) {
 		t.Fatalf("a detached attempt reported a broken stream: %v", err)
 	default:
 	}
+}
+
+// While the process stops, its agent adapter closes the bridge's input
+// before the attempt is detached, and the bridge sends its own
+// stdin-closed frame. Keep then holds that frame back: the worker that
+// got it would end the agent, report the run and delete its machine,
+// and the process that adopts the attempt would find it gone.
+func TestKeepHoldsBackTheBridgesStdinClosed(t *testing.T) {
+	f := newFixture(t)
+	var keep atomic.Bool
+	a := f.open(1, Options{Keep: keep.Load})
+	conn, in := f.dialStdio(f.mint("ONS-30", 1)["stdio"])
+	b := startBridge(a)
+	if _, err := b.stdin.Write([]byte("prompt\n")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _, err := ReadFrame(in); err != nil || typ != FrameStdin {
+		t.Fatalf("worker got %q %v, want the prompt", typ, err)
+	}
+
+	keep.Store(true)
+	_ = b.stdin.Close()
+	frames := make(chan byte, 4)
+	go func() {
+		for {
+			typ, _, err := ReadFrame(in)
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- typ
+		}
+	}()
+	a.Detach()
+	for typ := range frames {
+		if typ == FrameStdinClosed {
+			t.Fatal("the worker was told the agent's input closed while the attempt is kept")
+		}
+	}
+	_ = conn.Close()
+	waittest.Receive(t, b.done, "bridge exit after the detach")
 }
