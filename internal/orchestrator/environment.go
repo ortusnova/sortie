@@ -167,8 +167,8 @@ type Repository interface {
 type RepositoryFunc func(cfg config.EnvironmentConfig, stateDir string, logger *slog.Logger) (Repository, error)
 
 // configuresRepository reports whether cfg places a repository in each
-// workspace's environment: the smolvm kind with a repository block or a
-// repositories list, or the remote kind with a repository block.
+// workspace's environment: the remote kind with a repository block or a
+// repositories list.
 func configuresRepository(cfg config.EnvironmentConfig) bool {
 	return len(cfg.RepositorySet().AllRepositories()) > 0
 }
@@ -210,7 +210,7 @@ func leftAloneReason(cfg config.EnvironmentConfig, workspaceRoot string, issue d
 // repository cfg does not dispatch, one closed to dispatch or not listed,
 // so that another Sortie runs it. A blocker whose workspace under
 // workspaceRoot was seeded runs in the recorded repository; any other is
-// decided by its labels, as [config.SmolvmConfig.DispatchRepository]
+// decided by its labels, as [config.RepositorySet.DispatchRepository]
 // decides an issue. It returns nil when cfg configures no repository,
 // where every blocker is this Sortie's own. The report reads each blocker
 // once.

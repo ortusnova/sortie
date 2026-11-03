@@ -14,11 +14,10 @@ import (
 )
 
 // forwardingCarrier stands in for an environment that runs the agent
-// elsewhere and forwards the host variables its block binds as
-// credentials or lists in pass_env.
+// elsewhere and forwards the host variables it lists.
 type forwardingCarrier struct {
 	*environmenttest.Recorder
-	cfg config.SmolvmConfig
+	forwards []string
 }
 
 var (
@@ -33,12 +32,7 @@ func (forwardingCarrier) LaunchArgv(_ environment.Workspace, launch domain.Carri
 func (forwardingCarrier) ConnectionFailed(environment.Workspace, int, []string) bool { return false }
 
 func (f forwardingCarrier) ForwardsEnv(name string) bool {
-	for _, cred := range f.cfg.Credentials {
-		if cred.Env == name {
-			return true
-		}
-	}
-	return slices.Contains(f.cfg.PassEnv, name)
+	return slices.Contains(f.forwards, name)
 }
 
 // nonForwardingCarrier runs elsewhere and forwards no host variable.
@@ -53,7 +47,7 @@ func (nonForwardingCarrier) ConnectionFailed(environment.Workspace, int, []strin
 // credentialPreflight returns preflight parameters whose configuration is
 // cfg, whose agent kinds declare the credential variables in kinds, and
 // whose host environment holds the variables in hostEnv.
-func credentialPreflight(cfg config.ServiceConfig, kinds map[string][]string, hostEnv map[string]string) PreflightParams {
+func credentialPreflight(cfg config.ServiceConfig, forwards []string, kinds map[string][]string, hostEnv map[string]string) PreflightParams {
 	params := validPreflightParams()
 	params.ConfigFunc = func() config.ServiceConfig { return cfg }
 	params.AgentRegistry = &stubAgentRegistry{
@@ -66,8 +60,8 @@ func credentialPreflight(cfg config.ServiceConfig, kinds map[string][]string, ho
 			return registry.AgentMeta{MCPDialect: registry.MCPDialectMCPServersJSON, CredentialEnv: registry.DeclareCredentialEnv(names...)}, true
 		},
 	}
-	params.EnvironmentFunc = func(envCfg config.EnvironmentConfig) (environment.Environment, error) {
-		return forwardingCarrier{Recorder: &environmenttest.Recorder{KindName: "vm"}, cfg: envCfg.Smolvm}, nil
+	params.EnvironmentFunc = func(config.EnvironmentConfig) (environment.Environment, error) {
+		return forwardingCarrier{Recorder: &environmenttest.Recorder{KindName: "vm"}, forwards: forwards}, nil
 	}
 	params.LookupEnv = func(name string) (string, bool) {
 		v, ok := hostEnv[name]
@@ -76,11 +70,11 @@ func credentialPreflight(cfg config.ServiceConfig, kinds map[string][]string, ho
 	return params
 }
 
-func credentialPreflightConfig(smolvm config.SmolvmConfig) config.ServiceConfig {
+func credentialPreflightConfig() config.ServiceConfig {
 	return config.ServiceConfig{
 		Tracker:     config.TrackerConfig{Kind: "test-tracker", APIKey: "secret", ActiveStates: []string{"To Do"}},
 		Agent:       config.AgentConfig{Kind: "claude-code", Command: "/usr/bin/agent"},
-		Environment: config.EnvironmentConfig{Kind: "vm", Smolvm: smolvm},
+		Environment: config.EnvironmentConfig{Kind: "vm"},
 	}
 }
 
@@ -99,30 +93,25 @@ func TestValidateDispatchConfig_AgentCredentialReachesTheEnvironment(t *testing.
 
 	claude := map[string][]string{"claude-code": {"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}}
 	tests := []struct {
-		name    string
-		smolvm  config.SmolvmConfig
-		hostEnv map[string]string
-		want    []string // variables the errors name, in order
+		name     string
+		forwards []string
+		hostEnv  map[string]string
+		want     []string // variables the errors name, in order
 	}{
 		{
-			name:    "bound as a credential",
-			smolvm:  config.SmolvmConfig{Credentials: []config.SmolvmCredential{{Name: "anthropic", Env: "ANTHROPIC_API_KEY", Hosts: []string{"api.anthropic.com"}}}},
-			hostEnv: map[string]string{"ANTHROPIC_API_KEY": "sk-host"},
-		},
-		{
-			name:    "listed in pass_env",
-			smolvm:  config.SmolvmConfig{PassEnv: []string{"ANTHROPIC_API_KEY"}},
-			hostEnv: map[string]string{"ANTHROPIC_API_KEY": "sk-host"},
+			name:     "forwarded by the environment",
+			forwards: []string{"ANTHROPIC_API_KEY"},
+			hostEnv:  map[string]string{"ANTHROPIC_API_KEY": "sk-host"},
 		},
 		{
 			name:    "unset on the host",
 			hostEnv: map[string]string{"OPENROUTER_API_KEY": "unrelated"},
 		},
 		{
-			name:    "set and neither bound nor passed",
-			smolvm:  config.SmolvmConfig{PassEnv: []string{"OTHER"}},
-			hostEnv: map[string]string{"ANTHROPIC_API_KEY": "sk-host"},
-			want:    []string{"ANTHROPIC_API_KEY"},
+			name:     "set and not forwarded",
+			forwards: []string{"OTHER"},
+			hostEnv:  map[string]string{"ANTHROPIC_API_KEY": "sk-host"},
+			want:     []string{"ANTHROPIC_API_KEY"},
 		},
 		{
 			name:    "set to the empty string",
@@ -130,16 +119,16 @@ func TestValidateDispatchConfig_AgentCredentialReachesTheEnvironment(t *testing.
 			want:    []string{"ANTHROPIC_AUTH_TOKEN"},
 		},
 		{
-			name:    "every unforwarded variable is named",
-			smolvm:  config.SmolvmConfig{PassEnv: []string{"ANTHROPIC_API_KEY"}},
-			hostEnv: map[string]string{"ANTHROPIC_API_KEY": "sk-host", "ANTHROPIC_AUTH_TOKEN": "token"},
-			want:    []string{"ANTHROPIC_AUTH_TOKEN"},
+			name:     "every unforwarded variable is named",
+			forwards: []string{"ANTHROPIC_API_KEY"},
+			hostEnv:  map[string]string{"ANTHROPIC_API_KEY": "sk-host", "ANTHROPIC_AUTH_TOKEN": "token"},
+			want:     []string{"ANTHROPIC_AUTH_TOKEN"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := ValidateDispatchConfig(credentialPreflight(credentialPreflightConfig(tt.smolvm), claude, tt.hostEnv))
+			result := ValidateDispatchConfig(credentialPreflight(credentialPreflightConfig(), tt.forwards, claude, tt.hostEnv))
 			msgs := credentialErrors(result)
 			if len(msgs) != len(tt.want) {
 				t.Fatalf("credential errors = %q, want %d naming %q", msgs, len(tt.want), tt.want)
@@ -162,7 +151,7 @@ func TestValidateDispatchConfig_AgentCredentialReachesTheEnvironment(t *testing.
 func TestValidateDispatchConfig_AgentCredentialEveryReachedKind(t *testing.T) {
 	t.Parallel()
 
-	cfg := credentialPreflightConfig(config.SmolvmConfig{})
+	cfg := credentialPreflightConfig()
 	cfg.Dispatch = config.DispatchConfig{Rules: []config.DispatchRule{{
 		Name: "copilot-rule", Match: config.DispatchMatch{Labels: []string{"x"}}, Selection: config.DispatchSelection{AgentKind: "copilot-cli"},
 	}}}
@@ -173,7 +162,7 @@ func TestValidateDispatchConfig_AgentCredentialEveryReachedKind(t *testing.T) {
 	}
 	hostEnv := map[string]string{"GH_TOKEN": "gh", "UNREACHED_TOKEN": "u"}
 
-	msgs := credentialErrors(ValidateDispatchConfig(credentialPreflight(cfg, kinds, hostEnv)))
+	msgs := credentialErrors(ValidateDispatchConfig(credentialPreflight(cfg, nil, kinds, hostEnv)))
 	if len(msgs) != 1 || !strings.Contains(msgs[0], "GH_TOKEN") || !strings.Contains(msgs[0], `"copilot-cli"`) {
 		t.Errorf("credential errors = %q, want one naming GH_TOKEN of the kind a dispatch rule routes to, and none for a kind no selector reaches", msgs)
 	}
@@ -202,7 +191,7 @@ func TestValidateDispatchConfig_AgentCredentialOnlyForEnvironmentsElsewhere(t *t
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			params := credentialPreflight(credentialPreflightConfig(config.SmolvmConfig{}), kinds, hostEnv)
+			params := credentialPreflight(credentialPreflightConfig(), nil, kinds, hostEnv)
 			params.EnvironmentFunc = tt.env
 			if got := credentialErrors(ValidateDispatchConfig(params)); len(got) != tt.want {
 				t.Errorf("credential errors = %q, want %d", got, tt.want)
@@ -216,7 +205,7 @@ func TestValidateDispatchConfig_AgentCredentialDefaultEnvironmentIsLocal(t *test
 
 	// Without an EnvironmentFunc the block's kind is built through the
 	// registry: the default local kind runs on this host.
-	params := credentialPreflight(credentialPreflightConfig(config.SmolvmConfig{}), map[string][]string{"claude-code": {"ANTHROPIC_API_KEY"}},
+	params := credentialPreflight(credentialPreflightConfig(), nil, map[string][]string{"claude-code": {"ANTHROPIC_API_KEY"}},
 		map[string]string{"ANTHROPIC_API_KEY": "sk-host"})
 	params.EnvironmentFunc = nil
 	cfg := params.ConfigFunc()

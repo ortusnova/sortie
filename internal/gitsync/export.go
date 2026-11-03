@@ -224,8 +224,9 @@ func (s *Syncer) guestOutBundle(env environment.Environment) string {
 // origin/<base> ($3) and origin/<issue branch> ($4), which came from the
 // mirror. A branch with no commit beyond them is bundled as its tip alone,
 // on its parent, since git refuses an empty bundle. So the bundle carries
-// the run's work, not the repository's history: smolvm caps a command's
-// output at about 11 MiB, which a large repository's whole history passes.
+// the run's work, not the repository's history: an environment may cap a
+// command's output, as a microVM's exec does at about 11 MiB, which a large
+// repository's whole history passes.
 // The guest decides only what the bundle leaves out; the host checks the
 // bundle as before, and its import fails when the mirror lacks a commit it
 // needs.

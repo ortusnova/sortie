@@ -344,8 +344,8 @@ func runDeps(t *testing.T, cfg config.ServiceConfig, adapter *lineAdapter, c *ru
 	}
 }
 
-func runRepository(upstream string) *config.SmolvmRepository {
-	return &config.SmolvmRepository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
+func runRepository(upstream string) *config.Repository {
+	return &config.Repository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
 }
 
 func baseRunConfig(t *testing.T) config.ServiceConfig {
@@ -426,8 +426,8 @@ func runColocated(t *testing.T, f *gitFixture) (runCapture, string) {
 func runColocatedOn(t *testing.T, upstream string) runCapture {
 	t.Helper()
 	cfg := baseRunConfig(t)
-	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, HostPrefix: []string{envPath(t)},
-		Smolvm: config.SmolvmConfig{Repository: runRepository(upstream)}}
+	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
+		Remote: config.RemoteConfig{Repository: runRepository(upstream)}}
 	self, _ := os.Executable()
 	prompts := filepath.Join(t.TempDir(), "prompts.jsonl")
 	inner := recordingEnvironment(t)
@@ -556,14 +556,20 @@ func (w *fakeWorker) declaration() worker.Declaration {
 		RunSlots: 2, Free: worker.Free{CPU: 8, MemGiB: 32, DiskGiB: 100}}
 }
 
-// take checks in and polls until it holds a job.
-func (w *fakeWorker) take() {
+// checkIn declares the worker, free for two jobs.
+func (w *fakeWorker) checkIn() {
 	w.t.Helper()
 	resp := w.post("/api/v1/workers/checkin", w.declaration())
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		w.t.Fatalf("checkin: %d", resp.StatusCode)
 	}
+}
+
+// take checks in and polls until it holds a job.
+func (w *fakeWorker) take() {
+	w.t.Helper()
+	w.checkIn()
 	waittest.Until(w.t, func() error {
 		if w.ended != nil && w.ended() {
 			w.t.Fatal("the run ended before its job was offered")

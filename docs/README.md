@@ -7,8 +7,6 @@ These pages are for working on Sortie itself. To install, configure, and run Sor
   - [Agent-to-orchestrator protocol](agent-to-orchestrator-protocol.md) - out-of-band signaling from the agent to the orchestrator through sentinel files
   - [File-based tasks](file-based-tasks-spec.md) - informational RFC for tasks kept as files instead of tracker issues
   - [JSON API schema](api.schema.json) - the JSON Schema of every response the JSON API serves, generated from the server's response types
-- **Guides**
-  - [smolvm environment guide](smolvm-environment-guide.md) - run each issue in its own microVM: installing smolvm, building a pack, allowed hosts and credentials per agent, the repository mirror, and operating and rolling back
 - **Adapters**
   - **Agent adapters**
     - [Concepts](agent-adapter-concepts.md) - kinds, package boundaries, and the ACP qualification
