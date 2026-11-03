@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,7 +220,7 @@ type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed
 // The workflow's rules decide which stories reach a criteria rule: a human
 // story whose chain ends in none is merged by a person in the forge, and a
 // workflow that routes every story through the check lets Sortie merge
-// either kind.
+// either kind. A ui story is never merged by Sortie, after any run.
 func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
@@ -234,12 +235,56 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) Rev
 		if err != nil {
 			return false, "", err
 		}
+		if slices.ContainsFunc(issue.Labels, isUIReviewLabel) {
+			return false, "a ui story is merged by the operator, whose merge is its approval", nil
+		}
 		for _, l := range issue.Labels {
 			if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
 				return true, "", nil
 			}
 		}
 		return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
+	}
+}
+
+// isUIReviewLabel reports whether l is the review label of a ui story.
+func isUIReviewLabel(l string) bool { return strings.EqualFold(l, config.ReviewUILabel) }
+
+// OperatorCommentsFunc reads the conversation comments on the pull request
+// of a review entry. taken reports whether the entry's story takes them as
+// review feedback; when it is false, comments is nil and nothing was read
+// from the forge.
+type OperatorCommentsFunc func(ctx context.Context, pending *PendingReaction, data *ReviewReactionData) (comments []domain.ReviewComment, taken bool, err error)
+
+// planOperatorComments returns the operator-comment reader of plan control,
+// or nil when plan control is off or the forge cannot read conversation
+// comments. A ui story waits for the operator, who answers on its pull
+// request: every comment there that no bot wrote is review feedback and
+// starts a fix run on the branch. The story's labels are read once per
+// review entry.
+func planOperatorComments(cfg config.ServiceConfig, tracker domain.TrackerAdapter, reader domain.PullRequestCommentReader) OperatorCommentsFunc {
+	if !cfg.Tracker.PlanControl() || tracker == nil || reader == nil {
+		return nil
+	}
+	return func(ctx context.Context, pending *PendingReaction, data *ReviewReactionData) ([]domain.ReviewComment, bool, error) {
+		if data.story == storyUnread {
+			issue, err := tracker.FetchIssueByID(ctx, pending.IssueID)
+			if err != nil {
+				return nil, false, err
+			}
+			data.story = storyOther
+			if slices.ContainsFunc(issue.Labels, isUIReviewLabel) {
+				data.story = storyUI
+			}
+		}
+		if data.story != storyUI {
+			return nil, false, nil
+		}
+		comments, err := reader.FetchPullRequestComments(ctx, data.PRNumber, data.Owner, data.Repo)
+		if err != nil {
+			return nil, true, err
+		}
+		return comments, true, nil
 	}
 }
 
@@ -452,4 +497,11 @@ func recordNoChange(ctx context.Context, store any, issueID string, v NoChangeVe
 		return
 	}
 	log.Info("no-change claim recorded", slog.String("kind", row.Kind), slog.String("ref", row.Ref))
+}
+
+// waitsForOperator reports whether entry is the review watch of a ui
+// story, which no window ages out.
+func waitsForOperator(entry *PendingReaction) bool {
+	data, ok := entry.KindData.(*ReviewReactionData)
+	return ok && data.story == storyUI
 }

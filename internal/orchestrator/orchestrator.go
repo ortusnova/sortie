@@ -389,6 +389,7 @@ type Orchestrator struct {
 	sessionAPIURL                     string
 	ciProvider                        domain.CIStatusProvider
 	scmAdapter                        domain.SCMAdapter
+	prCommentReader                   domain.PullRequestCommentReader
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
@@ -603,6 +604,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	}
 	if params.SCMAdapter != nil {
 		o.scmAdapter = observeSCM(params.SCMAdapter, o.scmHealth)
+		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 	}
 	if params.CIProvider != nil {
 		o.ciProvider = observeCI(params.CIProvider, o.scmHealth)
@@ -1153,6 +1155,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
 		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
+		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,
 		Router:                            o.router,
 		ActiveStates:                      cfg.Tracker.ActiveStates,

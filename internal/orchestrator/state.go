@@ -856,7 +856,21 @@ type ReviewReactionData struct {
 	// LastEventAt is the timestamp of the most recently detected review
 	// comment, used for debounce gating.
 	LastEventAt time.Time
+
+	// story is what the entry's story is, read from its labels the first
+	// time operator comments are considered.
+	story reviewStory
 }
+
+// reviewStory is the kind of story a review entry watches, as far as the
+// operator's comments on its pull request go.
+type reviewStory int
+
+const (
+	storyUnread reviewStory = iota
+	storyOther
+	storyUI
+)
 
 // ReviewReactionConfig holds validated review-specific configuration from
 // [config.ReactionConfig].
@@ -2594,7 +2608,7 @@ func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
 			row.EscalatedAt = &escalatedAt
 			row.EscalationTrigger = string(entry.EscalationTrigger)
 		}
-		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) {
+		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !waitsForOperator(entry) {
 			watchEndsAt := watchBasis(entry).Add(window)
 			row.WatchEndsAt = &watchEndsAt
 		}

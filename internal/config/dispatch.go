@@ -204,6 +204,17 @@ const ReviewCriteriaLabel = "sortie-review:criteria"
 // is human.
 const ReviewHumanLabel = "sortie-review:human"
 
+// ReviewUILabel is the label plan sync keeps on a ui story: one built
+// before it is approved, checked against its criteria, and merged by the
+// operator. Sortie never merges it.
+const ReviewUILabel = "sortie-review:ui"
+
+// criteriaChecked reports whether a rule matching label must lead to a
+// criteria rule.
+func criteriaChecked(label string) bool {
+	return strings.EqualFold(label, ReviewCriteriaLabel) || strings.EqualFold(label, ReviewUILabel)
+}
+
 // StageLabelsEqual reports whether two stage labels name the same label.
 // Selection, duplicate detection, and the collision check against tracker
 // states and applied labels all compare through it, so they cannot
@@ -350,21 +361,23 @@ func (d DispatchConfig) ruleNames(indices []int) []string {
 }
 
 // ValidatePlanReviewGates reports a *ConfigError, under plan control, for
-// the first rule that matches the criteria review label but whose chain
-// does not end in a criteria rule: such a story could never pass its gate.
+// the first rule that matches the criteria or the ui review label but whose
+// chain does not end in a criteria rule: such a story could never pass its
+// gate.
 func ValidatePlanReviewGates(dispatch DispatchConfig, planControl bool) error {
 	if !planControl {
 		return nil
 	}
 	for i, rule := range dispatch.Rules {
-		if !slices.ContainsFunc(rule.Match.Labels, func(l string) bool { return strings.EqualFold(l, ReviewCriteriaLabel) }) {
+		at := slices.IndexFunc(rule.Match.Labels, criteriaChecked)
+		if at < 0 {
 			continue
 		}
 		walk := dispatch.walkNext(i)
 		if dispatch.Rules[walk[len(walk)-1]].Gate != GateCriteria {
 			return &ConfigError{
 				Field:   fmt.Sprintf("dispatch.rules[%d]", i),
-				Message: fmt.Sprintf("rule %q matches %s, but its chain %v ends in no gate: criteria rule", rule.Name, ReviewCriteriaLabel, dispatch.ruleNames(walk)),
+				Message: fmt.Sprintf("rule %q matches %s, but its chain %v ends in no gate: criteria rule", rule.Name, rule.Match.Labels[at], dispatch.ruleNames(walk)),
 			}
 		}
 	}

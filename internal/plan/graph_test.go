@@ -95,11 +95,22 @@ func TestDecodeVersion2StoryFields(t *testing.T) {
 		"bad time":       func(n *Node) { n.ApprovedAt = "yesterday" },
 		"nameless":       func(n *Node) { n.ApprovedBy = &Approver{ID: "x"} },
 		"draft released": func(n *Node) { n.Release, n.Approval = &yes, ApprovalDraft },
+		"approved ui": func(n *Node) {
+			n.Review, n.Covers = ReviewUI, []string{"req"}
+			n.ApprovedBy, n.ApprovedAt = &Approver{Name: "Ana", ID: "iss|ana"}, "2026-10-16T14:02:00Z"
+		},
+		"released ui without a requirement": func(n *Node) { n.Review, n.Release, n.Approval = ReviewUI, &yes, ApprovalDraft },
 	}
 	for name, edit := range bad {
 		if _, err := Decode(encode(t, story(edit))); err == nil {
 			t.Errorf("%s: Decode() = nil, want a problem", name)
 		}
+	}
+	ui := story(func(n *Node) {
+		n.Review, n.Release, n.Approval, n.Covers = ReviewUI, &yes, ApprovalDraft, []string{"req"}
+	})
+	if _, err := Decode(encode(t, ui)); err != nil {
+		t.Errorf("Decode(released draft ui story covering a requirement) error = %v", err)
 	}
 	v1 := story(func(n *Node) { n.Review = ReviewHuman })
 	v1.SchemaVersion = 1
