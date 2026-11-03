@@ -206,7 +206,7 @@ A recorded value is written in the statement that writes the share's cost, and a
 | `dispatched`  | INTEGER | How many times the action for this fingerprint has been dispatched; non-zero when it has been performed. A kind that reads it as a flag sees only zero or not |
 | `updated_at`  | TEXT    | ISO-8601 timestamp                                            |
 
-Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action. Each dispatch adds one; the merge-conflict reaction reads the count to bound the rebase runs one head gets across restarts.
+Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action. Each dispatch adds one; the merge-conflict reaction reads the count to bound the rebase runs one head gets across restarts, and gives one back, never below one, for a run that a shutdown or a lost worker ended.
 
 What the fingerprint holds is defined by the owning kind, not by this table: a digest of the comment set last acted on, the git ref last checked, a journal high-water mark, or a merge commit identifier, whichever value identifies "the same observation" for that kind. The column is opaque text and this schema attaches no meaning to it beyond equality.
 

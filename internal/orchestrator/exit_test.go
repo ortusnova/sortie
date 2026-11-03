@@ -51,6 +51,8 @@ type mockExitStore struct {
 
 	absenceCountedIssueIDs []string
 
+	returnedDispatches []string
+
 	parkedIssues     []persistence.ParkedIssue
 	deletedParkedIDs []string
 	upsertParkedErr  error
@@ -174,6 +176,11 @@ func exitState(t *testing.T, issueID string, retryAttempt *int) *State {
 	}
 	state.Claimed[issueID] = struct{}{}
 	return state
+}
+
+func (m *mockExitStore) ReturnReactionDispatch(_ context.Context, issueID, kind string) error {
+	m.returnedDispatches = append(m.returnedDispatches, issueID+":"+kind)
+	return nil
 }
 
 // defaultExitParams returns params with NowFunc fixed at baseTime + 60s.
@@ -10735,4 +10742,55 @@ func (m *mockExitStore) LatestRunFailureSignature(_ context.Context, issueID str
 
 func (*mockExitStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
 	return nil
+}
+
+// A merge-conflict run that a shutdown or a lost worker ended gives its
+// dispatch back, so a deploy does not spend the runs its head gets; a
+// run that ended on its own, a stalled one, and a run of another kind
+// keep theirs.
+func TestHandleWorkerExit_MergeConflictRunLostToThePlatformGivesItsDispatchBack(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		kind     string
+		exit     WorkerExitKind
+		cause    error
+		err      error
+		wantBack bool
+	}{
+		{name: "service shutdown", kind: ReactionKindMergeConflict, exit: WorkerExitCancelled, cause: errCancelShutdown, wantBack: true},
+		{name: "worker daemon shut down", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("worker daemon shut down"), wantBack: true},
+		{name: "worker's lease expired", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("lease held by worker taichi expired"), wantBack: true},
+		{name: "ended on its own", kind: ReactionKindMergeConflict, exit: WorkerExitNormal},
+		{name: "stalled", kind: ReactionKindMergeConflict, exit: WorkerExitCancelled, cause: errCancelStall},
+		{name: "agent turn failed", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("agent turn 3: make test: exit status 2")},
+		{name: "another kind", kind: ReactionKindCI, exit: WorkerExitCancelled, cause: errCancelShutdown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &mockExitStore{}
+			state := exitState(t, "MC-LOST", nil)
+			state.Running["MC-LOST"].ReactionKind = tt.kind
+
+			HandleWorkerExit(state, WorkerResult{
+				IssueID:       "MC-LOST",
+				Identifier:    "MC-LOST-ident",
+				ExitKind:      tt.exit,
+				CancelCause:   tt.cause,
+				Error:         tt.err,
+				AgentAdapter:  "mock",
+				WorkspacePath: "/tmp/ws",
+			}, defaultExitParams(t, store))
+
+			want := []string(nil)
+			if tt.wantBack {
+				want = []string{"MC-LOST:" + ReactionKindMergeConflict}
+			}
+			if !slices.Equal(store.returnedDispatches, want) {
+				t.Errorf("dispatches given back = %v, want %v", store.returnedDispatches, want)
+			}
+		})
+	}
 }

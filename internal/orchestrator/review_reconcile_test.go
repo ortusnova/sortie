@@ -3938,3 +3938,7 @@ func (s *reviewReconcileStore) RecordStageHop(context.Context, persistence.Stage
 func (s *reviewReconcileStore) RecordRunStageResult(context.Context, int64, string, string) error {
 	return nil
 }
+
+func (*fingerprintModelStore) ReturnReactionDispatch(context.Context, string, string) error {
+	return nil
+}

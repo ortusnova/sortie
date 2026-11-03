@@ -151,6 +151,19 @@ func (s *Store) MarkReactionDispatched(ctx context.Context, issueID, kind string
 	return err
 }
 
+// ReturnReactionDispatch gives back one dispatch counted by
+// [Store.MarkReactionDispatched], for a run that ended without doing its
+// work for a reason outside it. The count never drops below one, so the
+// fingerprint stays marked dispatched. No-op if the row does not exist.
+func (s *Store) ReturnReactionDispatch(ctx context.Context, issueID, kind string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE reaction_fingerprints SET dispatched = dispatched - 1
+		WHERE issue_id = ? AND kind = ? AND dispatched > 1`,
+		issueID, kind,
+	)
+	return err
+}
+
 // DeleteReactionFingerprint removes the fingerprint row for the given
 // issue and kind.
 func (s *Store) DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error {

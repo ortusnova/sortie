@@ -23,6 +23,10 @@ const (
 // is a platform fault with a person action.
 const ClassUnclassified = "unclassified"
 
+// ClassWorkerLost is the fault class of a run whose worker was lost:
+// its lease expired, its daemon shut down, or its stream broke.
+const ClassWorkerLost = "worker_lost"
+
 // ActionTemplate is the action a person takes to clear a platform fault,
 // and where to take it. Both texts may hold the placeholders {host}, the
 // name of the host Sortie runs on, and {forge}, the forge the repository
@@ -133,7 +137,7 @@ var faultClasses = []FaultClass{
 	{Name: "workflow_config", Route: RoutePlatform, Signatures: []FaultSignature{
 		sig(`(?i)\bno_seed\b|configures no repository|only the agent runs in the job's workspace|closed to dispatch|no longer lists|^prompt_render`, workflowAction),
 	}},
-	{Name: "worker_lost", Route: RoutePlatform, Signatures: []FaultSignature{
+	{Name: ClassWorkerLost, Route: RoutePlatform, Signatures: []FaultSignature{
 		sig(`(?i)lease (?:held by worker \S+ )?expired|ended the attempt without returning|ended before its agent session started|stdio stream broke|worker daemon shut down`, nil),
 	}},
 	{Name: "environment", Route: RoutePlatform, Signatures: []FaultSignature{

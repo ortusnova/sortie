@@ -61,6 +61,7 @@ type OrchestratorStore interface {
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
 	GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error)
+	ReturnReactionDispatch(ctx context.Context, issueID, kind string) error
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
 	DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
