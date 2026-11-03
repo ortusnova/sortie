@@ -43,7 +43,7 @@ func (f *syncFixture) serveBundle(bundle string) {
 }
 
 // seeded returns a fixture whose workspace was seeded.
-func seeded(t *testing.T, key string, repo config.SmolvmRepository) *syncFixture {
+func seeded(t *testing.T, key string, repo config.Repository) *syncFixture {
 	t.Helper()
 	f := newSyncFixture(t, key, repo)
 	if err := f.syncer.Seed(context.Background(), f.env, f.ws); err != nil {
@@ -81,7 +81,7 @@ func (f *syncFixture) assertNoExportLeft() {
 }
 
 func TestExport_ImportsCommittedWorkOnly(t *testing.T) {
-	f := seeded(t, "ENG-60", config.SmolvmRepository{})
+	f := seeded(t, "ENG-60", config.Repository{})
 	head := f.agentCommit("feature.txt", []byte("feature\n"))
 	if err := os.WriteFile(filepath.Join(f.ws.HostPath, "draft.txt"), []byte("uncommitted\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestExport_ImportsCommittedWorkOnly(t *testing.T) {
 }
 
 func TestExport_MissingBranchExportsNothing(t *testing.T) {
-	f := seeded(t, "ENG-61", config.SmolvmRepository{})
+	f := seeded(t, "ENG-61", config.Repository{})
 	f.git("checkout", "--quiet", "--detach")
 	f.git("branch", "--quiet", "-D", "sortie/ENG-61")
 	refs := f.refs()
@@ -143,7 +143,7 @@ func TestExport_MissingBranchExportsNothing(t *testing.T) {
 
 func TestExport_UnchangedBranchImportsNothing(t *testing.T) {
 	t.Run("new branch at base", func(t *testing.T) {
-		f := seeded(t, "ENG-62", config.SmolvmRepository{})
+		f := seeded(t, "ENG-62", config.Repository{})
 		refs := f.refs()
 		res, err := f.syncer.Export(context.Background(), f.env, f.ws)
 		if err != nil {
@@ -158,7 +158,7 @@ func TestExport_UnchangedBranchImportsNothing(t *testing.T) {
 		f.assertNoExportLeft()
 	})
 	t.Run("upstream branch tip", func(t *testing.T) {
-		f := newSyncFixture(t, "ENG-63", config.SmolvmRepository{})
+		f := newSyncFixture(t, "ENG-63", config.Repository{})
 		f.up.git("checkout", "--quiet", "-b", "sortie/ENG-63")
 		tip := f.up.commit("work.txt", "an earlier run\n")
 		f.up.git("checkout", "--quiet", "main")
@@ -180,7 +180,7 @@ func TestExport_UnchangedBranchImportsNothing(t *testing.T) {
 }
 
 func TestExport_RefusesABundleNamingAnotherRef(t *testing.T) {
-	f := seeded(t, "ENG-64", config.SmolvmRepository{})
+	f := seeded(t, "ENG-64", config.Repository{})
 	f.agentCommit("feature.txt", []byte("feature\n"))
 	f.git("branch", "main", "origin/main")
 	evil := filepath.Join(t.TempDir(), "evil.bundle")
@@ -199,7 +199,7 @@ func TestExport_RefusesABundleNamingAnotherRef(t *testing.T) {
 }
 
 func TestExport_RefusesAnOversizedBundle(t *testing.T) {
-	f := seeded(t, "ENG-65", config.SmolvmRepository{MaxBundleMiB: 1})
+	f := seeded(t, "ENG-65", config.Repository{MaxBundleMiB: 1})
 	blob := make([]byte, 5<<20)
 	if _, err := rand.Read(blob); err != nil {
 		t.Fatal(err)
@@ -230,7 +230,7 @@ func bigBase(t *testing.T, f *syncFixture, size int) {
 
 func TestExport_BundleCarriesOnlyTheRunsWork(t *testing.T) {
 	t.Run("new branch", func(t *testing.T) {
-		f := newSyncFixture(t, "ENG-70", config.SmolvmRepository{MaxBundleMiB: 1})
+		f := newSyncFixture(t, "ENG-70", config.Repository{MaxBundleMiB: 1})
 		bigBase(t, f, 3<<20)
 		if err := f.syncer.Seed(context.Background(), f.env, f.ws); err != nil {
 			t.Fatalf("Seed() error = %v", err)
@@ -250,7 +250,7 @@ func TestExport_BundleCarriesOnlyTheRunsWork(t *testing.T) {
 		f.assertNoExportLeft()
 	})
 	t.Run("on an earlier push", func(t *testing.T) {
-		f := newSyncFixture(t, "ENG-71", config.SmolvmRepository{MaxBundleMiB: 1})
+		f := newSyncFixture(t, "ENG-71", config.Repository{MaxBundleMiB: 1})
 		f.up.git("checkout", "--quiet", "-b", "sortie/ENG-71")
 		bigBase(t, f, 3<<20)
 		f.up.git("checkout", "--quiet", "main")
@@ -271,7 +271,7 @@ func TestExport_BundleCarriesOnlyTheRunsWork(t *testing.T) {
 		}
 	})
 	t.Run("nothing new on a large base", func(t *testing.T) {
-		f := newSyncFixture(t, "ENG-72", config.SmolvmRepository{MaxBundleMiB: 1})
+		f := newSyncFixture(t, "ENG-72", config.Repository{MaxBundleMiB: 1})
 		bigBase(t, f, 3<<20)
 		f.up.commit("small.txt", "small\n")
 		if err := f.syncer.Seed(context.Background(), f.env, f.ws); err != nil {
@@ -288,7 +288,7 @@ func TestExport_BundleCarriesOnlyTheRunsWork(t *testing.T) {
 }
 
 func TestExport_RefusesABranchThatIsNotACommit(t *testing.T) {
-	f := seeded(t, "ENG-66", config.SmolvmRepository{})
+	f := seeded(t, "ENG-66", config.Repository{})
 	f.agentCommit("feature.txt", []byte("feature\n"))
 	// git refuses to point a branch at a tag, so the bundle of a tag is
 	// renamed in its header, as a hostile guest could.
@@ -316,7 +316,7 @@ func TestExport_RefusesABranchThatIsNotACommit(t *testing.T) {
 }
 
 func TestExport_UnreachableUpstream(t *testing.T) {
-	f := seeded(t, "ENG-67", config.SmolvmRepository{})
+	f := seeded(t, "ENG-67", config.Repository{})
 	if err := os.Rename(f.up.dir, f.up.dir+"-gone"); err != nil {
 		t.Fatal(err)
 	}

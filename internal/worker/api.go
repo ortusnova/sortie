@@ -30,6 +30,11 @@ const Prefix = "/api/v1/workers/"
 //	POST /api/v1/workers/poll                                     200 Offer or 204
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat  optional body Step; 200 {expires}
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report     body {outcome, reason, machine}; 204
+//
+// A heartbeat or report answers 409 while the attempt is held by
+// another worker or under a lease not yet swept, 410 for an attempt that
+// ended or that Sortie does not hold, and 503 for a job Sortie does not
+// know while it still adopts the runs it restored.
 func Handler(m *Matcher, identityHeader string) http.Handler {
 	if identityHeader == "" {
 		identityHeader = DefaultIdentityHeader
@@ -232,6 +237,11 @@ func fail(w http.ResponseWriter, err error) {
 		problem(w, http.StatusConflict, "not_checked_in", "check in before polling")
 	case errors.Is(err, ErrLeaseLost), errors.Is(err, ErrUnknownLease):
 		problem(w, http.StatusConflict, "lease_lost", err.Error())
+	case errors.Is(err, ErrJobGone):
+		problem(w, http.StatusGone, "job_gone", err.Error())
+	case errors.Is(err, ErrRecovering):
+		w.Header().Set("Retry-After", "1")
+		problem(w, http.StatusServiceUnavailable, "recovering", err.Error())
 	default:
 		problem(w, http.StatusInternalServerError, "internal", err.Error())
 	}

@@ -33,7 +33,7 @@ type syncFixture struct {
 	logs     *bytes.Buffer
 }
 
-func newSyncFixture(t *testing.T, key string, repo config.SmolvmRepository) *syncFixture {
+func newSyncFixture(t *testing.T, key string, repo config.Repository) *syncFixture {
 	t.Helper()
 	requireGit(t)
 	isolateGit(t, "")
@@ -103,7 +103,7 @@ func (f *syncFixture) assertNoBundlesLeft() {
 }
 
 func TestSeed_NewIssueBranchAtBase(t *testing.T) {
-	f := newSyncFixture(t, "ENG-42", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-42", config.Repository{})
 	main := f.up.git("rev-parse", "main")
 
 	if err := f.syncer.Seed(context.Background(), f.env, f.ws); err != nil {
@@ -150,7 +150,7 @@ func TestSeed_NewIssueBranchAtBase(t *testing.T) {
 }
 
 func TestSeed_ExistingUpstreamBranchAtItsTip(t *testing.T) {
-	f := newSyncFixture(t, "ENG-43", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-43", config.Repository{})
 	f.up.git("checkout", "--quiet", "-b", "sortie/ENG-43")
 	tip := f.up.commit("work.txt", "earlier run\n")
 	f.up.git("checkout", "--quiet", "main")
@@ -180,7 +180,7 @@ func TestSeed_ExistingUpstreamBranchAtItsTip(t *testing.T) {
 }
 
 func TestSeed_ExcludesTheControlDirectoryLink(t *testing.T) {
-	f := newSyncFixture(t, "ENG-48", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-48", config.Repository{})
 	// An empty template leaves the clone without .git/info, as a guest
 	// git configured that way would.
 	t.Setenv("GIT_TEMPLATE_DIR", t.TempDir())
@@ -215,7 +215,7 @@ func TestSeed_ExcludesTheControlDirectoryLink(t *testing.T) {
 }
 
 func TestSeed_InvalidIssueBranchRunsNothing(t *testing.T) {
-	f := newSyncFixture(t, "ENG-44", config.SmolvmRepository{BranchPrefix: "bad..prefix/"})
+	f := newSyncFixture(t, "ENG-44", config.Repository{BranchPrefix: "bad..prefix/"})
 
 	err := f.syncer.Seed(context.Background(), f.env, f.ws)
 	if err == nil || !strings.Contains(err.Error(), `"bad..prefix/ENG-44"`) {
@@ -227,7 +227,7 @@ func TestSeed_InvalidIssueBranchRunsNothing(t *testing.T) {
 }
 
 func TestSeed_UpstreamFetchFailureRunsNothing(t *testing.T) {
-	f := newSyncFixture(t, "ENG-45", config.SmolvmRepository{URL: "/nonexistent/upstream.git"})
+	f := newSyncFixture(t, "ENG-45", config.Repository{URL: "/nonexistent/upstream.git"})
 
 	err := f.syncer.Seed(context.Background(), f.env, f.ws)
 	if err == nil || !strings.Contains(err.Error(), "fetch /nonexistent/upstream.git") {
@@ -239,7 +239,7 @@ func TestSeed_UpstreamFetchFailureRunsNothing(t *testing.T) {
 }
 
 func TestSeed_MissingBaseRunsNothing(t *testing.T) {
-	f := newSyncFixture(t, "ENG-46", config.SmolvmRepository{Base: "develop"})
+	f := newSyncFixture(t, "ENG-46", config.Repository{Base: "develop"})
 
 	err := f.syncer.Seed(context.Background(), f.env, f.ws)
 	if err == nil || !strings.Contains(err.Error(), `base branch "develop"`) {
@@ -251,7 +251,7 @@ func TestSeed_MissingBaseRunsNothing(t *testing.T) {
 }
 
 func TestSeed_FailedCloneStillRemovesTheGuestBundle(t *testing.T) {
-	f := newSyncFixture(t, "ENG-47", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-47", config.Repository{})
 	if err := os.WriteFile(filepath.Join(f.ws.HostPath, "occupied"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func (f *syncFixture) localWork() (head, status, staged string) {
 }
 
 func TestRefresh_UpdatesOnlyRemoteTrackingRefs(t *testing.T) {
-	f := newSyncFixture(t, "ENG-50", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-50", config.Repository{})
 	f.up.git("checkout", "--quiet", "-b", "sortie/ENG-50")
 	f.up.commit("work.txt", "an earlier run\n")
 	f.up.git("checkout", "--quiet", "main")
@@ -370,7 +370,7 @@ func TestRefresh_UpdatesOnlyRemoteTrackingRefs(t *testing.T) {
 }
 
 func TestRefresh_UpstreamFailureSendsTheMirrorsLastState(t *testing.T) {
-	f := newSyncFixture(t, "ENG-51", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-51", config.Repository{})
 	ctx := context.Background()
 	if err := f.syncer.Seed(ctx, f.env, f.ws); err != nil {
 		t.Fatalf("Seed() error = %v", err)
@@ -400,7 +400,7 @@ func TestRefresh_UpstreamFailureSendsTheMirrorsLastState(t *testing.T) {
 }
 
 func TestRefresh_PrunesAnIssueBranchTheUpstreamDeleted(t *testing.T) {
-	f := newSyncFixture(t, "ENG-52", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-52", config.Repository{})
 	f.up.git("checkout", "--quiet", "-b", "sortie/ENG-52")
 	tip := f.up.commit("work.txt", "an earlier run\n")
 	f.up.git("checkout", "--quiet", "main")

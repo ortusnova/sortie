@@ -256,7 +256,7 @@ An already-absent branch is returned as a not-found error that the caller treats
 
 ## Opening a merge request for an issue branch
 
-The SCM adapter implements the optional `domain.PullRequestOpener`, whose `EnsurePullRequest` the repository export of the `smolvm` execution environment calls after Sortie pushes an issue branch. On GitLab the result is a merge request; `Number` is its project-scoped `iid`.
+The SCM adapter implements the optional `domain.PullRequestOpener`, whose `EnsurePullRequest` the repository export of the `remote` execution environment calls after Sortie pushes an issue branch. On GitLab the result is a merge request; `Number` is its project-scoped `iid`.
 
 **Find first, then create.** The adapter pages through `GET /projects/{project}/merge_requests?state=opened&source_branch=<branch>` and returns the first one whose source branch is the branch and whose source project is the target project, unchanged, with `Created` false. The project check keeps a merge request from a fork's branch of the same name out of the result. Otherwise it creates one with `POST /projects/{project}/merge_requests`, the body becoming the description.
 

@@ -18,7 +18,7 @@ func remoteHoldConfig(t *testing.T, maxAgents int) config.ServiceConfig {
 	t.Helper()
 	cfg := runConfig(t, map[string]any{"agent": map[string]any{"kind": "kind-a", "command": "a-cmd"}})
 	cfg.Agent.MaxConcurrentAgents = maxAgents
-	repos := []config.SmolvmRepository{
+	repos := []config.Repository{
 		{Name: "homelab", URL: "https://forge.invalid/o/homelab.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/homelab",
 			Requires: &config.RemoteRequirements{Capabilities: []string{"nested"}, CPU: 8, MemGiB: 20, DiskGiB: 200}},
 		{Name: "sortie", URL: "https://forge.invalid/o/sortie.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/sortie"},

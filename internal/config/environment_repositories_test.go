@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
-const smolvmDefaultRepoField = smolvmField + ".default_repository"
+const (
+	remoteDefaultRepoField  = remoteField + ".default_repository"
+	remoteRepositoriesField = remoteField + ".repositories"
+	remoteSingleRepoField   = remoteField + ".repository"
+)
 
 func repoEntry(name, url string) map[string]any {
 	e := map[string]any{"url": url, "base": "main"}
@@ -21,8 +25,7 @@ func repoEntry(name, url string) map[string]any {
 func TestEnvironmentConfig_Repositories(t *testing.T) {
 	t.Parallel()
 
-	pack := writePack(t)
-	raw := smolvmRaw(pack, map[string]any{
+	raw := remoteRaw(map[string]any{
 		"repositories": []any{
 			repoEntry("sortie", "https://example.com/o/sortie.git"),
 			map[string]any{"name": "ao", "url": "https://example.com/o/ao.git", "base": "trunk", "provider": "github", "project": "o/ao"},
@@ -33,7 +36,7 @@ func TestEnvironmentConfig_Repositories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServiceConfig() error = %v", err)
 	}
-	s := cfg.Environment.Smolvm
+	s := cfg.Environment.RepositorySet()
 	if s.DefaultRepository != "ao" || s.Repository == nil || s.Repository.Name != "ao" || s.Repository.Base != "trunk" {
 		t.Errorf("default = %q, Repository = %+v, want ao", s.DefaultRepository, s.Repository)
 	}
@@ -59,12 +62,12 @@ func TestEnvironmentConfig_DefaultRepositoryIsOptional(t *testing.T) {
 		{repoEntry("only", "https://example.com/o/only.git")},
 		{repoEntry("a", "https://example.com/a.git"), repoEntry("b", "https://example.com/b.git")},
 	} {
-		cfg, err := NewServiceConfig(smolvmRaw(writePack(t), map[string]any{"repositories": list}))
+		cfg, err := NewServiceConfig(remoteRaw(map[string]any{"repositories": list}))
 		if err != nil {
 			t.Fatalf("NewServiceConfig(%d entries) error = %v", len(list), err)
 		}
-		s := cfg.Environment.Smolvm
-		if s.DefaultRepository != "" || s.Repository != nil || len(s.Repositories) != len(list) || !s.ListsRepositories() {
+		s := cfg.Environment.RepositorySet()
+		if s.DefaultRepository != "" || s.Repository != nil || len(s.Repositories) != len(list) {
 			t.Errorf("%d entries: default %q, Repository %+v, Repositories %d; want no default", len(list), s.DefaultRepository, s.Repository, len(s.Repositories))
 		}
 		if _, err := s.DispatchRepository(nil); !errors.Is(err, ErrNotDispatched) {
@@ -85,14 +88,14 @@ func TestEnvironmentConfig_RepositoryClosedToDispatch(t *testing.T) {
 	homelab["dispatch"] = false
 	open := repoEntry("sortie", "https://example.com/o/sortie.git")
 	open["dispatch"] = true
-	cfg, err := NewServiceConfig(smolvmRaw(writePack(t), map[string]any{
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{
 		"repositories":       []any{open, homelab},
 		"default_repository": "sortie",
 	}))
 	if err != nil {
 		t.Fatalf("NewServiceConfig() error = %v", err)
 	}
-	s := cfg.Environment.Smolvm
+	s := cfg.Environment.RepositorySet()
 	if got := s.RepositoryNames(); !reflect.DeepEqual(got, []string{"sortie", "homelab"}) {
 		t.Errorf("RepositoryNames() = %v, want both listed", got)
 	}
@@ -114,17 +117,17 @@ func TestEnvironmentConfig_RepositoryClosedToDispatch(t *testing.T) {
 func TestEnvironmentConfig_SingleRepositoryUnchanged(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := NewServiceConfig(smolvmRaw(writePack(t), map[string]any{
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{
 		"repository": repoEntry("", "https://example.com/o/app.git"),
 	}))
 	if err != nil {
 		t.Fatalf("NewServiceConfig() error = %v", err)
 	}
-	s := cfg.Environment.Smolvm
+	s := cfg.Environment.RepositorySet()
 	if s.Repository == nil || s.Repository.URL != "https://example.com/o/app.git" || s.DefaultRepository != "" {
 		t.Fatalf("Repository = %+v, default %q", s.Repository, s.DefaultRepository)
 	}
-	if len(s.Repositories) != 1 || len(s.RepositoryNames()) != 0 || s.ListsRepositories() {
+	if len(s.Repositories) != 1 || len(s.RepositoryNames()) != 0 {
 		t.Errorf("Repositories = %+v, names %v; want the one unnamed block", s.Repositories, s.RepositoryNames())
 	}
 	if r, ok := s.RepositoryNamed(""); !ok || r.URL != s.Repository.URL {
@@ -145,25 +148,25 @@ func TestEnvironmentConfig_RepositoriesErrors(t *testing.T) {
 		field string
 		msg   string
 	}{
-		{"both forms", map[string]any{"repository": repoEntry("", "u"), "repositories": []any{a}}, smolvmRepositoriesField, "together"},
-		{"default with single", map[string]any{"repository": repoEntry("", "u"), "default_repository": "a"}, smolvmDefaultRepoField, "single"},
-		{"default without list", map[string]any{"default_repository": "a"}, smolvmDefaultRepoField, "lists none"},
-		{"not a list", map[string]any{"repositories": "a"}, smolvmRepositoriesField, "sequence"},
-		{"empty list", map[string]any{"repositories": []any{}}, smolvmRepositoriesField, "at least one"},
-		{"entry not a map", map[string]any{"repositories": []any{"a"}}, smolvmRepositoriesField + "[0]", "mapping"},
-		{"missing name", map[string]any{"repositories": []any{repoEntry("", "u")}}, smolvmRepositoriesField + "[0].name", "required"},
-		{"bad name", map[string]any{"repositories": []any{repoEntry("Bad_Name", "u")}}, smolvmRepositoriesField + "[0].name", "must match"},
-		{"duplicate name", map[string]any{"repositories": []any{a, repoEntry("a", "v")}}, smolvmRepositoriesField + "[1].name", "more than once"},
-		{"missing url", map[string]any{"repositories": []any{map[string]any{"name": "a", "base": "main"}}}, smolvmRepositoriesField + "[0].url", "required"},
-		{"unlisted default", map[string]any{"repositories": []any{a, b}, "default_repository": "c"}, smolvmDefaultRepoField, "does not list"},
-		{"closed default", map[string]any{"repositories": []any{a, closed}, "default_repository": "c"}, smolvmDefaultRepoField, "closed to dispatch"},
-		{"dispatch not a boolean", map[string]any{"repositories": []any{map[string]any{"name": "a", "url": "u", "base": "main", "dispatch": "no"}}}, smolvmRepositoriesField + "[0].dispatch", "boolean"},
-		{"dispatch on the single block", map[string]any{"repository": map[string]any{"url": "u", "base": "main", "dispatch": false}}, smolvmRepositoryField + ".dispatch", "single"},
+		{"both forms", map[string]any{"repository": repoEntry("", "u"), "repositories": []any{a}}, remoteRepositoriesField, "together"},
+		{"default with single", map[string]any{"repository": repoEntry("", "u"), "default_repository": "a"}, remoteDefaultRepoField, "single"},
+		{"default without list", map[string]any{"default_repository": "a"}, remoteDefaultRepoField, "lists none"},
+		{"not a list", map[string]any{"repositories": "a"}, remoteRepositoriesField, "sequence"},
+		{"empty list", map[string]any{"repositories": []any{}}, remoteRepositoriesField, "at least one"},
+		{"entry not a map", map[string]any{"repositories": []any{"a"}}, remoteRepositoriesField + "[0]", "mapping"},
+		{"missing name", map[string]any{"repositories": []any{repoEntry("", "u")}}, remoteRepositoriesField + "[0].name", "required"},
+		{"bad name", map[string]any{"repositories": []any{repoEntry("Bad_Name", "u")}}, remoteRepositoriesField + "[0].name", "must match"},
+		{"duplicate name", map[string]any{"repositories": []any{a, repoEntry("a", "v")}}, remoteRepositoriesField + "[1].name", "more than once"},
+		{"missing url", map[string]any{"repositories": []any{map[string]any{"name": "a", "base": "main"}}}, remoteRepositoriesField + "[0].url", "required"},
+		{"unlisted default", map[string]any{"repositories": []any{a, b}, "default_repository": "c"}, remoteDefaultRepoField, "does not list"},
+		{"closed default", map[string]any{"repositories": []any{a, closed}, "default_repository": "c"}, remoteDefaultRepoField, "closed to dispatch"},
+		{"dispatch not a boolean", map[string]any{"repositories": []any{map[string]any{"name": "a", "url": "u", "base": "main", "dispatch": "no"}}}, remoteRepositoriesField + "[0].dispatch", "boolean"},
+		{"dispatch on the single block", map[string]any{"repository": map[string]any{"url": "u", "base": "main", "dispatch": false}}, remoteSingleRepoField + ".dispatch", "single"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := NewServiceConfig(smolvmRaw(writePack(t), tt.extra))
+			_, err := NewServiceConfig(remoteRaw(tt.extra))
 			var ce *ConfigError
 			if !errors.As(err, &ce) {
 				t.Fatalf("error = %v, want a *ConfigError", err)
@@ -180,7 +183,7 @@ func TestValidateFrontMatter_RepositoriesKnown(t *testing.T) {
 
 	closed := repoEntry("b", "v")
 	closed["dispatch"] = false
-	raw := smolvmRaw("/p", map[string]any{
+	raw := remoteRaw(map[string]any{
 		"repositories":       []any{repoEntry("a", "u"), closed},
 		"default_repository": "a",
 	})

@@ -52,7 +52,6 @@ import (
 	_ "github.com/sortie-ai/sortie/internal/agent/opencode"
 	_ "github.com/sortie-ai/sortie/internal/environment/local"
 	_ "github.com/sortie-ai/sortie/internal/environment/remote"
-	_ "github.com/sortie-ai/sortie/internal/environment/smolvm"
 	_ "github.com/sortie-ai/sortie/internal/notify/discord"
 	_ "github.com/sortie-ai/sortie/internal/notify/slack"
 	_ "github.com/sortie-ai/sortie/internal/notify/telegram"

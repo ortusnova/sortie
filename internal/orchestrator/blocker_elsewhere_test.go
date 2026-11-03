@@ -27,7 +27,7 @@ func (s mergeRecordStore) LoadPlanSatisfaction(ctx context.Context, ids []string
 // tracker, whose store holds the merge records of the issue IDs in merges.
 func newPlanRoutedHarness(t *testing.T, env config.EnvironmentConfig, tracker *runTracker, merges ...string) *runHarness {
 	t.Helper()
-	h := newRoutedHarness(t, env, tracker)
+	h := unbuiltRoutedHarness(t, env, tracker)
 	cfg := h.wm.Config()
 	cfg.Tracker.ReleaseState, cfg.Tracker.BacklogState = "To Do", "Backlog"
 	cfg.Tracker.DoneState, cfg.Tracker.CancelState = "Done", "Canceled"
@@ -38,6 +38,7 @@ func newPlanRoutedHarness(t *testing.T, env config.EnvironmentConfig, tracker *r
 		rows[id] = []persistence.PlanSatisfaction{merged(id)}
 	}
 	h.orchestratorStore = mergeRecordStore{stubStore: h.store, satisfaction: &fakeSatisfaction{rows: rows}}
+	buildRouted(h)
 	return h
 }
 

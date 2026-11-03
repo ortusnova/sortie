@@ -27,7 +27,21 @@ var (
 	ErrUnknownLease  = errors.New("worker: unknown lease")
 	ErrLeaseHeld     = errors.New("worker: job already leased")
 	ErrLeaseLost     = errors.New("worker: lease expired or held by another worker")
+	// ErrJobGone reports a job attempt that ended, or that Sortie does
+	// not hold; [GoneError] says which.
+	ErrJobGone = errors.New("worker: job attempt gone")
+	// ErrRecovering reports a job attempt Sortie does not know while it
+	// is still adopting the runs a previous process left with workers.
+	ErrRecovering = errors.New("worker: Sortie is still adopting the runs it restored")
 )
+
+// GoneError is [ErrJobGone] with why the attempt is gone.
+type GoneError struct{ Reason string }
+
+func (e *GoneError) Error() string { return "worker: job attempt gone: " + e.Reason }
+
+// Is reports [ErrJobGone] as e's kind.
+func (e *GoneError) Is(target error) bool { return target == ErrJobGone }
 
 // Free is what a worker has free after its own reserve and floor: CPUs,
 // memory in GiB and disk in GiB.
@@ -404,6 +418,18 @@ type Matcher struct {
 	granted map[string]chan string
 	// steps holds the step each leased job last reported.
 	steps map[string]Step
+	// gone holds, per job, its last attempt a worker held that ended,
+	// and why.
+	endedJobs map[string]endedAttempt
+	// recovering reports that the runs a previous process left with
+	// workers are not all adopted yet.
+	recovering bool
+}
+
+// endedAttempt is an attempt that ended and why.
+type endedAttempt struct {
+	attempt int
+	reason  string
 }
 
 // NewMatcher returns a matcher using leaser, clock now and token issuer
@@ -414,7 +440,24 @@ func NewMatcher(leaser Leaser, now func() time.Time, tokens Tokens) *Matcher {
 	}
 	return &Matcher{leaser: leaser, now: now, tokens: tokens,
 		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{},
-		granted: map[string]chan string{}, steps: map[string]Step{}}
+		granted: map[string]chan string{}, steps: map[string]Step{}, endedJobs: map[string]endedAttempt{}}
+}
+
+// Recovering marks the matcher as restarted: until [Matcher.Recovered],
+// a heartbeat or report for a job it does not know returns
+// [ErrRecovering], since the job may yet be adopted.
+func (m *Matcher) Recovering() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recovering = true
+}
+
+// Recovered marks the adoption of the restored runs done: from now on a
+// job the matcher does not know is gone.
+func (m *Matcher) Recovered() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recovering = false
 }
 
 // Timings returns how often a worker should check in and renew, and how
@@ -722,11 +765,13 @@ func (m *Matcher) Holds(jobID string) bool {
 }
 
 // held returns the leased job when workerID holds a live lease on
-// jobID's attempt.
+// jobID's attempt. It returns [ErrLeaseLost] while that attempt is
+// leased but not to workerID, or under a lease not yet swept, and else
+// what [Matcher.goneLocked] does.
 func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {
 	j, ok := m.leased[jobID]
 	if !ok || j.Attempt != attempt {
-		return Job{}, ErrLeaseLost
+		return Job{}, m.goneLocked(jobID, attempt)
 	}
 	for _, ls := range m.leaser.Leases() {
 		if ls.JobID == jobID && ls.WorkerID == workerID && m.now().Before(ls.Expires) {
@@ -736,8 +781,25 @@ func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {
 	return Job{}, ErrLeaseLost
 }
 
+// goneLocked returns why no worker holds jobID's attempt: a
+// [GoneError], or [ErrRecovering] for a job the matcher does not know
+// before [Matcher.Recovered].
+func (m *Matcher) goneLocked(jobID string, attempt int) error {
+	if e, ok := m.endedJobs[jobID]; ok && e.attempt == attempt {
+		return &GoneError{Reason: e.reason}
+	}
+	_, leased := m.leased[jobID]
+	_, ended := m.endedJobs[jobID]
+	known := leased || ended || slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
+	if m.recovering && !known {
+		return ErrRecovering
+	}
+	return &GoneError{Reason: fmt.Sprintf("Sortie holds no attempt %d of job %s", attempt, jobID)}
+}
+
 // Heartbeat renews the caller's lease on the job's attempt, or returns
-// [ErrLeaseLost] when the caller holds no live lease on it.
+// [ErrLeaseLost] when the attempt is held otherwise and [ErrJobGone]
+// when no worker holds it.
 func (m *Matcher) Heartbeat(workerID, jobID string, attempt int) (Expiry, error) {
 	return m.HeartbeatStep(workerID, jobID, attempt, Step{})
 }
@@ -761,8 +823,9 @@ func (m *Matcher) HeartbeatStep(workerID, jobID string, attempt int, step Step) 
 }
 
 // Report ends the job's attempt with the worker's outcome and releases
-// its lease, or returns [ErrLeaseLost], changing nothing, when the
-// caller holds no live lease on that attempt. The machine's state
+// its lease, or returns, changing nothing, the error of
+// [Matcher.Heartbeat] when the caller holds no live lease on that
+// attempt. The machine's state
 // decides what returns to the worker's count until its next check-in.
 func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error {
 	m.mu.Lock()
@@ -780,6 +843,7 @@ func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error
 	if w := m.workers[workerID]; w != nil {
 		w.release(j.Requires, out.Machine)
 	}
+	m.endedJobs[jobID] = endedAttempt{attempt: attempt, reason: fmt.Sprintf("worker %s reported attempt %d of job %s", workerID, attempt, jobID)}
 	m.endLocked(jobID, out)
 	return nil
 }
@@ -793,8 +857,8 @@ func (m *Matcher) endLocked(jobID string, out Outcome) {
 }
 
 // Cancel withdraws a job, queued or leased, and ends it as cancelled.
-// A worker's later heartbeat or report for it is refused, and the
-// worker stops its machine.
+// A worker's later heartbeat or report for it returns [ErrJobGone], and
+// the worker releases its machine.
 func (m *Matcher) Cancel(jobID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -812,6 +876,7 @@ func (m *Matcher) Cancel(jobID string) {
 		delete(m.leased, jobID)
 		delete(m.steps, jobID)
 		m.tokens.Void(jobID)
+		m.endedJobs[jobID] = endedAttempt{attempt: j.Attempt, reason: fmt.Sprintf("Sortie withdrew attempt %d of job %s", j.Attempt, jobID)}
 	}
 	m.endLocked(jobID, Outcome{Cancelled: true, Reason: "job withdrawn"})
 }
@@ -834,8 +899,9 @@ func (m *Matcher) ExpireLeases() []string {
 		if w := m.workers[ls.WorkerID]; w != nil {
 			w.release(j.Requires, MachineStopped)
 		}
-		m.endLocked(ls.JobID, Outcome{Expired: true, Machine: MachineStopped,
-			Reason: fmt.Sprintf("lease held by worker %s expired", ls.WorkerID)})
+		reason := fmt.Sprintf("lease held by worker %s expired", ls.WorkerID)
+		m.endedJobs[ls.JobID] = endedAttempt{attempt: j.Attempt, reason: fmt.Sprintf("the %s on attempt %d of job %s", reason, j.Attempt, ls.JobID)}
+		m.endLocked(ls.JobID, Outcome{Expired: true, Machine: MachineStopped, Reason: reason})
 		ids = append(ids, ls.JobID)
 	}
 	return ids
