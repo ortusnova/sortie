@@ -69,6 +69,25 @@ func (d Declaration) has(c string) bool {
 	return c == d.OS || c == d.Arch || slices.Contains(d.Backends, c)
 }
 
+// spare counts the capabilities the declaration includes that r does
+// not need.
+func (d Declaration) spare(r Requires) int {
+	caps := append([]string{d.OS, d.Arch}, d.Backends...)
+	if d.KVM {
+		caps = append(caps, "kvm")
+	}
+	if d.Nested {
+		caps = append(caps, "nested")
+	}
+	n := 0
+	for _, c := range caps {
+		if !slices.Contains(r.Capabilities, c) {
+			n++
+		}
+	}
+	return n
+}
+
 // Capacity is what the matcher counts a worker as having free now: the
 // latest declaration, less the jobs offered since, plus what reports
 // since returned.
@@ -552,10 +571,65 @@ func misfits(w *Worker, j Job) []string {
 	return out
 }
 
-// Poll offers the worker the first queued job it can run, charging a
-// run slot and the job's resources until its next check-in. It returns
-// false when none fits or the worker is gone, and [ErrUnknownWorker]
-// before the worker's first check-in.
+// capable reports whether w is not gone and declares every capability
+// j requires, whatever it has free.
+func capable(w *Worker, j Job) bool {
+	if w.Gone {
+		return false
+	}
+	for _, c := range j.Requires.Capabilities {
+		if !w.Declaration.has(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// place decides which of workers takes each of jobs now, charging each
+// worker for what it takes, and returns the index of its worker per job,
+// -1 for a job that waits. Jobs fewer workers are capable of are placed
+// first, then in the order given, so a job only a scarce worker can run
+// never waits behind jobs another worker can run. Of the workers a job
+// fits, it goes to the one with the fewest capabilities it does not
+// need, then to poller, then to the first in order.
+func place(workers []Worker, jobs []Job, poller string) []int {
+	capableOf := make([]int, len(jobs))
+	order := make([]int, len(jobs))
+	for k := range jobs {
+		order[k] = k
+		for i := range workers {
+			if capable(&workers[i], jobs[k]) {
+				capableOf[k]++
+			}
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return capableOf[order[a]] < capableOf[order[b]] })
+	where := make([]int, len(jobs))
+	for _, k := range order {
+		best, bestSpare := -1, 0
+		for i := range workers {
+			if len(misfits(&workers[i], jobs[k])) > 0 {
+				continue
+			}
+			s := workers[i].Declaration.spare(jobs[k].Requires)
+			if best < 0 || s < bestSpare || s == bestSpare && workers[i].ID == poller {
+				best, bestSpare = i, s
+			}
+		}
+		where[k] = best
+		if best >= 0 {
+			workers[best].take(jobs[k].Requires)
+		}
+	}
+	return where
+}
+
+// Poll offers the worker the first queued job that [place] gives it,
+// charging a run slot and the job's resources until its next check-in:
+// a job another worker without a capability the job does not need can
+// take now is left to that worker. It returns false when no job is the
+// worker's or the worker is gone, and [ErrUnknownWorker] before the
+// worker's first check-in.
 func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -566,8 +640,10 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	if m.gone(w) {
 		return Offer{}, false, nil
 	}
+	workers := m.workersLocked()
+	where := place(workers, m.pending, workerID)
 	for i, j := range m.pending {
-		if len(misfits(w, j)) > 0 {
+		if where[i] < 0 || workers[where[i]].ID != workerID {
 			continue
 		}
 		ls, err := m.leaser.Acquire(j.ID, workerID, m.now())
@@ -598,36 +674,25 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 }
 
 // Placeable reports whether a checked-in worker that is not gone could
-// take a job that requires r now, after the queued jobs took what they
-// fit, and else why it waits, per worker. A job that waits here is
-// better not submitted: no worker would take it.
+// take a job that requires r now, placed with the queued jobs as a poll
+// places them ([place]), and else why it waits, per worker. A job that
+// waits here is better not submitted: no worker would take it.
 //
-// ahead is what jobs dispatched but not yet queued require: each takes
-// what it fits after the queued jobs, so a dispatch that sees one free
-// slot sends one job to it, not one per issue it reads.
+// ahead is what jobs dispatched but not yet queued require: each is
+// placed after the queued jobs, so a dispatch that sees one free slot
+// sends one job to it, not one per issue it reads.
 func (m *Matcher) Placeable(r Requires, ahead ...Requires) ([]string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workers := m.workersLocked()
-	charge := func(j Job) {
-		for i := range workers {
-			if len(misfits(&workers[i], j)) == 0 {
-				workers[i].take(j.Requires)
-				return
-			}
-		}
-	}
-	for _, j := range m.pending {
-		charge(j)
-	}
+	jobs := slices.Clone(m.pending)
 	for _, a := range ahead {
-		charge(Job{Requires: a})
+		jobs = append(jobs, Job{Requires: a})
 	}
 	probe := Job{Requires: r}
-	for i := range workers {
-		if len(misfits(&workers[i], probe)) == 0 {
-			return nil, true
-		}
+	jobs = append(jobs, probe)
+	if where := place(workers, jobs, ""); where[len(jobs)-1] >= 0 {
+		return nil, true
 	}
 	return waiting(probe, workers), false
 }

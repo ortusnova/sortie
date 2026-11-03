@@ -1130,3 +1130,153 @@ func TestAGoneWorkerKeepsItsLease(t *testing.T) {
 	}
 	notEnded(t, ch)
 }
+
+// scarce returns taichi, the one nested worker, and p1, which is not,
+// each with two free run slots and the smolvm backend.
+func scarce() (taichi, p1 Declaration) {
+	taichi = host()
+	taichi.RunSlots = 2
+	p1 = host()
+	p1.Nested = false
+	p1.RunSlots = 2
+	return taichi, p1
+}
+
+func smolvmJob(id string, priority int, capabilities ...string) Job {
+	j := job(id, 1)
+	j.Priority = &priority
+	j.Requires = Requires{Capabilities: append([]string{"smolvm"}, capabilities...), CPU: 4, MemGiB: 8, DiskGiB: 20}
+	return j
+}
+
+func polls(t *testing.T, m *Matcher, workerID string) []string {
+	t.Helper()
+	var got []string
+	for {
+		o, ok, err := m.Poll(workerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			return got
+		}
+		got = append(got, o.Job.ID)
+	}
+}
+
+// A job goes to the worker with the fewest capabilities it does not
+// need (live, 2026-11-03: taichi, the one nested worker, ran ONS-72 and
+// ONS-100, which needed only smolvm, while p1 could take them, and
+// ONS-19, which needed nested, waited with no worker).
+func TestScarceCapabilityIsSpared(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	taichi, p1 := scarce()
+	m.CheckIn("taichi", taichi)
+	m.CheckIn("p1", p1)
+	m.Submit(smolvmJob("ONS-72", 1))
+	m.Submit(smolvmJob("ONS-100", 1))
+	m.Submit(smolvmJob("ONS-19", 2, "nested"))
+	if got := polls(t, m, "taichi"); !reflect.DeepEqual(got, []string{"ONS-19"}) {
+		t.Fatalf("taichi took %v, want [ONS-19]: p1 can take ONS-72 and ONS-100 now", got)
+	}
+	if got := polls(t, m, "p1"); !reflect.DeepEqual(got, []string{"ONS-72", "ONS-100"}) {
+		t.Fatalf("p1 took %v, want [ONS-72 ONS-100]", got)
+	}
+	if q := m.Snapshot().Queue; len(q) != 0 {
+		t.Fatalf("queue %+v, want empty", q)
+	}
+}
+
+// The scarce worker takes a job that needs none of its spare
+// capabilities when no other worker can take it now: p1 full or gone.
+func TestScarceWorkerTakesWhatNoOtherCan(t *testing.T) {
+	t.Run("p1 full", func(t *testing.T) {
+		c := &clock{t: time.Unix(0, 0)}
+		m := newM(c)
+		taichi, p1 := scarce()
+		p1.Running = 2
+		m.CheckIn("taichi", taichi)
+		m.CheckIn("p1", p1)
+		m.Submit(smolvmJob("ONS-72", 1))
+		if got := polls(t, m, "taichi"); !reflect.DeepEqual(got, []string{"ONS-72"}) {
+			t.Fatalf("taichi took %v, want [ONS-72]: p1 has no free slot", got)
+		}
+	})
+	t.Run("p1 gone", func(t *testing.T) {
+		c := &clock{t: time.Unix(0, 0)}
+		m := newM(c)
+		taichi, p1 := scarce()
+		m.CheckIn("p1", p1)
+		c.add(time.Hour)
+		m.CheckIn("taichi", taichi)
+		m.Submit(smolvmJob("ONS-72", 1))
+		if got := polls(t, m, "taichi"); !reflect.DeepEqual(got, []string{"ONS-72"}) {
+			t.Fatalf("taichi took %v, want [ONS-72]: p1 is gone", got)
+		}
+	})
+	t.Run("p1 takes its share first", func(t *testing.T) {
+		c := &clock{t: time.Unix(0, 0)}
+		m := newM(c)
+		taichi, p1 := scarce()
+		p1.RunSlots = 1
+		m.CheckIn("taichi", taichi)
+		m.CheckIn("p1", p1)
+		m.Submit(smolvmJob("ONS-72", 1))
+		m.Submit(smolvmJob("ONS-100", 1))
+		if got := polls(t, m, "taichi"); !reflect.DeepEqual(got, []string{"ONS-100"}) {
+			t.Fatalf("taichi took %v, want [ONS-100]: p1's one slot takes ONS-72", got)
+		}
+		if got := polls(t, m, "p1"); !reflect.DeepEqual(got, []string{"ONS-72"}) {
+			t.Fatalf("p1 took %v, want [ONS-72]", got)
+		}
+	})
+}
+
+// A job only the scarce worker can run never waits behind jobs that
+// another worker could run, even ahead of it in priority: the scarce
+// worker's slot goes to it, and the others wait for a worker that
+// lacks the capability.
+func TestNestedJobNeverWaitsBehindOrdinaryOnes(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	taichi, p1 := scarce()
+	taichi.RunSlots = 1
+	p1.Running = 2
+	m.CheckIn("taichi", taichi)
+	m.CheckIn("p1", p1)
+	m.Submit(smolvmJob("ONS-72", 1))
+	m.Submit(smolvmJob("ONS-100", 1))
+	m.Submit(smolvmJob("ONS-19", 2, "nested"))
+	if got := polls(t, m, "taichi"); !reflect.DeepEqual(got, []string{"ONS-19"}) {
+		t.Fatalf("taichi took %v, want [ONS-19]", got)
+	}
+	if why, ok := m.Placeable(Requires{Capabilities: []string{"smolvm"}}); ok {
+		t.Fatalf("Placeable() with both workers full = placeable, %v", why)
+	}
+	p1.Running = 1
+	m.CheckIn("p1", p1)
+	if got := polls(t, m, "p1"); !reflect.DeepEqual(got, []string{"ONS-72"}) {
+		t.Fatalf("p1 took %v, want [ONS-72]", got)
+	}
+}
+
+// Placeable charges the queued jobs as a poll would place them, so a
+// job that only the scarce worker can run is placeable while another
+// worker can take the jobs ahead of it, whichever worker sorts first.
+func TestPlaceableSparesTheScarceWorker(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	taichi, p1 := scarce()
+	taichi.RunSlots = 1
+	m.CheckIn("athena", taichi)
+	m.CheckIn("p1", p1)
+	m.Submit(smolvmJob("ONS-72", 1))
+	nested := Requires{Capabilities: []string{"smolvm", "nested"}, CPU: 4, MemGiB: 8, DiskGiB: 20}
+	if why, ok := m.Placeable(nested); !ok {
+		t.Fatalf("Placeable(nested) while p1 can take ONS-72 = not placeable, %v", why)
+	}
+	if why, ok := m.Placeable(nested, nested); ok {
+		t.Fatalf("Placeable(nested) behind another nested job = placeable, %v", why)
+	}
+}
