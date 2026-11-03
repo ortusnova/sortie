@@ -456,13 +456,20 @@ func (p *Plane) Handler() http.Handler {
 }
 
 // flow admits a request only with a live token of flow for the job and
-// attempt its path names, and then only for an open attempt.
+// attempt its path names, and then only for an open attempt. The token
+// of that attempt once it ended answers 410.
 func (p *Plane) flow(flow jobtoken.Flow, h func(a *Attempt, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		job := r.PathValue("job")
 		attempt, err := strconv.ParseUint(r.PathValue("attempt"), 10, 64)
 		g, lookupErr := p.tokens.Lookup(bearer(r))
+		if lookupErr != nil && err == nil {
+			if e, ok := p.tokens.Ended(bearer(r)); ok && e.JobID == job && e.Attempt == attempt && e.Flow == flow {
+				problem(w, http.StatusGone, "job_gone", "the job's attempt has ended; release its machine")
+				return
+			}
+		}
 		if err != nil || lookupErr != nil || g.JobID != job || g.Attempt != attempt || g.Flow != flow {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sortie-job"`)
 			problem(w, http.StatusUnauthorized, "invalid_token", "the request carries no live "+string(flow)+" token of this job's attempt")

@@ -44,11 +44,17 @@ type restartTracker struct {
 	holdRefresh bool
 	refreshed   chan struct{}
 	refreshOnce sync.Once
+	// holdDescription, when set, blocks the description read of a run
+	// until its context ends; describing is closed at the first one.
+	holdDescription bool
+	describing      chan struct{}
+	describingOnce  sync.Once
 }
 
 func newRestartTracker() *restartTracker {
 	issue := remoteRunIssue()
-	return &restartTracker{mockTrackerAdapter: &mockTrackerAdapter{}, issue: issue, state: issue.State, refreshed: make(chan struct{})}
+	return &restartTracker{mockTrackerAdapter: &mockTrackerAdapter{}, issue: issue, state: issue.State, refreshed: make(chan struct{}),
+		describing: make(chan struct{})}
 }
 
 func (r *restartTracker) current() domain.Issue {
@@ -67,7 +73,15 @@ func (r *restartTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, 
 	return []domain.Issue{issue}, nil
 }
 
-func (r *restartTracker) FetchIssueByID(context.Context, string) (domain.Issue, error) {
+func (r *restartTracker) FetchIssueByID(ctx context.Context, _ string) (domain.Issue, error) {
+	r.mu.Lock()
+	hold := r.holdDescription
+	r.mu.Unlock()
+	if hold {
+		r.describingOnce.Do(func() { close(r.describing) })
+		<-ctx.Done()
+		return domain.Issue{}, context.Cause(ctx)
+	}
 	return r.current(), nil
 }
 
@@ -349,12 +363,35 @@ type restartWorker struct {
 	dieOnBreak bool
 
 	beating chan struct{}
+	// released is closed when Sortie answers that the job is gone, on a
+	// heartbeat or the stdio stream; the worker then ends the job with
+	// no report. goneOn names what was answered 410.
+	released     chan struct{}
+	releasedOnce sync.Once
+	goneOn       []string
+}
+
+// release ends the job as gone, as the daemon does on a 410.
+func (w *restartWorker) release(on string) {
+	w.mu.Lock()
+	w.goneOn = append(w.goneOn, on)
+	w.mu.Unlock()
+	w.releasedOnce.Do(func() { close(w.released) })
+}
+
+func (w *restartWorker) isReleased() bool {
+	select {
+	case <-w.released:
+		return true
+	default:
+		return false
+	}
 }
 
 func newRestartWorker(h *restartHarness) *restartWorker {
 	h.worker = &restartWorker{
 		fakeWorker: &fakeWorker{t: h.t, git: h.git, base: h.srv.URL, id: "taichi", header: restartHeader},
-		holding:    make(chan struct{}), beating: make(chan struct{}),
+		holding:    make(chan struct{}), beating: make(chan struct{}), released: make(chan struct{}),
 	}
 	return h.worker
 }
@@ -376,6 +413,10 @@ func (w *restartWorker) heartbeat() {
 		req.Header.Set(w.header, w.id)
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusGone {
+				w.release("heartbeat")
+				return
+			}
 		}
 	}
 }
@@ -394,10 +435,14 @@ func (w *restartWorker) run() {
 			return
 		}
 	}
+	if w.isReleased() {
+		return
+	}
 	w.giveBack()
 }
 
-// dial opens the stdio stream, retrying until the attempt is served.
+// dial opens the stdio stream, retrying until the attempt is served. It
+// returns a nil stream once Sortie answers that the job is gone.
 func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 	w.t.Helper()
 	target, token := w.flow("stdio")
@@ -417,6 +462,15 @@ func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 			return err
 		}
 		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusGone {
+			_ = c.Close()
+			w.release("stdio")
+			return nil
+		}
+		if w.isReleased() {
+			_ = c.Close()
+			return nil
+		}
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			_ = c.Close()
 			return fmt.Errorf("stdio upgrade: %d", resp.StatusCode)
@@ -431,6 +485,9 @@ func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 // stream broke before the agent's input closed.
 func (w *restartWorker) session() bool {
 	conn, in := w.dial()
+	if conn == nil {
+		return false
+	}
 	defer conn.Close() //nolint:errcheck // test
 	w.mu.Lock()
 	w.starts++
@@ -713,6 +770,52 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	}
 	if len(h.tracker.handoffs()) != 0 {
 		t.Errorf("handoffs %v, want none", h.tracker.handoffs())
+	}
+}
+
+// An adopted run that ends before its job is handed back to the data
+// plane, here cancelled while it reads the issue's description, releases
+// the worker that holds the job: its heartbeat and its stdio stream are
+// answered 410, the lease is gone, and so is the run's record.
+func TestAnAdoptedRunEndedBeforeItsStreamReleasesTheWorker(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(first, nil)
+	h.stopAndGo(first)
+
+	h.tracker.mu.Lock()
+	h.tracker.holdDescription = true
+	h.tracker.mu.Unlock()
+	second := h.start()
+	waittest.Receive(t, h.tracker.describing, "the adopted run reading the issue's description")
+	cancelled := make(chan struct{})
+	second.o.runOnLoop(context.Background(), func(context.Context) {
+		defer close(cancelled)
+		entry := second.o.state.Running[remoteIssueID]
+		if entry == nil {
+			t.Error("the adopted run is not running")
+			return
+		}
+		entry.cancelRun(errCancelStall)
+	})
+	waittest.Receive(t, cancelled, "the adopted run cancelled")
+
+	waittest.Receive(t, w.released, "Sortie telling the worker its job is gone")
+	waittest.Receive(t, worked, "the worker ending the job")
+	if state := second.o.Workers().Snapshot(); len(state.Leases) != 0 {
+		t.Errorf("leases %+v, want the cancelled job's released", state.Leases)
+	}
+	runs, err := second.store.LoadRemoteRuns(context.Background())
+	if err != nil || len(runs) != 0 {
+		t.Errorf("remote runs %+v %v, want the cancelled run's record deleted", runs, err)
 	}
 }
 

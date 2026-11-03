@@ -386,6 +386,7 @@ func (o *Orchestrator) adoptRemoteRuns(ctx context.Context) {
 		log.Info("remote run adopted", slog.String("dispatch_id", e.DispatchID), slog.String("worker", a.run.WorkerID),
 			slog.Int("turns_completed", a.run.TurnsCompleted), slog.Bool("session_ended", a.run.SessionEnded))
 	}
+	o.remote.matcher.Recovered()
 }
 
 // abandon withdraws a restored run that cannot be adopted: its worker's
