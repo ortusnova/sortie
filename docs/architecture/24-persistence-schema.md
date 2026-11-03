@@ -457,6 +457,22 @@ Every write of `run_events` updates `bytes` in its own transaction, so the figur
 
 One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budget is `agent.max_sessions` plus the sum of its rows' `sessions`. Rows are never deleted. The event loop reads the sums once, at the first budget check after startup, and keeps them in memory with each new grant; a failed read counts no grant and is tried again at the next check.
 
+**`standing_holds`**: leases on issues that are not running (migration 1008)
+
+| Column       | Type             | Notes                                                                 |
+| ------------ | ---------------- | --------------------------------------------------------------------- |
+| `issue_id`   | TEXT PRIMARY KEY | Tracker-internal issue ID                                             |
+| `identifier` | TEXT NOT NULL    | The identifier the hold named                                         |
+| `holder`     | TEXT NOT NULL    | Who holds the issue, as the request said; may be empty                |
+| `reason`     | TEXT NOT NULL    | Why, as the request said; may be empty                                |
+| `evidence`   | TEXT NOT NULL    | What the holder is doing, as the latest hold or renewal said          |
+| `held_at`    | TEXT NOT NULL    | When the lease was placed, RFC 3339 with nanoseconds, in UTC          |
+| `renewed_at` | TEXT NOT NULL    | The latest hold or renewal, same format                               |
+| `held_until` | TEXT NOT NULL    | When the lease ends without a renewal, same format                    |
+| `expired_at` | TEXT NOT NULL    | When the lease expired, same format; `''` while it is live           |
+
+One row per held issue, written by each hold, renewal, and expiry, and deleted by a release. Startup loads the rows before the event loop starts, and the first poll tick expires a lease whose `held_until` passed while Sortie was down.
+
 ### 19.3 Migration Strategy
 
 - Migrations are numbered sequentially and applied in order at startup.
