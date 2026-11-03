@@ -227,10 +227,12 @@ func criteriaQuestion(v CriteriaVerdict) string {
 	var b strings.Builder
 	b.WriteString("The criteria review did not find every acceptance criterion met, so Sortie does not merge the pull request.\n")
 	if v.Problem != "" {
-		b.WriteString(v.Problem + "\n")
+		b.WriteString(v.Problem)
+		b.WriteString("\n")
 	}
 	if list := v.notMet(); list != "" {
-		b.WriteString("Criteria not met:\n" + list)
+		b.WriteString("Criteria not met:\n")
+		b.WriteString(list)
 	}
 	b.WriteString("Supervisor: decide how each is met (a fix, a live proof, or a change to the criterion), then release the story for a new review.")
 	return b.String()
