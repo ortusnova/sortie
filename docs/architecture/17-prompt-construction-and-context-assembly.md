@@ -46,14 +46,19 @@ A fresh dispatch is seeded when the issue's workspace names a pull request, the 
 seeded   = render with the run's continuation context
 unseeded = render without it
 if seeded is not blank and (unseeded fails or seeded differs from unseeded):
-  send seeded                      # the operator's branch
-else:
-  send the built-in prompt of the key
+  if this is the first turn:
+    send seeded                    # the operator's branch
+  first = seeded render with run.is_continuation false
+  if first fails or seeded differs from first:
+    send seeded                    # the branch has its own later-turn text
+send the built-in prompt of the key
 ```
 
-A seeded render that fails fails the run like any render failure. A render that is blank, or identical with and without the key, counts as no branch. A render that fails only without the key counts as a branch, because the template reads the key unguarded. The default continuation prompt and the empty-first-turn fallback never apply to a reaction run, so a template that does not react to the run's key never sends it the normal work prompt. A reaction block written inside the normal work prompt counts as the operator's branch, so the run receives the work prompt together with the block on every turn; an exclusive `{{ if }}` chain whose last branch holds the work prompt sends a reaction run only the reaction's instructions.
+A later turn gets the operator's branch only when the branch tells the turns apart. A branch that renders the same text on every turn would send the first turn's task again on each turn, and an agent that had already done it redid it; such a branch gets the built-in later-turn text instead.
 
-A built-in prompt switches on `run.is_continuation`. Its first-turn text gives the task and asks the agent to signal the outcome, and its later-turn text points back to the instructions the session received at its start and adds no duty, so it fits whether the first turn sent the operator's branch or the built-in. A template that switches on `run.is_continuation` outside the key's branch therefore gets the built-in later-turn text on a reaction run; the switch belongs inside the branch.
+A seeded render that fails fails the run like any render failure. A render that is blank, or identical with and without the key, counts as no branch. A render that fails only without the key counts as a branch, because the template reads the key unguarded. The default continuation prompt and the empty-first-turn fallback never apply to a reaction run, so a template that does not react to the run's key never sends it the normal work prompt. A reaction block written inside the normal work prompt counts as the operator's branch, so the run receives the work prompt together with the block on its first turn, and on later turns when the template switches on `run.is_continuation`; an exclusive `{{ if }}` chain whose last branch holds the work prompt sends a reaction run only the reaction's instructions.
+
+A built-in prompt switches on `run.is_continuation`. Its first-turn text gives the task and asks the agent to signal the outcome, and its later-turn text points back to the instructions the session received at its start and adds no duty. The later-turn text also says that the earlier turns' commits are in the workspace, that a branch Sortie pushes moves upstream only after the run ends, so `origin/<branch>` does not move during the run, and that a fix already committed is not repeated, so it fits whether the first turn sent the operator's branch or the built-in. A template that switches on `run.is_continuation` outside the key's branch therefore gets the built-in later-turn text on a reaction run; the switch belongs inside the branch.
 
 A reaction run presents every comment it carries: the operator's render is chosen only when it differs from the render without the comments, and a built-in lists every comment.
 

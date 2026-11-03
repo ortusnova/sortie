@@ -234,12 +234,12 @@ func blockerRunsElsewhere(cfg config.EnvironmentConfig, workspaceRoot string, b 
 	if b.Identifier != "" {
 		if path, err := workspace.ComputePath(workspaceRoot, b.Identifier); err == nil {
 			if rec, ok, err := workspace.ReadRepositoryRecord(path.Path); err == nil && ok {
-				repo, found := cfg.Smolvm.RepositoryNamed(rec.Name)
+				repo, found := cfg.RepositorySet().RepositoryNamed(rec.Name)
 				return !found || repo.ClosedToDispatch
 			}
 		}
 	}
-	_, err := cfg.Smolvm.DispatchRepository(b.Labels)
+	_, err := cfg.RepositorySet().DispatchRepository(b.Labels)
 	return err != nil
 }
 
@@ -300,7 +300,7 @@ func issueRepository(cfg config.EnvironmentConfig, workspacePath string, labels 
 		if ok {
 			repo, found := cfg.RepositorySet().RepositoryNamed(rec.Name)
 			if !found {
-				return cfg, "", fmt.Errorf("the workspace was seeded from repository %q, which environment.smolvm.repositories no longer lists", rec.Name)
+				return cfg, "", fmt.Errorf("the workspace was seeded from repository %q, which the workflow's repositories no longer list", rec.Name)
 			}
 			cfg.SetRepository(repo)
 			return cfg, rec.Name, nil

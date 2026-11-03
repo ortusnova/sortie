@@ -819,6 +819,9 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 	if err := checkSmolvmMountsOutsideRoot(environment, workspace.Root); err != nil {
 		return ServiceConfig{}, err
 	}
+	if err := refuseRemoteHooks(environment, hooks); err != nil {
+		return ServiceConfig{}, err
+	}
 
 	registerConfigSecrets(tracker, reactions, notifications, extensions, raw)
 

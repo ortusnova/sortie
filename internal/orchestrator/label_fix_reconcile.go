@@ -59,8 +59,18 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 
 		readPullRequestURL(ctx, params.SCMAdapter, pending, entryLog)
 
+		// A command run of this kind waiting in the retry slot has not yet
+		// recorded its command handled: the pass leaves the journal and the
+		// mark alone until the run starts, so it neither queues the command
+		// twice nor records it handled before it runs.
+		if commandQueued(state, pending.IssueID, ReactionKindLabelFix) {
+			pending.PendingRetryAt = now.Add(pollInterval)
+			requeueReaction(state, key, pending, waitRetrySlot)
+			continue
+		}
+
 		// The dispatched flag is not consulted for this kind. The read error
-		// is: at-most-once rests solely on the mark, and this kind has no
+		// is: once-per-command rests solely on the mark, and this kind has no
 		// turn cap to bound a duplicate, so when the mark cannot be read the
 		// pass backs off rather than risk re-dispatching an already
 		// acknowledged command with storedMark treated as empty.
@@ -145,18 +155,12 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 			(incumbent != nil && incumbent.ReactionKind == ReactionKindLabelFix)
 
 		if commandConfirmed && !sameKindQueuedOrRunning {
-			// Advance the mark BEFORE scheduling: at-most-once rests on the
-			// persisted mark, so a crash in the window between the two loses
-			// the command rather than duplicating it. The upsert is
-			// best-effort: a write failure is logged and dispatch still
-			// proceeds, degrading the durable guarantee to best-effort for
-			// this tick, matching the sibling reactions.
-			if upErr := params.Store.UpsertReactionFingerprint(ctx, pending.IssueID, ReactionKindLabelFix, newestMark); upErr != nil {
-				entryLog.Warn("failed to upsert label-fix reaction fingerprint",
-					slog.Any("error", upErr),
-				)
-			}
-
+			// The mark and the label are left as they are: the retry
+			// handler records the command handled and removes the label
+			// when the run starts ([acknowledgeLabelCommand]). A queued
+			// retry is runtime-only, so a restart before the run starts
+			// leaves the command standing and the rebuilt watch queues it
+			// again; a run that started is never repeated for it.
 			newestMatch := latestLabelEvent(matches)
 			data.HighWaterMark = newestMark
 			data.LastActor = newestMatch.Actor
@@ -172,6 +176,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 				},
 				ReactionKind:        ReactionKindLabelFix,
 				Continuation:        continuationTargetOf(pending, 0),
+				Command:             LabelCommand{Label: params.LabelFixConfig.FixLabel, Mark: newestMark},
 				AgentKind:           pending.AgentKind,
 				ConfiguredModel:     pending.ConfiguredModel,
 				RuleName:            pending.RuleName,
@@ -182,17 +187,6 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 
 				IssueIdentity: pending.IssueIdentity,
 			}, params.OnRetryFire, now)
-
-			// Best-effort acknowledgment: the label's disappearance tells the
-			// operator the command was accepted. A failure does not affect
-			// dedup (the mark already advanced) and does not block re-enqueue.
-			if rmErr := params.SCMAdapter.RemoveLabel(ctx, data.PRNumber, data.Owner, data.Repo, params.LabelFixConfig.FixLabel); rmErr != nil {
-				entryLog.Warn("label-fix label removal failed",
-					slog.Int("pr_number", data.PRNumber),
-					slog.String("label", params.LabelFixConfig.FixLabel),
-					slog.Any("error", rmErr),
-				)
-			}
 
 			entryLog.Info("label-fix dispatched",
 				slog.Int("pr_number", data.PRNumber),

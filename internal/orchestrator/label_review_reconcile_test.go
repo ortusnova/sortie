@@ -608,52 +608,55 @@ func TestReconcileLabelReviewCommands_RepeatAfterCompletion(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelReviewCommands_AtMostOnceAcrossRestart verifies the
-// at-most-once guarantee across a restart: the fingerprint is upserted
-// before ScheduleRetry fires. A fresh reconcile call over a restored store
-// (the mark it returns was upserted by the prior process) must not
-// re-dispatch the same journal event.
-func TestReconcileLabelReviewCommands_AtMostOnceAcrossRestart(t *testing.T) {
+// TestReconcileLabelReviewCommands_OncePerCommandAcrossRestart verifies the
+// once-per-command rule across a restart: queueing the command's run records
+// nothing, so a restart before the run starts leaves the command standing
+// and a fresh process over the same store queues it again. The retry handler
+// records the command handled when the run starts, so a process after that
+// does not queue the same journal event again.
+func TestReconcileLabelReviewCommands_OncePerCommandAcrossRestart(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LR-RESTART"
 	event := labelEvent("1", "sortie:review", "alice", true, labelReviewBaseTime.Add(-1*time.Minute))
-	store := newLabelReviewFingerprintStore()
+	store := openLabelCommandStore(t)
 
 	state1 := stateWithLabelReviewPending(t, issueID, 10)
-	scm1 := &labelReviewSCMFake{events: []domain.LabelEvent{event}}
-	params1 := labelReviewParams(store, scm1)
-
-	reconcileLabelReviewCommands(state1, params1, discardLogger(), context.Background(), &domain.NoopMetrics{})
-
+	reconcileLabelReviewCommands(state1, labelReviewParams(store, &labelReviewSCMFake{events: []domain.LabelEvent{event}}), discardLogger(), context.Background(), &domain.NoopMetrics{})
 	if _, ok := state1.RetryAttempts[issueID]; !ok {
-		t.Fatal("first dispatch did not fire; want scheduled")
+		t.Fatal("first process queued no run; want one")
 	}
-	persistedMark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelReview)
-	if err != nil || persistedMark == "" {
-		t.Fatalf("GetReactionFingerprint after dispatch = (%q, %v), want a non-empty persisted mark", persistedMark, err)
-	}
-	if persistedMark != labelReviewMark(event) {
-		t.Fatalf("persisted mark = %q, want %q", persistedMark, labelReviewMark(event))
+	if mark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelReview); err != nil || mark != "" {
+		t.Fatalf("GetReactionFingerprint after queueing = (%q, %v), want no mark until the run starts", mark, err)
 	}
 
-	// Restart: a fresh state and reconcile call over the SAME store, whose
-	// GetReactionFingerprint now returns the mark persisted above.
+	// Restart before the run starts: the queued retry is lost with state1.
 	state2 := stateWithLabelReviewPending(t, issueID, 10)
 	scm2 := &labelReviewSCMFake{events: []domain.LabelEvent{event}}
-	params2 := labelReviewParams(store, scm2)
+	reconcileLabelReviewCommands(state2, labelReviewParams(store, scm2), discardLogger(), context.Background(), &domain.NoopMetrics{})
+	if _, ok := state2.RetryAttempts[issueID]; !ok {
+		t.Fatal("second process queued no run for the command the lost run was for; want one")
+	}
+	if kinds := startLabelCommandRun(t, state2, issueID, store, scm2, nil); len(kinds) != 1 || kinds[0] != ReactionKindLabelReview {
+		t.Fatalf("dispatched kinds = %v, want [%s]", kinds, ReactionKindLabelReview)
+	}
+	if mark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelReview); err != nil || mark != labelReviewMark(event) {
+		t.Fatalf("GetReactionFingerprint after the run started = (%q, %v), want %q", mark, err, labelReviewMark(event))
+	}
 
-	reconcileLabelReviewCommands(state2, params2, discardLogger(), context.Background(), &domain.NoopMetrics{})
-
-	if _, dispatched := state2.RetryAttempts[issueID]; dispatched {
-		t.Error("second process re-dispatched the same journal event; want no dispatch (mark already advanced past it)")
+	// Restart after the run started.
+	state3 := stateWithLabelReviewPending(t, issueID, 10)
+	reconcileLabelReviewCommands(state3, labelReviewParams(store, &labelReviewSCMFake{events: []domain.LabelEvent{event}}), discardLogger(), context.Background(), &domain.NoopMetrics{})
+	if _, dispatched := state3.RetryAttempts[issueID]; dispatched {
+		t.Error("third process queued the same journal event again; want none (its run started)")
 	}
 }
 
 // TestReconcileLabelReviewCommands_AcknowledgmentBestEffort verifies the
-// best-effort acknowledgment contract: after a confirmed dispatch,
-// RemoveLabel is called with the configured review label; a failure logs a
-// Warn and leaves dedup and the dispatch unaffected.
+// best-effort acknowledgment contract: queueing the run leaves the label in
+// place; when the run starts, RemoveLabel is called with the configured
+// review label, and a failure logs a Warn and leaves the run and the mark
+// unaffected.
 func TestReconcileLabelReviewCommands_AcknowledgmentBestEffort(t *testing.T) {
 	t.Parallel()
 
@@ -665,13 +668,19 @@ func TestReconcileLabelReviewCommands_AcknowledgmentBestEffort(t *testing.T) {
 		},
 		removeErr: errors.New("insufficient scope"),
 	}
-	store := newLabelReviewFingerprintStore()
-	params := labelReviewParams(store, scm)
+	store := openLabelCommandStore(t)
+
+	reconcileLabelReviewCommands(state, labelReviewParams(store, scm), discardLogger(), context.Background(), &domain.NoopMetrics{})
+
+	if scm.removeCalls != 0 {
+		t.Fatalf("RemoveLabel calls after queueing = %d, want 0 (the label stays until the run starts)", scm.removeCalls)
+	}
 
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	reconcileLabelReviewCommands(state, params, log, context.Background(), &domain.NoopMetrics{})
+	if kinds := startLabelCommandRun(t, state, issueID, store, scm, log); len(kinds) != 1 {
+		t.Fatalf("dispatched kinds = %v, want the run started despite the RemoveLabel failure", kinds)
+	}
 
 	if scm.removeCalls != 1 {
 		t.Fatalf("RemoveLabel calls = %d, want 1", scm.removeCalls)
@@ -679,11 +688,8 @@ func TestReconcileLabelReviewCommands_AcknowledgmentBestEffort(t *testing.T) {
 	if scm.removedLabel[0] != "sortie:review" {
 		t.Errorf("RemoveLabel label = %q, want %q", scm.removedLabel[0], "sortie:review")
 	}
-	if !strings.Contains(buf.String(), "label-review label removal failed") {
+	if !strings.Contains(buf.String(), "command label removal failed") || !strings.Contains(buf.String(), "kind=label-review") {
 		t.Errorf("log output = %q, want to contain the label-removal-failure warning", buf.String())
-	}
-	if _, ok := state.RetryAttempts[issueID]; !ok {
-		t.Error("dispatch did not fire despite the RemoveLabel failure; want unaffected")
 	}
 	mark, _, _ := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelReview)
 	if mark == "" {
@@ -1162,11 +1168,12 @@ func TestReconcileLabelReviewCommands_ForeignIncumbentDefers(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelReviewCommands_SameKindCollapseAdvancesMarkAndReenqueues
-// covers the second arm of the three-way decision: a same-kind incumbent
-// collapses the dispatch, but the mark still advances to the newest
-// examined event and the pending entry still re-enqueues.
-func TestReconcileLabelReviewCommands_SameKindCollapseAdvancesMarkAndReenqueues(t *testing.T) {
+// TestReconcileLabelReviewCommands_SameKindQueuedLeavesMarkAndReenqueues covers the
+// second arm of the three-way decision: a same-kind run waiting in the
+// retry slot collapses the dispatch, the pending entry still re-enqueues,
+// and the mark is left alone until that run starts, so a restart that loses
+// the queued run leaves the command standing.
+func TestReconcileLabelReviewCommands_SameKindQueuedLeavesMarkAndReenqueues(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LR-COLLAPSE"
@@ -1190,18 +1197,21 @@ func TestReconcileLabelReviewCommands_SameKindCollapseAdvancesMarkAndReenqueues(
 	}
 	pending, ok := state.PendingReactions[rkey]
 	if !ok {
-		t.Fatal("PendingReactions entry dropped after collapse; want re-enqueued")
+		t.Fatal("PendingReactions entry dropped while a run is queued; want re-enqueued")
 	}
 	mark, _, _ := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelReview)
-	if mark != labelReviewMark(event) {
-		t.Errorf("stored mark = %q, want %q (advanced to the newest examined event)", mark, labelReviewMark(event))
+	if mark != "" {
+		t.Errorf("stored mark = %q, want empty (recorded only when the queued run starts)", mark)
 	}
 	data, ok := pending.KindData.(*LabelReviewReactionData)
 	if !ok {
 		t.Fatalf("KindData type = %T, want *LabelReviewReactionData", pending.KindData)
 	}
-	if data.HighWaterMark != labelReviewMark(event) {
-		t.Errorf("HighWaterMark = %q, want %q", data.HighWaterMark, labelReviewMark(event))
+	if data.HighWaterMark != "" {
+		t.Errorf("HighWaterMark = %q, want empty", data.HighWaterMark)
+	}
+	if scm.removeCalls != 0 {
+		t.Errorf("RemoveLabel calls = %d, want 0 (the label stays until the queued run starts)", scm.removeCalls)
 	}
 }
 

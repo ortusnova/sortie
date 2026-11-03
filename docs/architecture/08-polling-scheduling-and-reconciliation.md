@@ -311,7 +311,7 @@ Part C: CI status reconciliation (when `reactions.ci_failure.provider` is config
   - If the pull request is merged, or closed without merging: drop the entry and its attempt counter and log; the watch ends. The merged check runs first, so a provider whose closed state subsumes merging still ends the watch through the merged branch.
   - If the resolved head is empty: re-enqueue with backoff, recording no head and spending no attempt.
   - Deduplicate against the resolved head: a stored fingerprint equal to the current head and already marked dispatched drops the entry for this pass, except an entry with a standing escalation, which proceeds to the status read; a stored fingerprint that differs opens a new epoch (§11A.5).
-  - Call `CIStatusProvider.FetchCIStatus` with the resolved head.
+  - Read the CI status of the resolved head in the pull request's own repository (§11A.1), not the provider's configured one.
   - If the call fails: log a warning, re-enqueue with an exponential backoff delay derived from the poll interval and the pending attempt count, and continue to the next entry.
   - If status is `passing`: clear reaction attempts for the issue and kind, end a standing escalation, and keep watching; the entry re-enqueues rather than retiring, so a later commit's failure is still observed.
   - If status is `pending`: re-enqueue with the same exponential backoff as the fetch-error path.
@@ -399,7 +399,7 @@ Part G runs after Parts C through F (CI, review, bot review, and merge conflict)
 Part H: Label review command detection (when `reactions.label_commands.review_label` is configured)
 
 - Skip entirely when no SCM adapter is configured or the `label_commands` block is absent.
-- For each Sortie-managed PR, read the label-event journal past its stored high-water mark via `SCMAdapter.ListLabelEvents`. A confirmed `review_label` command is decided in this order: a foreign-kind incumbent occupying the retry slot, or a running worker of another kind, defers (Section 7.5), leaving the label and the high-water mark untouched and the entry due for the first pass that finds neither; a same-kind incumbent or a running worker of this kind collapses, advancing the mark without a second dispatch; otherwise the pass dispatches a read-only, no-clone review session and removes the label.
+- For each Sortie-managed PR, read the label-event journal past its stored high-water mark via `SCMAdapter.ListLabelEvents`. A confirmed `review_label` command is decided in this order: a foreign-kind incumbent occupying the retry slot, or a running worker of another kind, defers (Section 7.5), leaving the label and the high-water mark untouched and the entry due for the first pass that finds neither; a same-kind incumbent waits with the mark untouched, and a running worker of this kind collapses, advancing the mark without a second dispatch; otherwise the pass queues a read-only, no-clone review session, and the retry handler records the command handled and removes the label when that session starts.
 - Ordering relative to the other parts does not affect correctness: the pass is fully cross-kind isolated. See Section 11F for the full contract.
 
 Part I: Label fix command detection (when `reactions.label_commands.fix_label` is configured)

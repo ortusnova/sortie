@@ -354,9 +354,12 @@ func buildMergeConflictFingerprint(headSHA string) string {
 }
 
 // dispatchMergeConflictContinuation schedules a rebase-and-resolve
-// continuation turn carrying the PR's real base branch and marks the
-// merge-conflict fingerprint dispatched on the same tick. The continuation
-// reuses the same workspace identifier (no new workspace key).
+// continuation turn carrying the PR's real base branch. The continuation
+// reuses the same workspace identifier (no new workspace key). The
+// fingerprint is marked dispatched when the retry handler starts the run,
+// not here: a queued continuation is runtime-only, so a mark taken before
+// the run starts would outlive a restart that loses the continuation and
+// keep the rebuilt watch from dispatching the head again.
 func dispatchMergeConflictContinuation(
 	state *State,
 	params ReconcileParams,
@@ -391,12 +394,6 @@ func dispatchMergeConflictContinuation(
 
 		IssueIdentity: pending.IssueIdentity,
 	}, params.OnRetryFire, now)
-
-	if markErr := params.Store.MarkReactionDispatched(ctx, pending.IssueID, ReactionKindMergeConflict); markErr != nil {
-		log.Warn("failed to mark merge conflict dispatched",
-			slog.Any("error", markErr),
-		)
-	}
 
 	log.Info("merge conflict detected, scheduling rebase dispatch",
 		slog.Int("pr_number", data.PRNumber),

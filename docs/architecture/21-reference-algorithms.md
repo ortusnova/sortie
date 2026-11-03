@@ -789,7 +789,8 @@ function run_agent_attempt(issue, attempt, settings, orchestrator_channel):
 
     if reaction_kind != "":
       # a reaction run gets the operator's branch for its continuation key
-      # or the key's built-in prompt, on every turn
+      # or the key's built-in prompt, on every turn; a later turn gets the
+      # branch only when it renders differently with run.is_continuation false
       prompt = build_reaction_turn_prompt(workflow_template, issue, attempt, turn_number, max_turns, continuation_context)
       if turn_number == 1:
         presented = the IDs of every comment continuation_context carries, per review kind

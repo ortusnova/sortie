@@ -2094,10 +2094,9 @@ credentials:
 environment:
   kind: remote
   remote:
-    image: ghcr.io/example/agent:1           # required, machine image reference
+    image: ghcr.io/example/agent:1           # required unless every repository sets image
     backend: smolvm                          # optional, isolation backend
     requires:                                # optional, what a job needs of a worker
-      capabilities: [nested]
       cpu: 4
       mem_gib: 8
       disk_gib: 20
@@ -2112,13 +2111,30 @@ environment:
       bundles: { url: https://edge.example/bundles }
       usage:   { url: https://edge.example/usage }
     lease_ttl_ms: 60000                      # optional
-    repository:                              # optional, seeded and pushed by Sortie
-      url: git@github.com:org/app.git
-      base: main
-      branch_prefix: sortie/
-      provider: github
-      project: org/app
-      max_bundle_mib: 512
+    repositories:                            # optional, seeded and pushed by Sortie
+      - name: homelab
+        url: git@github.com:org/homelab.git
+        base: main
+        provider: github
+        project: org/homelab
+        image: ghcr.io/example/homelab:1     # optional, this repository's image
+        requires:                            # optional, replaces requires above
+          capabilities: [nested]
+          cpu: 4
+          mem_gib: 16
+          disk_gib: 40
+      - name: app
+        url: git@github.com:org/app.git
+        base: main
+        branch_prefix: sortie/
+        provider: github
+        project: org/app
+        max_bundle_mib: 512
+      - name: legacy
+        url: git@github.com:org/legacy.git
+        base: main
+        dispatch: false                      # listed for plan sync, never dispatched
+    default_repository: app                  # optional, for an issue that names none
 worker:
   identity_header: X-Sortie-Worker-Identity  # optional
 ```
@@ -2137,16 +2153,37 @@ A running machine uses a run slot. A stopped machine uses only disk, which the w
 
 | Field          | Type             | Required | Default  | Description |
 | -------------- | ---------------- | -------- | -------- | ----------- |
-| `image`        | string           | Yes      | _(none)_ | The machine image reference in the run descriptor. |
+| `image`        | string           | Unless every repository sets `image` | _(none)_ | The machine image reference in the run descriptor of a job whose repository sets no `image`. |
 | `backend`      | string           | No       | `smolvm` | The isolation backend in the run descriptor. Each job also requires it as a capability. |
-| `requires.capabilities` | list of strings | No | `[]`   | Capabilities a worker must declare to take a job, such as `nested`, `kvm`, a backend name, an OS or an architecture. |
+| `requires.capabilities` | list of strings | No | `[]`   | Capabilities a worker must declare to take a job of a repository that sets no `requires`, such as `nested`, `kvm`, a backend name, an OS or an architecture. |
 | `requires.cpu` | number           | No       | `0`      | Free CPUs a job needs. Must not be negative. |
 | `requires.mem_gib` | number       | No       | `0`      | Free memory a job needs, in GiB. Must not be negative. |
 | `requires.disk_gib` | number      | No       | `0`      | Free disk a job needs, in GiB. Must not be negative. |
 | `credentials`  | list of maps     | No       | `[]`     | Credentials the agent needs, each `{name, env, hosts, header}` with the rules of `environment.smolvm.credentials`. The machine sets `env` to the placeholder `sortie-credential-<name>`, which the egress proxy replaces on requests to `hosts`. Sortie never reads the value. |
 | `flows.<flow>.url` | string       | Yes      | _(none)_ | The URL a worker reaches each data-plane flow at: `stdio`, `egress`, `mcp`, `bundles` and `usage`. All five are required, and no other flow is accepted. Each URL is absolute, uses `http`, `https`, `ws` or `wss`, and holds no user information. |
 | `lease_ttl_ms` | integer          | No       | `60000`  | How long a lease lasts after its grant or last heartbeat. Must be positive. |
-| `repository`   | map              | No       | _(none)_ | The repository each job's workspace is seeded from and whose issue branch Sortie pushes, with the fields and defaults of [`environment.smolvm.repository`](#kind-smolvm) except `dispatch`. `max_bundle_mib` caps the bundle a worker returns. Without it, Sortie serves no seed and pushes nothing. |
+| `repositories` | list of maps     | No       | _(none)_ | The repositories Sortie may open, as [`environment.smolvm.repositories`](#kind-smolvm), each entry with the fields below. Without it or `repository`, Sortie serves no seed and pushes nothing. |
+| `default_repository` | string     | No       | _(none)_ | The `repositories` entry an issue that names no repository runs in, as `environment.smolvm.default_repository`. Without it, such an issue is not dispatched. |
+| `repository`   | map              | No       | _(none)_ | A single repository, the only entry and the default, with the fields of a `repositories` entry except `name` being optional and `dispatch` refused. It cannot be set together with `repositories` or `default_repository`. |
+
+Each `repositories` entry, and the `repository` block, takes these keys and no other:
+
+| Field          | Type             | Required | Default  | Description |
+| -------------- | ---------------- | -------- | -------- | ----------- |
+| `name`         | string           | In `repositories` | _(none)_ | The name an issue's `sortie-repository:<name>` label and plan sync use, matching `[a-z0-9]+(-[a-z0-9]+)*`, each name once. |
+| `url`          | string           | Yes      | _(none)_ | The upstream Sortie fetches and pushes with its own credentials. It never reaches a worker. |
+| `base`         | string           | Yes      | _(none)_ | The upstream branch a job's seed starts from, and the pull request's base. |
+| `branch_prefix` | string          | No       | `sortie/` | Precedes the issue identifier in the issue branch name. |
+| `provider`     | string           | No       | _(none)_ | The SCM adapter that opens the pull request. Every repository that names one names the same. |
+| `project`      | string           | With `provider` | _(none)_ | The repository for `provider`, such as `org/app`. |
+| `max_bundle_mib` | integer        | No       | `512`    | Caps the bundle a worker returns. Positive. |
+| `dispatch`     | boolean          | No       | `true`   | `false` keeps every issue of the repository from being dispatched; plan sync still accepts its name. Not accepted on the `repository` block, nor on the repository `default_repository` names. |
+| `image`        | string           | No       | `environment.remote.image` | The machine image reference a job of this repository runs in. Must not be empty. |
+| `requires`     | map              | No       | `environment.remote.requires` | What a worker must declare to take a job of this repository, with the keys of `environment.remote.requires`. It replaces the block's `requires` whole; the `backend` is still required. |
+
+Each issue's job is seeded from its repository: the one its workspace was seeded from before, else the one its `sortie-repository:<name>` label names, else `default_repository`. The job runs in that repository's image and is offered only to a worker that meets that repository's requirements, and its issue branch is pushed to that repository's `url` and its pull request opened on its `project` against its `base`. So with the example above, an issue labelled `sortie-repository:homelab` and an issue with no label run at once: the first from a bundle of `homelab` at `main`, in `ghcr.io/example/homelab:1`, on a worker that declares `nested`; the second from a bundle of `app`, in `ghcr.io/example/agent:1`. An issue that names `legacy`, or a repository the list does not hold, is left to another Sortie and never dispatched.
+
+`environment.remote` takes only the keys in these tables. Any other key, at any depth, such as `pass_env`, `allow_hosts` or another key of `environment.smolvm`, fails validation at start and at reload with an error that names it, for example `config: environment.remote.pass_env: unknown key: the remote kind does not support it; valid: ...`; a reload keeps the previous workflow. Under `remote`, a `hooks.after_create`, `hooks.before_run`, `hooks.after_run` or `hooks.before_remove` fails validation the same way, naming the hook, because the kind runs nothing but the agent in a job's workspace; `hooks.timeout_ms` alone is accepted.
 
 `worker.identity_header` names the request header that carries the worker's identity, `X-Sortie-Worker-Identity` by default. Sortie takes the identity from that header only, never from the path or the body. Put Sortie behind a proxy that authenticates each worker by its client certificate and sets the header. `remote` cannot be combined with `worker.ssh_hosts`. Validation fails with an error that names both settings.
 
@@ -2197,7 +2234,7 @@ A remote attempt is a normal run whose agent runs on the worker. Sortie renders 
 
 **No forge credential reaches a worker.** The offer, the run descriptor and the seed hold no git, forge or tracker credential, no repository URL, and no session token. The seed's clone knows only the bundle as its origin. Every fetch and push of the repository, and every call to the forge, runs on Sortie's host with Sortie's own credentials. A flow's job token is the only secret a worker can present to Sortie, and it is void once the attempt ends.
 
-**What runs only on a co-located host.** Under `remote` nothing but the agent runs in the job's workspace. The `after_create`, `before_run`, `after_run` and `before_remove` hooks, `self_review.verification_commands`, the reaction `triage` command and the git inspection of the handoff evidence are refused, so a workflow under `remote` sets none of them; a `before_run` or `after_create` hook fails the preparation. The credential verification session does not run, because a job's `stdio` flow carries one session. The worker runs the agent command of the run descriptor, so an agent kind that starts a process per turn, or adds flags of its own to the command, does not work under `remote`; `agent-client-protocol` does.
+**What runs only on a co-located host.** Under `remote` nothing but the agent runs in the job's workspace. The `after_create`, `before_run`, `after_run` and `before_remove` hooks, `self_review.verification_commands`, the reaction `triage` command and the git inspection of the handoff evidence are refused, so a workflow under `remote` sets none of them. A workflow that sets one of the four hooks fails validation at start and at reload, naming the hook, so no issue is dispatched under it. The credential verification session does not run, because a job's `stdio` flow carries one session. The worker runs the agent command of the run descriptor, so an agent kind that starts a process per turn, or adds flags of its own to the command, does not work under `remote`; `agent-client-protocol` does.
 
 ##### Sortie's tools on a worker
 
@@ -6151,11 +6188,11 @@ The log excerpt and each comment body come from outside Sortie, so the built-in 
 - `label_review`: fetch the diff of the pull request, review it, and post the review comments, without modifying the branch or pushing.
 - `label_fix`: check out the pull request's branch, fetch the outstanding review comments, address them, push to that branch only, and post a summary comment.
 
-Each first-turn built-in prompt ends by asking the agent to signal the outcome as the first-turn status instructions describe, so a run that finishes its task ends without using every turn. On later turns the built-in prompt sends the agent back to the instructions it received at the start of the session and adds no task. That text suits a session whose first turn came from your branch as well as one whose first turn came from the built-in prompt.
+Each first-turn built-in prompt ends by asking the agent to signal the outcome as the first-turn status instructions describe, so a run that finishes its task ends without using every turn. On later turns the built-in prompt sends the agent back to the instructions it received at the start of the session and adds no task. It also says that the commits of earlier turns are in the workspace, that a branch Sortie pushes moves upstream only after the run ends, so `origin/<branch>` does not move during the run, and that the agent must not repeat a fix it already committed. That text suits a session whose first turn came from your branch as well as one whose first turn came from the built-in prompt.
 
-A branch is rendered again on every turn, so it sends the same text each time unless it tests `.run.is_continuation`. Put that test inside the branch, as Section 5.5 shows, to send shorter resume text on later turns.
+A branch is rendered again on every turn. On a later turn Sortie sends your branch only when it tests `.run.is_continuation`, that is, when its text differs with the test false. A branch that renders the same text on every turn gets the built-in continuation text on later turns, so the agent is not sent the first turn's task again. Put the test inside the branch, as Section 5.5 shows, to send your own resume text on later turns.
 
-**A reaction block inside the work prompt.** A block appended to the work prompt counts as your branch, because the render differs with the data. The run then receives the whole work prompt with the block on every turn, a label-fix run included. Sortie does not separate the block from the surrounding text; your branch always wins. To send only the reaction's instructions, put the branches in one exclusive chain, with the work prompt in the last `else`:
+**A reaction block inside the work prompt.** A block appended to the work prompt counts as your branch, because the render differs with the data. The run then receives the whole work prompt with the block on its first turn, and on every later turn when the template tests `.run.is_continuation`, a label-fix run included. Sortie does not separate the block from the surrounding text; your branch always wins. To send only the reaction's instructions, put the branches in one exclusive chain, with the work prompt in the last `else`:
 
 ```
 {{ if .label_review }}
@@ -6248,7 +6285,7 @@ A previous attempt failed. Diagnose the root cause.
 **Turn semantics within a session:**
 
 - The full prompt template is rendered on **every** turn. The runtime always passes the full rendered result to the agent, regardless of turn number.
-- Workflow authors control what the agent receives on continuation turns by branching on `.run.is_continuation`. Without such branching, the agent receives identical instructions every turn.
+- Workflow authors control what the agent receives on continuation turns by branching on `.run.is_continuation`. Without such branching, the agent receives identical instructions every turn, except on a reaction run, whose later turns then get the built-in continuation text (see below).
 - After each turn, the worker re-checks the tracker issue state. If the issue is still active, another turn begins (up to `agent.max_turns`).
 - On a reaction run, the reaction's key stays set on every turn. A template that switches on `.run.is_continuation` at the top level, with the reaction branches only in the first-turn text, renders its resume text on later turns with and without the key. Sortie treats that as no branch for the key and sends the built-in continuation text, which points back to the instructions of the first turn:
 
@@ -6856,6 +6893,9 @@ These errors are raised during typed config construction from the parsed front m
 | `config: environment.smolvm.credentials[<i>].file: must not be empty; remove the key to read the value from env` | `file: ""` (same for a blank `command`). | Name the source, or remove the key. |
 | `config: environment.smolvm.credentials[<i>].file: "<p>" is not an absolute path after ~ and $VAR expansion` | `file` is relative. | Write an absolute path or one under `~`. |
 | `config: environment.remote.credentials[<i>].file: is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it` | `file` or `command` under `remote`. | Remove the key; give the value to the worker's egress proxy. |
+| `config: environment.remote.<key>: unknown key: the remote kind does not support it; valid: <keys>` | `environment.remote`, one of its repositories, credentials, flows or `requires` blocks sets a key the remote kind does not know, such as `pass_env` or `allow_hosts`. The error names the first such key in full. | Remove the key. |
+| `config: environment.remote.image: is required: <name> (<path>) sets no image of its own` | No `environment.remote.image`, and a repository sets no `image`. | Set `image` on the block or on that repository. |
+| `config: hooks.<hook>: is not run under environment.kind remote, where only the agent runs in the job's workspace; remove the hook` | A workspace hook under `remote`. | Remove the hook, or bake its work into the repository's image. |
 | `config: environment.smolvm.repository: expected mapping, got <type>` | `repository` is not a map. | Write the block as keys. |
 | `config: environment.smolvm.repository.url: is required and must be a non-empty string` | `url` is absent or empty (same message for `base`). | Set the key. |
 | `config: environment.smolvm.repository.project: is required when repository.provider is set (provider "<p>")` | `provider` without `project`. | Set `project` to `owner/repo`, or remove `provider`. |

@@ -496,51 +496,9 @@ func TestReconcileLabelFixCommands_RepeatAfterCompletion(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelFixCommands_AtMostOnceAcrossRestart verifies the
-// at-most-once guarantee across a restart: the fingerprint is upserted
-// before ScheduleRetry fires. A fresh reconcile call over a restored store
-// (the mark it returns was upserted by the prior process) must not
-// re-dispatch the same journal event.
-func TestReconcileLabelFixCommands_AtMostOnceAcrossRestart(t *testing.T) {
-	t.Parallel()
-
-	const issueID = "LF-RESTART"
-	event := labelEvent("1", "sortie:fix", "alice", true, labelReviewBaseTime.Add(-1*time.Minute))
-	store := newLabelReviewFingerprintStore()
-
-	state1 := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
-	scm1 := &labelReviewSCMFake{events: []domain.LabelEvent{event}}
-	params1 := labelFixParams(store, scm1)
-
-	reconcileLabelFixCommands(state1, params1, discardLogger(), context.Background(), &domain.NoopMetrics{})
-
-	if _, ok := state1.RetryAttempts[issueID]; !ok {
-		t.Fatal("first dispatch did not fire; want scheduled")
-	}
-	persistedMark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelFix)
-	if err != nil || persistedMark == "" {
-		t.Fatalf("GetReactionFingerprint after dispatch = (%q, %v), want a non-empty persisted mark", persistedMark, err)
-	}
-	if persistedMark != labelReviewMark(event) {
-		t.Fatalf("persisted mark = %q, want %q", persistedMark, labelReviewMark(event))
-	}
-
-	// Restart: a fresh state and reconcile call over the SAME store, whose
-	// GetReactionFingerprint now returns the mark persisted above.
-	state2 := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
-	scm2 := &labelReviewSCMFake{events: []domain.LabelEvent{event}}
-	params2 := labelFixParams(store, scm2)
-
-	reconcileLabelFixCommands(state2, params2, discardLogger(), context.Background(), &domain.NoopMetrics{})
-
-	if _, dispatched := state2.RetryAttempts[issueID]; dispatched {
-		t.Error("second process re-dispatched the same journal event; want no dispatch (mark already advanced past it)")
-	}
-}
-
 // TestReconcileLabelFixCommands_DispatchedFlagIgnored verifies that
 // reconcileLabelFixCommands never consults the dispatched flag returned by
-// GetReactionFingerprint: at-most-once rests solely on the mark, so a
+// GetReactionFingerprint: once-per-command rests solely on the mark, so a
 // store reporting dispatched=true does not suppress a dispatch for an
 // event past the stored mark.
 func TestReconcileLabelFixCommands_DispatchedFlagIgnored(t *testing.T) {
@@ -561,32 +519,84 @@ func TestReconcileLabelFixCommands_DispatchedFlagIgnored(t *testing.T) {
 	if _, ok := state.RetryAttempts[issueID]; !ok {
 		t.Error("dispatch did not fire despite a fresh event past the mark; want the dispatched flag ignored")
 	}
-	if store.upsertCalls == 0 {
-		t.Error("UpsertReactionFingerprint not called; want the mark advanced regardless of the dispatched flag")
+	if got := state.RetryAttempts[issueID].Command.Mark; got != labelReviewMark(scm.events[0]) {
+		t.Errorf("queued run's command mark = %q, want %q regardless of the dispatched flag", got, labelReviewMark(scm.events[0]))
 	}
 }
 
-// TestReconcileLabelFixCommands_AcknowledgmentBestEffort verifies that after a
-// confirmed dispatch, RemoveLabel is called with the configured fix label;
-// a failure logs a Warn and leaves dedup and the dispatch unaffected.
+// TestReconcileLabelFixCommands_OncePerCommandAcrossRestart verifies the
+// once-per-command rule across a restart: queueing the command's run records
+// nothing, so a restart before the run starts leaves the command standing
+// and a fresh process over the same store queues it again. The retry handler
+// records the command handled when the run starts, so a process after that
+// does not queue the same journal event again.
+func TestReconcileLabelFixCommands_OncePerCommandAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	const issueID = "LF-RESTART"
+	event := labelEvent("1", "sortie:fix", "alice", true, labelReviewBaseTime.Add(-1*time.Minute))
+	store := openLabelCommandStore(t)
+
+	state1 := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
+	reconcileLabelFixCommands(state1, labelFixParams(store, &labelReviewSCMFake{events: []domain.LabelEvent{event}}), discardLogger(), context.Background(), &domain.NoopMetrics{})
+	if _, ok := state1.RetryAttempts[issueID]; !ok {
+		t.Fatal("first process queued no run; want one")
+	}
+	if mark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelFix); err != nil || mark != "" {
+		t.Fatalf("GetReactionFingerprint after queueing = (%q, %v), want no mark until the run starts", mark, err)
+	}
+
+	// Restart before the run starts: the queued retry is lost with state1.
+	state2 := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
+	scm2 := &labelReviewSCMFake{events: []domain.LabelEvent{event}}
+	reconcileLabelFixCommands(state2, labelFixParams(store, scm2), discardLogger(), context.Background(), &domain.NoopMetrics{})
+	if _, ok := state2.RetryAttempts[issueID]; !ok {
+		t.Fatal("second process queued no run for the command the lost run was for; want one")
+	}
+	if kinds := startLabelCommandRun(t, state2, issueID, store, scm2, nil); len(kinds) != 1 || kinds[0] != ReactionKindLabelFix {
+		t.Fatalf("dispatched kinds = %v, want [%s]", kinds, ReactionKindLabelFix)
+	}
+	if mark, _, err := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelFix); err != nil || mark != labelReviewMark(event) {
+		t.Fatalf("GetReactionFingerprint after the run started = (%q, %v), want %q", mark, err, labelReviewMark(event))
+	}
+
+	// Restart after the run started.
+	state3 := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
+	reconcileLabelFixCommands(state3, labelFixParams(store, &labelReviewSCMFake{events: []domain.LabelEvent{event}}), discardLogger(), context.Background(), &domain.NoopMetrics{})
+	if _, dispatched := state3.RetryAttempts[issueID]; dispatched {
+		t.Error("third process queued the same journal event again; want none (its run started)")
+	}
+}
+
+// TestReconcileLabelFixCommands_AcknowledgmentBestEffort verifies the
+// best-effort acknowledgment contract: queueing the run leaves the label in
+// place; when the run starts, RemoveLabel is called with the configured
+// fix label, and a failure logs a Warn and leaves the run and the mark
+// unaffected.
 func TestReconcileLabelFixCommands_AcknowledgmentBestEffort(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LF-ACK"
-	state := stateWithLabelFixPending(t, issueID, 10, "feature/lf-ack")
+	state := stateWithLabelFixPending(t, issueID, 10, "feature/lf-restart")
 	scm := &labelReviewSCMFake{
 		events: []domain.LabelEvent{
 			labelEvent("1", "sortie:fix", "alice", true, labelReviewBaseTime.Add(-1*time.Minute)),
 		},
 		removeErr: errors.New("insufficient scope"),
 	}
-	store := newLabelReviewFingerprintStore()
-	params := labelFixParams(store, scm)
+	store := openLabelCommandStore(t)
+
+	reconcileLabelFixCommands(state, labelFixParams(store, scm), discardLogger(), context.Background(), &domain.NoopMetrics{})
+
+	if scm.removeCalls != 0 {
+		t.Fatalf("RemoveLabel calls after queueing = %d, want 0 (the label stays until the run starts)", scm.removeCalls)
+	}
 
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	reconcileLabelFixCommands(state, params, log, context.Background(), &domain.NoopMetrics{})
+	if kinds := startLabelCommandRun(t, state, issueID, store, scm, log); len(kinds) != 1 {
+		t.Fatalf("dispatched kinds = %v, want the run started despite the RemoveLabel failure", kinds)
+	}
 
 	if scm.removeCalls != 1 {
 		t.Fatalf("RemoveLabel calls = %d, want 1", scm.removeCalls)
@@ -594,14 +604,8 @@ func TestReconcileLabelFixCommands_AcknowledgmentBestEffort(t *testing.T) {
 	if scm.removedLabel[0] != "sortie:fix" {
 		t.Errorf("RemoveLabel label = %q, want %q", scm.removedLabel[0], "sortie:fix")
 	}
-	if !strings.Contains(buf.String(), "label-fix label removal failed") {
+	if !strings.Contains(buf.String(), "command label removal failed") || !strings.Contains(buf.String(), "kind=label-fix") {
 		t.Errorf("log output = %q, want to contain the label-removal-failure warning", buf.String())
-	}
-	if !strings.Contains(buf.String(), "level=WARN") {
-		t.Errorf("log output = %q, want the removal failure logged at WARN", buf.String())
-	}
-	if _, ok := state.RetryAttempts[issueID]; !ok {
-		t.Error("dispatch did not fire despite the RemoveLabel failure; want unaffected")
 	}
 	mark, _, _ := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelFix)
 	if mark == "" {
@@ -918,11 +922,11 @@ func TestReconcileLabelFixCommands_ForeignIncumbentDefers(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelFixCommands_SameKindCollapseAdvancesMarkAndReenqueues
-// mirrors the label-review same-kind collapse test: a same-kind
-// incumbent collapses the dispatch, but the mark still advances and the
-// pending entry still re-enqueues.
-func TestReconcileLabelFixCommands_SameKindCollapseAdvancesMarkAndReenqueues(t *testing.T) {
+// TestReconcileLabelFixCommands_SameKindQueuedLeavesMarkAndReenqueues mirrors the
+// label-review same-kind queued test: a same-kind run waiting in the retry
+// slot collapses the dispatch, the pending entry still re-enqueues, and the
+// mark is left alone until that run starts.
+func TestReconcileLabelFixCommands_SameKindQueuedLeavesMarkAndReenqueues(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LF-COLLAPSE"
@@ -946,18 +950,21 @@ func TestReconcileLabelFixCommands_SameKindCollapseAdvancesMarkAndReenqueues(t *
 	}
 	pending, ok := state.PendingReactions[rkey]
 	if !ok {
-		t.Fatal("PendingReactions entry dropped after collapse; want re-enqueued")
+		t.Fatal("PendingReactions entry dropped while a run is queued; want re-enqueued")
 	}
 	mark, _, _ := store.GetReactionFingerprint(context.Background(), issueID, ReactionKindLabelFix)
-	if mark != labelReviewMark(event) {
-		t.Errorf("stored mark = %q, want %q (advanced to the newest examined event)", mark, labelReviewMark(event))
+	if mark != "" {
+		t.Errorf("stored mark = %q, want empty (recorded only when the queued run starts)", mark)
 	}
 	data, ok := pending.KindData.(*LabelFixReactionData)
 	if !ok {
 		t.Fatalf("KindData type = %T, want *LabelFixReactionData", pending.KindData)
 	}
-	if data.HighWaterMark != labelReviewMark(event) {
-		t.Errorf("HighWaterMark = %q, want %q", data.HighWaterMark, labelReviewMark(event))
+	if data.HighWaterMark != "" {
+		t.Errorf("HighWaterMark = %q, want empty", data.HighWaterMark)
+	}
+	if scm.removeCalls != 0 {
+		t.Errorf("RemoveLabel calls = %d, want 0 (the label stays until the queued run starts)", scm.removeCalls)
 	}
 }
 

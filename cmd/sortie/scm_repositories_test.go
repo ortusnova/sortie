@@ -63,6 +63,11 @@ func TestWorkflowRepositoriesForPlanSync(t *testing.T) {
 	noDefault := withDefault
 	noDefault.Environment.Smolvm.DefaultRepository, noDefault.Environment.Smolvm.Repository = "", nil
 	local := config.ServiceConfig{}
+	remote := config.ServiceConfig{Environment: config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{
+		Repositories: withDefault.Environment.Smolvm.Repositories, DefaultRepository: "a", Repository: withDefault.Environment.Smolvm.Repository,
+	}}}
+	remoteNoDefault := remote
+	remoteNoDefault.Environment.Remote.DefaultRepository, remoteNoDefault.Environment.Remote.Repository = "", nil
 
 	for _, tt := range []struct {
 		name     string
@@ -73,6 +78,8 @@ func TestWorkflowRepositoriesForPlanSync(t *testing.T) {
 		{"default", withDefault, []string{"a", "b"}, false},
 		{"no default", noDefault, []string{"a", "b"}, true},
 		{"no repositories", local, []string{}, false},
+		{"remote default", remote, []string{"a", "b"}, false},
+		{"remote no default", remoteNoDefault, []string{"a", "b"}, true},
 	} {
 		current := func() config.ServiceConfig { return tt.cfg }
 		if got := workflowRepositories(current)(); !slices.Equal(got, tt.names) {

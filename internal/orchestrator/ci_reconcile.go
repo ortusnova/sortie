@@ -235,7 +235,9 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			continue
 		}
 
-		result, err := params.CIProvider.FetchCIStatus(ctx, status.HeadSHA)
+		// The pull request's own repository, not the provider's configured
+		// one: a workflow dispatches several repositories with one provider.
+		result, err := domain.FetchPullRequestCIStatus(ctx, params.CIProvider, ciData.Owner, ciData.Repo, status.HeadSHA)
 		if err != nil {
 			pending.PendingAttempts++
 			delay := computeCIPendingDelay(base, pending.PendingAttempts)

@@ -214,6 +214,73 @@ func TestPushIncoming_PushesWhatARefusedExportImported(t *testing.T) {
 	}
 }
 
+func TestExport_HumanCommitOnTopOfSortiesPushIsUpToDate(t *testing.T) {
+	f := seeded(t, "ENG-74", config.SmolvmRepository{})
+	first := f.agentCommit("feature.txt", []byte("feature\n"))
+	if _, err := f.export(); err != nil {
+		t.Fatalf("first Export() error = %v", err)
+	}
+	// A person builds on Sortie's push; the environment keeps the older
+	// commit, which the upstream branch already holds.
+	human := f.humanCommit("sortie/ENG-74", "human.txt")
+
+	res, err := f.export()
+	if err != nil {
+		t.Fatalf("Export() error = %v, want the older commit up to date", err)
+	}
+	if res.Pushed || res.Commit != first || !res.UpToDate {
+		t.Errorf("Export() = %+v, want %s up to date without a push", res, first)
+	}
+	if got := f.upstreamBranch("sortie/ENG-74"); got != human {
+		t.Errorf("upstream sortie/ENG-74 = %q, want the human's %s", got, human)
+	}
+	if got := f.mirrorRef(PushedRef("ENG-74")); got != first {
+		t.Errorf("%s = %q, want Sortie's earlier push %s", PushedRef("ENG-74"), got, first)
+	}
+}
+
+func TestExport_MergedAndDeletedBranchIsNotPushedAgain(t *testing.T) {
+	f := seeded(t, "ENG-75", config.SmolvmRepository{})
+	first := f.agentCommit("feature.txt", []byte("feature\n"))
+	if _, err := f.export(); err != nil {
+		t.Fatalf("first Export() error = %v", err)
+	}
+	f.up.git("merge", "--quiet", "--no-ff", "-m", "merge sortie/ENG-75", "sortie/ENG-75")
+	f.up.git("branch", "--quiet", "-D", "sortie/ENG-75")
+
+	res, err := f.export()
+	if err != nil {
+		t.Fatalf("Export() error = %v, want the merged commit left alone", err)
+	}
+	if res.Pushed || res.Commit != first || res.UpToDate {
+		t.Errorf("Export() = %+v, want %s without a push and no upstream issue branch", res, first)
+	}
+	if got := f.upstreamBranch("sortie/ENG-75"); got != "" {
+		t.Errorf("upstream sortie/ENG-75 = %q, want it absent", got)
+	}
+}
+
+func TestExport_RewindOfSortiesOwnPushIsPushed(t *testing.T) {
+	f := seeded(t, "ENG-76", config.SmolvmRepository{})
+	first := f.agentCommit("feature.txt", []byte("feature\n"))
+	f.agentCommit("mistake.txt", []byte("mistake\n"))
+	if _, err := f.export(); err != nil {
+		t.Fatalf("first Export() error = %v", err)
+	}
+	f.git("reset", "--quiet", "--hard", first)
+
+	res, err := f.export()
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	if !res.Pushed || res.Commit != first {
+		t.Errorf("Export() = %+v, want the rewind to %s pushed", res, first)
+	}
+	if got := f.upstreamBranch("sortie/ENG-76"); got != first {
+		t.Errorf("upstream sortie/ENG-76 = %q, want %s", got, first)
+	}
+}
+
 // workflowScopeRefusal is the line GitHub gives for a push its token's
 // scopes do not allow.
 const workflowScopeRefusal = "refusing to allow a Personal Access Token to create or update workflow `.github/workflows/talos-installer.yml` without `workflow` scope"

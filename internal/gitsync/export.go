@@ -34,11 +34,12 @@ type ExportResult struct {
 	// PushedAt is when the push completed; zero unless Pushed.
 	PushedAt time.Time
 
-	// UpToDate is true when nothing was pushed because Commit already
-	// is the tip of the upstream's issue branch, as the mirror last saw
-	// it: the work is upstream, as after an earlier push. It is false
-	// when the upstream has no issue branch, even if Commit equals the
-	// base branch.
+	// UpToDate is true when nothing was pushed because the upstream's
+	// issue branch, as the mirror last saw it, already holds Commit: the
+	// work is upstream, as after an earlier push. Commit is then the
+	// branch's tip, or an ancestor of a tip someone else pushed on top
+	// of Sortie's last push. It is false when the upstream has no issue
+	// branch, even if Commit is on the base branch.
 	UpToDate bool
 }
 
@@ -65,16 +66,21 @@ func PushedRef(key string) string { return "refs/sortie/pushed/" + key }
 // upstream into the mirror. When the branch's commit equals the
 // upstream's issue branch, or the base branch while the upstream has no
 // issue branch, there is nothing to push and Export succeeds without
-// importing anything, setting UpToDate in the first case; with the
-// upstream unreachable the mirror's last state decides that. Otherwise it imports the branch into
-// [IncomingRef], which must then hold a commit, and a failed upstream
-// fetch fails the export.
+// importing anything, setting UpToDate in the first case. The same
+// holds when the push's lease, below, could not hold and that branch
+// already has the commit as an ancestor: someone built on Sortie's push,
+// or merged it into the base branch and deleted the issue branch, while
+// the environment kept the older commit. With the upstream unreachable
+// the mirror's last state decides all this. Otherwise it imports the
+// branch into [IncomingRef], which must then hold a commit, and a failed
+// upstream fetch fails the export.
 //
 // The import is pushed to the upstream's issue branch with a lease: the
 // push succeeds only while that branch holds [PushedRef], the commit
 // Sortie pushed last, or is absent when Sortie never pushed it. So the
-// agent may replace Sortie's own push, as after a rebase, but a commit
-// anyone else pushed since is never overwritten: the export fails with
+// agent may replace Sortie's own push, as after a rebase or a rewind,
+// but a commit anyone else pushed since is never overwritten: unless
+// that commit already holds the export's, the export fails with
 // [ErrBranchMoved] and the upstream keeps that commit. After the push
 // Export points [PushedRef] and the mirror's issue branch at the commit.
 //
@@ -319,7 +325,7 @@ func (c *cappedFile) Write(p []byte) (int, error) {
 // importBundle checks the bundle at bundlePath, fetches the upstream,
 // and imports the bundle's branch into the incoming ref of key unless
 // there is nothing to push. It returns the branch's commit, whether it
-// must be pushed, and whether it is the upstream's issue branch tip.
+// must be pushed, and whether the upstream's issue branch holds it.
 // With onTopOf set, an imported commit that does not descend from it is
 // refused and the incoming ref restored.
 func (s *Syncer) importBundle(ctx context.Context, l *Locked, key, branch, bundlePath, onTopOf string) (commit string, needPush, upToDate bool, err error) {
@@ -346,7 +352,7 @@ func (s *Syncer) importBundle(ctx context.Context, l *Locked, key, branch, bundl
 		s.logger.WarnContext(ctx, "upstream fetch failed; comparing the export with the mirror's last state",
 			slog.String("repository", s.mirror.displayURL()), slog.Any("error", fetchErr))
 	}
-	unchanged, upToDate, err := s.matchesUpstream(ctx, l, branch, commit)
+	unchanged, upToDate, err := s.matchesUpstream(ctx, l, key, branch, commit)
 	if err != nil {
 		return commit, false, false, err
 	}
@@ -390,20 +396,43 @@ func (s *Syncer) importBundle(ctx context.Context, l *Locked, key, branch, bundl
 	return commit, true, false, nil
 }
 
-// matchesUpstream reports whether commit equals the mirror's issue
-// branch, or its base branch when the mirror has no issue branch, and
-// whether it equals the issue branch.
-func (s *Syncer) matchesUpstream(ctx context.Context, l *Locked, branch, commit string) (unchanged, branchTip bool, err error) {
+// matchesUpstream reports whether there is nothing to push for commit,
+// and whether the mirror's issue branch holds it. There is nothing to
+// push when commit equals the mirror's issue branch, or its base branch
+// when the mirror has no issue branch. There is nothing to push either
+// when that branch already holds commit and the push's lease could not
+// hold, because the issue branch is not [PushedRef] of key: someone
+// built on the work, or merged it and deleted the branch. While the
+// issue branch is Sortie's own push, a commit it holds is a rewind and
+// is pushed.
+func (s *Syncer) matchesUpstream(ctx context.Context, l *Locked, key, branch, commit string) (unchanged, onBranch bool, err error) {
 	tip, ok, err := l.Ref(ctx, branch)
 	if err != nil {
 		return false, false, err
 	}
-	if ok {
-		return tip == commit, tip == commit, nil
+	if !ok {
+		base, baseOK, err := l.Ref(ctx, s.repo.Base)
+		if err != nil || !baseOK {
+			return false, false, err
+		}
+		if base == commit {
+			return true, false, nil
+		}
+		tip = base
+	} else if tip == commit {
+		return true, true, nil
 	}
-	base, ok, err := l.Ref(ctx, s.repo.Base)
+
+	pushed, _, err := l.RefValue(ctx, PushedRef(key))
 	if err != nil {
 		return false, false, err
 	}
-	return ok && base == commit, false, nil
+	if (ok && tip == pushed) || (!ok && pushed == "") {
+		return false, false, nil
+	}
+	held, err := l.isAncestorOf(ctx, commit, tip)
+	if err != nil || !held {
+		return false, false, err
+	}
+	return true, ok, nil
 }

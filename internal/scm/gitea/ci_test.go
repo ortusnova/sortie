@@ -941,3 +941,31 @@ func TestNewGiteaCIProvider_EmptyEndpointMessageIsPinned(t *testing.T) {
 		t.Errorf("NewGiteaCIProvider(missing endpoint) message = %q, want %q", ce.Message, want)
 	}
 }
+
+// TestGiteaFetchRepositoryCIStatus_ReadsTheNamedRepository verifies that a
+// repository read asks for the named repository's commit status, not the
+// configured one's.
+func TestGiteaFetchRepositoryCIStatus_ReadsTheNamedRepository(t *testing.T) {
+	t.Parallel()
+
+	fixture := loadFixture(t, "status_mixed.json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/repos/other/project/commits/main/status") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(fixture)
+	}))
+	defer srv.Close()
+	provider := mustCIProvider(t, srv.URL, 50)
+
+	got, err := provider.FetchRepositoryCIStatus(context.Background(), "other", "project", "main")
+	if err != nil {
+		t.Fatalf("FetchRepositoryCIStatus: %v", err)
+	}
+	if len(got.CheckRuns) != 3 {
+		t.Errorf("len(CheckRuns) = %d, want 3", len(got.CheckRuns))
+	}
+}

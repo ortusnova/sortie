@@ -336,8 +336,8 @@ func TestReconcileMergeConflicts_Dispatch(t *testing.T) {
 	if metrics.escalations["label"] != 0 {
 		t.Errorf("IncMergeConflictEscalations called = %v, want none on first dirty head", metrics.escalations)
 	}
-	if store.markDispatchedCalls != 1 {
-		t.Errorf("MarkReactionDispatched calls = %d, want 1 (marked on dispatch tick)", store.markDispatchedCalls)
+	if store.markDispatchedCalls != 0 {
+		t.Errorf("MarkReactionDispatched calls = %d, want 0 (marked when the retry starts the run, not when it is queued)", store.markDispatchedCalls)
 	}
 }
 
@@ -454,9 +454,13 @@ func TestReconcileMergeConflicts_DedupSameHead(t *testing.T) {
 		t.Fatalf("after tick 1: ReactionAttempts[%s] = %d, want 1", rkey, state.ReactionAttempts[rkey])
 	}
 
-	// The dispatch consumes the slot; the worker exit would re-seed it. The
-	// same-head re-observation must hit the dedup branch, so re-seed the slot
-	// to model the next reconcile pass over a still-pending entry.
+	// The retry handler starts the run and marks the head dispatched; the
+	// worker exit frees the retry slot and re-seeds the entry. The same-head
+	// re-observation must then hit the dedup branch.
+	CancelRetry(state, "MC-DEDUP")
+	if err := store.MarkReactionDispatched(context.Background(), "MC-DEDUP", ReactionKindMergeConflict); err != nil {
+		t.Fatalf("MarkReactionDispatched: %v", err)
+	}
 	state.PendingReactions[rkey] = newMergeConflictPending("MC-DEDUP", 10)
 
 	// Tick 2: same head, already dispatched -> dedup branch, no re-dispatch,
@@ -1264,8 +1268,8 @@ func TestReconcileMergeConflicts_FreeSlotControlDispatches(t *testing.T) {
 	if retry.ReactionKind != ReactionKindMergeConflict {
 		t.Errorf("RetryEntry.ReactionKind = %q, want %q", retry.ReactionKind, ReactionKindMergeConflict)
 	}
-	if store.markDispatchedCalls != 1 {
-		t.Errorf("MarkReactionDispatched calls = %d, want 1", store.markDispatchedCalls)
+	if store.markDispatchedCalls != 0 {
+		t.Errorf("MarkReactionDispatched calls = %d, want 0 (marked when the retry starts the run)", store.markDispatchedCalls)
 	}
 }
 
@@ -1458,8 +1462,8 @@ func TestReconcileMergeConflicts_Triage_NoConfig_BehavesAsPinned(t *testing.T) {
 	if state.ReactionAttempts[rkey] != 1 {
 		t.Errorf("ReactionAttempts[%s] = %d, want 1", rkey, state.ReactionAttempts[rkey])
 	}
-	if store.markDispatchedCalls != 1 {
-		t.Errorf("MarkReactionDispatched calls = %d, want 1 (the normal dispatch path marks it)", store.markDispatchedCalls)
+	if store.markDispatchedCalls != 0 {
+		t.Errorf("MarkReactionDispatched calls = %d, want 0 (the normal dispatch path leaves the mark to the retry handler)", store.markDispatchedCalls)
 	}
 }
 
@@ -1695,11 +1699,10 @@ func TestReconcileMergeConflicts_Triage_DispatchAgent_HeadChangeBlockRunsOnce(t 
 	if state.ReactionAttempts[rkey] != 1 {
 		t.Errorf("ReactionAttempts[%s] = %d, want 1 (the per-episode increment ran exactly once)", rkey, state.ReactionAttempts[rkey])
 	}
-	// dispatchMergeConflictContinuation itself calls MarkReactionDispatched
-	// as part of its pre-existing dispatch path, independent of triage; the
-	// gate's own markTriageDispatched runs only on handled or escalate.
-	if store.markDispatchedCalls != 1 {
-		t.Errorf("MarkReactionDispatched calls = %d, want 1 (from the normal dispatch path)", store.markDispatchedCalls)
+	// The gate's own markTriageDispatched runs only on handled or escalate,
+	// and the dispatch path leaves the mark to the retry handler.
+	if store.markDispatchedCalls != 0 {
+		t.Errorf("MarkReactionDispatched calls = %d, want 0", store.markDispatchedCalls)
 	}
 }
 

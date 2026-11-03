@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const smolvmDefaultRepoField = smolvmField + ".default_repository"
+
 func repoEntry(name, url string) map[string]any {
 	e := map[string]any{"url": url, "base": "main"}
 	if name != "" {

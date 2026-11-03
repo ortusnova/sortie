@@ -476,6 +476,10 @@ type RetryEntry struct {
 	// retry. Runtime-only.
 	Continuation ContinuationTarget
 
+	// Command is the label command this retry runs; the zero value for
+	// every other retry. Runtime-only.
+	Command LabelCommand
+
 	// pausedSinceMS is the wall-clock ms at which this entry first took one
 	// of HandleRetryTimer's paused-by-issue-state arms. Zero means not
 	// paused. Runtime-only: never persisted, never on ScheduleRetryParams.
@@ -1281,6 +1285,16 @@ type ContinuationTarget struct {
 	Owner    string
 	Repo     string
 	Attempt  int // 0 for a kind that counts no tries
+}
+
+// LabelCommand is a person's label command a label-review or label-fix
+// continuation runs. When the run starts, the retry handler records Mark as
+// the kind's handled journal position and removes Label from the pull
+// request named by the retry's [ContinuationTarget]. The zero value is no
+// command.
+type LabelCommand struct {
+	Label string
+	Mark  string
 }
 
 // RuleAgent is the agent kind and configured model a dispatch of one rule

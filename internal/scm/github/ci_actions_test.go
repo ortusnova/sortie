@@ -436,3 +436,35 @@ func TestGetCIStatus_NoActionsFallbackWhenCheckRunsWork(t *testing.T) {
 		t.Errorf("workflow runs requested %d times, want 0", n)
 	}
 }
+
+// TestFetchRepositoryCIStatus_ActionsFallbackReadsTheNamedRepository
+// verifies that a repository read whose token is refused check runs reads
+// the Actions jobs of the named repository, not the configured one.
+func TestFetchRepositoryCIStatus_ActionsFallbackReadsTheNamedRepository(t *testing.T) {
+	t.Parallel()
+
+	f := &fallbackFake{refuseChecks: true}
+	f.setRuns(fallbackRun{id: 10, workflow: 1, event: "pull_request", jobs: []fallbackJob{
+		{id: 101, name: "lint", status: "completed", conclusion: "failure"},
+	}})
+	created, err := NewGitHubCIProvider(0, map[string]any{
+		"endpoint": serveFallback(t, f),
+		"api_key":  "test-token",
+		"project":  "elsewhere/default",
+	})
+	if err != nil {
+		t.Fatalf("NewGitHubCIProvider: %v", err)
+	}
+	p := created.(*GitHubCIProvider)
+
+	result, err := p.FetchRepositoryCIStatus(t.Context(), "owner", "repo", fallbackSHA)
+	if err != nil {
+		t.Fatalf("FetchRepositoryCIStatus: %v", err)
+	}
+	if result.Status != domain.CIStatusFailing {
+		t.Errorf("Status = %q, want %q", result.Status, domain.CIStatusFailing)
+	}
+	if got := f.requested("/repos/owner/repo/actions/runs"); got != 1 {
+		t.Errorf("named repository's workflow runs read %d times, want 1", got)
+	}
+}

@@ -24,7 +24,7 @@ func init() {
 }
 
 // Compile-time interface satisfaction check.
-var _ domain.CIStatusProvider = (*GitLabCIProvider)(nil)
+var _ domain.RepositoryCIStatusProvider = (*GitLabCIProvider)(nil)
 
 // runnerPrefixPattern matches the timestamp and stream-token prefix a
 // GitLab runner writes at the start of every trace line, including the
@@ -143,7 +143,7 @@ func NewGitLabCIProvider(maxLogLines int, adapterConfig map[string]any) (domain.
 // issuing a request in the empty-ref case. Any other error from the
 // commit-resolution request is returned unconverted; the caller applies
 // [scmcore.ToCIError].
-func (p *GitLabCIProvider) resolveCommit(ctx context.Context, ref string) (string, int64, error) {
+func (p *GitLabCIProvider) resolveCommit(ctx context.Context, project, ref string) (string, int64, error) {
 	if ref == "" {
 		return "", 0, &domain.CIError{
 			Kind:    domain.ErrCIPayload,
@@ -151,7 +151,7 @@ func (p *GitLabCIProvider) resolveCommit(ctx context.Context, ref string) (strin
 		}
 	}
 
-	path := "/projects/" + p.project + "/repository/commits/" + url.PathEscape(ref)
+	path := "/projects/" + project + "/repository/commits/" + url.PathEscape(ref)
 	body, _, err := p.client.Get(ctx, path, nil)
 	if err != nil {
 		return "", 0, err
@@ -188,8 +188,8 @@ func (p *GitLabCIProvider) resolveCommit(ctx context.Context, ref string) (strin
 // [*domain.CIError] of kind [domain.ErrCIPayload]; any other error the
 // walk returns is passed through unconverted for the caller to apply
 // [scmcore.ToCIError].
-func (p *GitLabCIProvider) fetchCommitStatuses(ctx context.Context, sha string, pipelineID int64) ([]gitlabCommitStatus, error) {
-	path := commitStatusesPath(p.project, sha)
+func (p *GitLabCIProvider) fetchCommitStatuses(ctx context.Context, project, sha string, pipelineID int64) ([]gitlabCommitStatus, error) {
+	path := commitStatusesPath(project, sha)
 	params := url.Values{
 		"per_page":    {"100"},
 		"pipeline_id": {strconv.FormatInt(pipelineID, 10)},
@@ -227,8 +227,8 @@ func (p *GitLabCIProvider) fetchCommitStatuses(ctx context.Context, sha string, 
 // ids. Job membership decided from this set, rather than by probing the
 // trace route, is what keeps a speculative 404 off an external status
 // that shares the commit-status identifier space with runner jobs.
-func (p *GitLabCIProvider) fetchPipelineJobIDs(ctx context.Context, pipelineID int64) (map[int64]struct{}, error) {
-	path := "/projects/" + p.project + "/pipelines/" + strconv.FormatInt(pipelineID, 10) + "/jobs"
+func (p *GitLabCIProvider) fetchPipelineJobIDs(ctx context.Context, project string, pipelineID int64) (map[int64]struct{}, error) {
+	path := "/projects/" + project + "/pipelines/" + strconv.FormatInt(pipelineID, 10) + "/jobs"
 	params := url.Values{"per_page": {"100"}}
 
 	paginator := httpkit.NewLinkPaginator(p.client, path, params, func(body []byte) ([]gitlabPipelineJob, error) {
@@ -270,8 +270,8 @@ func (p *GitLabCIProvider) fetchPipelineJobIDs(ctx context.Context, pipelineID i
 // never a non-nil error, whenever the job set cannot be resolved, no
 // failing entry is a job, or the trace read fails; a log-path failure
 // MUST NOT change the verdict [GitLabCIProvider.FetchCIStatus] returns.
-func (p *GitLabCIProvider) logExcerpt(ctx context.Context, statuses []gitlabCommitStatus, runs []domain.CheckRun, pipelineID int64) string {
-	jobIDs, err := p.fetchPipelineJobIDs(ctx, pipelineID)
+func (p *GitLabCIProvider) logExcerpt(ctx context.Context, project string, statuses []gitlabCommitStatus, runs []domain.CheckRun, pipelineID int64) string {
+	jobIDs, err := p.fetchPipelineJobIDs(ctx, project, pipelineID)
 	if err != nil {
 		p.log.Warn("failed to resolve pipeline jobs for log excerpt", slog.Any("error", err))
 		return ""
@@ -301,7 +301,7 @@ func (p *GitLabCIProvider) logExcerpt(ctx context.Context, statuses []gitlabComm
 		complete bool
 		scanErr  error
 	)
-	path := "/projects/" + p.project + "/jobs/" + strconv.FormatInt(jobID, 10) + "/trace"
+	path := "/projects/" + project + "/jobs/" + strconv.FormatInt(jobID, 10) + "/trace"
 	err = p.client.GetStream(ctx, path, func(body io.Reader) error {
 		complete, scanErr = cilog.Scan(body, scanner.line)
 		return nil
@@ -344,14 +344,28 @@ func (p *GitLabCIProvider) logExcerpt(ctx context.Context, statuses []gitlabComm
 // error is returned without conversion to one, so a caller can still
 // match it with [errors.Is].
 func (p *GitLabCIProvider) FetchCIStatus(ctx context.Context, ref string) (domain.CIResult, error) {
-	sha, pipelineID, err := p.resolveCommit(ctx, ref)
+	return p.fetchProjectCIStatus(ctx, p.project, ref)
+}
+
+// FetchRepositoryCIStatus returns the aggregate CI status for ref in the
+// project owner/repo, the path the GitLab SCM adapter reads its merge
+// request under, as [GitLabCIProvider.FetchCIStatus] does for the
+// configured project, with the same token.
+func (p *GitLabCIProvider) FetchRepositoryCIStatus(ctx context.Context, owner, repo, ref string) (domain.CIResult, error) {
+	return p.fetchProjectCIStatus(ctx, projectPath(owner, repo), ref)
+}
+
+// fetchProjectCIStatus returns the CI status for ref in project, an
+// escaped project ID or path.
+func (p *GitLabCIProvider) fetchProjectCIStatus(ctx context.Context, project, ref string) (domain.CIResult, error) {
+	sha, pipelineID, err := p.resolveCommit(ctx, project, ref)
 	if err != nil {
 		return domain.CIResult{}, scmcore.ToCIError(err)
 	}
 
 	var statuses []gitlabCommitStatus
 	if pipelineID != 0 {
-		statuses, err = p.fetchCommitStatuses(ctx, sha, pipelineID)
+		statuses, err = p.fetchCommitStatuses(ctx, project, sha, pipelineID)
 		if err != nil {
 			return domain.CIResult{}, scmcore.ToCIError(err)
 		}
@@ -368,7 +382,7 @@ func (p *GitLabCIProvider) FetchCIStatus(ctx context.Context, ref string) (domai
 
 	var excerpt string
 	if status == domain.CIStatusFailing && p.maxLogLines > 0 {
-		excerpt = p.logExcerpt(ctx, statuses, runs, pipelineID)
+		excerpt = p.logExcerpt(ctx, project, statuses, runs, pipelineID)
 	}
 
 	return domain.CIResult{

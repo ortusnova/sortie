@@ -22,7 +22,7 @@ func init() {
 }
 
 // Compile-time interface satisfaction check.
-var _ domain.CIStatusProvider = (*GitHubCIProvider)(nil)
+var _ domain.RepositoryCIStatusProvider = (*GitHubCIProvider)(nil)
 
 const maxCIPages = 10
 
@@ -130,8 +130,15 @@ func NewGitHubCIProvider(maxLogLines int, adapterConfig map[string]any) (domain.
 // end of the job log when that step cannot be located, and opens with a
 // note line saying which.
 func (p *GitHubCIProvider) FetchCIStatus(ctx context.Context, ref string) (domain.CIResult, error) {
-	raw, err := readCheckRuns(ctx, p.client, &p.refusals, p.owner, p.repo, ref, func() ([]githubCheckRun, error) {
-		return p.fetchAllCheckRuns(ctx, ref)
+	return p.FetchRepositoryCIStatus(ctx, p.owner, p.repo, ref)
+}
+
+// FetchRepositoryCIStatus returns the aggregate CI pipeline status for ref
+// in the repository owner/repo, as [GitHubCIProvider.FetchCIStatus] does
+// for the configured one, with the same token.
+func (p *GitHubCIProvider) FetchRepositoryCIStatus(ctx context.Context, owner, repo, ref string) (domain.CIResult, error) {
+	raw, err := readCheckRuns(ctx, p.client, &p.refusals, owner, repo, ref, func() ([]githubCheckRun, error) {
+		return p.fetchAllCheckRuns(ctx, owner, repo, ref)
 	})
 	if err != nil {
 		return domain.CIResult{}, scmcore.ToCIError(fmt.Errorf("fetching checks for ref %q: %w", ref, err))
@@ -155,7 +162,7 @@ func (p *GitHubCIProvider) FetchCIStatus(ctx context.Context, ref string) (domai
 		for _, gh := range raw {
 			if scmcore.IsFailingConclusion(mapCheckConclusion(gh.Conclusion)) {
 				if gh.App != nil && gh.App.Slug == "github-actions" {
-					logExcerpt = p.fetchLogExcerpt(ctx, gh)
+					logExcerpt = p.fetchLogExcerpt(ctx, owner, repo, gh)
 					break
 				}
 			}
@@ -171,8 +178,8 @@ func (p *GitHubCIProvider) FetchCIStatus(ctx context.Context, ref string) (domai
 	}, nil
 }
 
-func (p *GitHubCIProvider) fetchAllCheckRuns(ctx context.Context, ref string) ([]githubCheckRun, error) {
-	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", p.owner, p.repo, url.PathEscape(ref))
+func (p *GitHubCIProvider) fetchAllCheckRuns(ctx context.Context, owner, repo, ref string) ([]githubCheckRun, error) {
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
 	params := url.Values{"per_page": {"100"}}
 
 	paginator := httpkit.NewLinkPaginator(p.client, path, params, func(body []byte) ([]githubCheckRun, error) {
@@ -197,7 +204,7 @@ func (p *GitHubCIProvider) fetchAllCheckRuns(ctx context.Context, ref string) ([
 	return paginator.All(ctx)
 }
 
-func (p *GitHubCIProvider) fetchLogExcerpt(ctx context.Context, failing githubCheckRun) string {
+func (p *GitHubCIProvider) fetchLogExcerpt(ctx context.Context, owner, repo string, failing githubCheckRun) string {
 	if p.maxLogLines <= 0 {
 		return ""
 	}
@@ -208,7 +215,7 @@ func (p *GitHubCIProvider) fetchLogExcerpt(ctx context.Context, failing githubCh
 
 	// GitHub Actions creates check runs 1:1 with workflow jobs, so the
 	// check run ID doubles as the job ID for the Actions endpoints.
-	selected, reason := p.locateFailingStep(ctx, failing.ID)
+	selected, reason := p.locateFailingStep(ctx, owner, repo, failing.ID)
 
 	builder := cilog.NewBuilder(p.maxLogLines)
 	scanner := newStepLogScanner(selected, builder)
@@ -217,7 +224,7 @@ func (p *GitHubCIProvider) fetchLogExcerpt(ctx context.Context, failing githubCh
 		complete bool
 		scanErr  error
 	)
-	path := fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", p.owner, p.repo, failing.ID)
+	path := fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", url.PathEscape(owner), url.PathEscape(repo), failing.ID)
 	err := p.client.GetStream(ctx, path, func(body io.Reader) error {
 		complete, scanErr = cilog.Scan(body, scanner.line)
 		return nil
@@ -256,8 +263,8 @@ func (p *GitHubCIProvider) fetchLogExcerpt(ctx context.Context, failing githubCh
 // anchored on. It returns nil and the reason when there is none; a failure to
 // read the job object degrades the excerpt to the job tail rather than
 // failing the check.
-func (p *GitHubCIProvider) locateFailingStep(ctx context.Context, jobID int64) (*failingStep, string) {
-	steps, err := p.fetchJobSteps(ctx, jobID)
+func (p *GitHubCIProvider) locateFailingStep(ctx context.Context, owner, repo string, jobID int64) (*failingStep, string) {
+	steps, err := p.fetchJobSteps(ctx, owner, repo, jobID)
 	if err != nil {
 		slog.WarnContext(ctx, "failed to fetch job steps for log excerpt",
 			slog.Int64("job_id", jobID),
