@@ -85,6 +85,12 @@ func readCriteriaFile(workspacePath string, logger *slog.Logger) []byte {
 	return data
 }
 
+// criteriaRecorded reports whether the run left a criteria file.
+func criteriaRecorded(workspacePath string) bool {
+	data, err := workspacekit.ReadSortieFile(workspacePath, CriteriaFile, MaxCriteriaFile)
+	return err == nil && len(bytes.TrimSpace(data)) > 0
+}
+
 // clearCriteriaFile removes a criteria file an earlier run left, so a
 // run's verdict is never an earlier run's.
 func clearCriteriaFile(workspacePath string, logger *slog.Logger) {
