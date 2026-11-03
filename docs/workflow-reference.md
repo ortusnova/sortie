@@ -854,6 +854,10 @@ reactions:
     escalation_label: needs-human
 ```
 
+**GitHub CI provider.** The `github` provider reads the check runs on the pull request head. A GitHub fine-grained personal access token cannot read check runs: GitHub offers it no Checks permission, and the check-runs endpoint answers `403`. When GitHub refuses the token that endpoint, Sortie reads the same CI through the GitHub Actions API instead: the workflow runs for the head commit, their jobs, and the failing job's log for the excerpt. Each job becomes one check run with its name, status, conclusion, and link. Only the newest run of each workflow and event counts, and only the latest attempt of its jobs, as with check runs. A check that is not a GitHub Actions job (a third-party app) is not visible this way; commit statuses still are. Sortie remembers the refusal for each repository for an hour, so it does not ask for check runs on every poll, and logs a warning the first time. A classic token or a GitHub App token reads check runs as before.
+
+A fine-grained token for the `ci_failure` and `auto_merge` reactions needs these repository permissions: Contents, Pull requests, Commit statuses, and Actions, each at least read-only. `auto_merge` needs Pull requests and, when `delete_branch` is not `false`, Contents at read and write.
+
 #### Reaction kind: `review_comments`
 
 PR review comment routing. When configured, the orchestrator polls for human `CHANGES_REQUESTED` review comments on Sortie-created PRs and dispatches continuation turns so the agent can address the feedback. Under plan control, the conversation comments on the pull request of a story labelled `sortie-review:ui` count too (see [Review gates](#review-gates)), on a forge that reads them.
@@ -917,7 +921,7 @@ For a GitLab provider, `require_ci` reads the head pipeline the platform reports
 
 **Activation:** The `reactions.auto_merge` block is active when `provider` is present and non-empty. Agent-created PRs MUST write `pr_number` (positive integer), `owner`, `repo`, and `branch` (all non-empty) to `.sortie/scm.json` in the workspace for auto-merge to activate. Recovery on restart additionally consults `pushed_at` (when present) to skip stale PRs older than the recovery lookback window.
 
-**Token scopes required:** for a GitHub provider the configured token must carry `pull_requests:write` for the merge endpoint, and when `delete_branch` is not `false`, also `contents:write` for the branch delete endpoint. The classic `repo` scope is a superset that covers both. The orchestrator validates scopes once at startup; failure emits an ERROR log with the missing scope and disables auto-merge for the process lifetime. A transport-class startup failure (network outage) schedules a single bounded retry on the next reconcile tick before disabling auto-merge.
+**Token scopes required:** for a GitHub provider the configured token must carry `pull_requests:write` for the merge endpoint, and when `delete_branch` is not `false`, also `contents:write` for the branch delete endpoint. The classic `repo` scope is a superset that covers both. The orchestrator validates scopes once at startup; failure emits an ERROR log with the missing scope and disables auto-merge for the process lifetime. A transport-class startup failure (network outage) schedules a single bounded retry on the next reconcile tick before disabling auto-merge. With `require_ci`, the GitHub provider also reads the head's commit statuses and check runs, so a fine-grained token needs Commit statuses and Actions read-only too; such a token cannot read check runs, and the gate reads the GitHub Actions jobs instead, as described under [`ci_failure`](#reaction-kind-ci_failure).
 
 For a Gitea provider the scope model differs: Gitea has one coarse `write:repository` scope covering both the merge and branch-delete routes, and it exposes no scope-introspection surface. The startup check substitutes a user-role gate, reading the repository's `permissions.push` field and disabling auto-merge when the token's user lacks repository write access. A read-scoped token whose user has write access passes that gate and surfaces the missing scope only at runtime, as a 403 on the first merge or branch delete that the adapter rewrites to name `write:repository`. Grant the token's user repository write access and the token the `write:repository` scope.
 
@@ -2152,9 +2156,9 @@ The worker API is served only while `environment.kind` is `remote`. Under any ot
 
 | Route | Body | Answer |
 | ----- | ---- | ------ |
-| `POST /api/v1/workers/checkin` | `{"os", "arch", "kvm", "nested", "backends", "run_slots", "running", "free": {"cpu", "mem_gib", "disk_gib"}}`, all required | `200 {"heartbeat_ms", "lease_ms"}`: `lease_ms` is `lease_ttl_ms`, and `heartbeat_ms` is a third of it. A field that is absent or null answers `400` with `missing` listing each one by dotted path, such as `free.disk_gib`. A field of the wrong type or a negative number answers `400` with `invalid`. A refused check-in keeps the previous declaration. Each accepted check-in replaces the declaration and records the check-in time. |
+| `POST /api/v1/workers/checkin` | `{"os", "arch", "kvm", "nested", "backends", "run_slots", "running", "free": {"cpu", "mem_gib", "disk_gib"}}`, all required; optional `used` (`{"cpu", "mem_gib", "disk_gib"}`, what the running jobs were promised) and `unmanaged` (`[{"name", "since", "state"}]`, the machines on the host no Sortie started) | `200 {"heartbeat_ms", "lease_ms"}`: `lease_ms` is `lease_ttl_ms`, and `heartbeat_ms` is a third of it. A field that is absent or null answers `400` with `missing` listing each one by dotted path, such as `free.disk_gib`. A field of the wrong type or a negative number answers `400` with `invalid`. A refused check-in keeps the previous declaration. Each accepted check-in replaces the declaration and records the check-in time. |
 | `POST /api/v1/workers/poll` | none | `200` with one offer, or `204` when no queued job fits. `409` before the worker's first check-in. |
-| `POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat` | none | `200 {"expires"}` with the renewed expiry. `409` when the worker does not hold a live lease on that attempt; the worker then stops the job's machine. |
+| `POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat` | optional `{"step", "phase", "step_at"}`, the step the job reports | `200 {"expires"}` with the renewed expiry. `409` when the worker does not hold a live lease on that attempt; the worker then stops the job's machine. |
 | `POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report` | `{"outcome": "succeeded" \| "failed", "reason": "...", "machine": "running" \| "stopped" \| "deleted"}`; `reason` is optional free text | `204`: the attempt ends and the lease is released. `400` for another `outcome` or `machine`. `409` from a worker that does not hold the attempt's live lease, or for an attempt that already ended. A refused report changes nothing. |
 
 An offer is `{"job", "lease", "run", "flows"}`:
@@ -2176,7 +2180,9 @@ The run descriptor holds no model key, forge or tracker token, deploy key, or se
 
 Sortie checks leases every second. An expired lease ends its attempt as failed. A later heartbeat or report for it answers `409`.
 
-Each flow token is a job token. Sortie mints one per flow when it grants the lease. Each token is bound to that job, that attempt and that flow, holds 256 random bits, and Sortie keeps only its SHA-256 digest. The tokens become void as soon as the attempt ends, by report, lease expiry, cancel or shutdown, and a new attempt gets new ones. No token appears in the log or in `GET /api/v1/state`. That state lists each worker with its `declaration`, `last_check_in` and the `available` capacity Sortie counts. It lists each live lease as `{"job", "attempt", "worker", "expires"}`, and each queued job with `queued_at` and why it waits. A proxy asks what a token grants with `POST /api/v1/tokens/introspect` and body `{"token": "..."}`, using Sortie's control token. The answer is `200 {"job", "attempt", "flow"}` for a live token and `404` for any other. Without the control token, the answer is `401`, so a worker cannot ask.
+Each flow token is a job token. Sortie mints one per flow when it grants the lease. Each token is bound to that job, that attempt and that flow, holds 256 random bits, and Sortie keeps only its SHA-256 digest. The tokens become void as soon as the attempt ends, by report, lease expiry, cancel or shutdown, and a new attempt gets new ones. No token appears in the log or in `GET /api/v1/state`. That state lists each worker with its `declaration`, `last_check_in` and the `available` capacity Sortie counts. It lists each live lease as `{"job", "attempt", "worker", "expires"}`, and each queued job with `queued_at` and why it waits.
+
+A check-in's `used` and `unmanaged` and a heartbeat's step are for the operator's view and play no part in matching. The state serves them as the worker sent them: `used` and `unmanaged` in the worker's `declaration`, omitted when the check-in has none, and the step on the lease as `step`, `phase` and `step_at` and on the running row. A malformed or negative `used`, or a malformed `unmanaged`, is dropped, never refused, and an `unmanaged` entry without a name is skipped; at most 64 entries are kept. A heartbeat body that is absent, empty, malformed or names neither `step` nor `phase` keeps the step the lease holds. Control characters in a step, a phase, a name or a state become spaces, and each is cut to 200 characters. A new attempt starts with no step. A proxy asks what a token grants with `POST /api/v1/tokens/introspect` and body `{"token": "..."}`, using Sortie's control token. The answer is `200 {"job", "attempt", "flow"}` for a live token and `404` for any other. Without the control token, the answer is `401`, so a worker cannot ask.
 
 ##### The remote run
 
@@ -3232,6 +3238,9 @@ Returns the system-wide runtime state including running sessions, retry queue, b
 | `stall_text`, `stall_text_full` | string or `null` | The short and long sentence that states the silence and the timeout, such as `No events for 2m; Sortie stops it after 5m`. The silence is rounded down, so the sentence is true when served and stays true until the next event. `null` until `generated_at` reaches `quiet_at`, and while stall detection is off. A client refetches at `quiet_at` to get it. |
 | `stall_off_text`          | string or `null`  | The sentence that says stall detection is off and Sortie will not stop the session as stalled. `null` while stall detection is on, so it is non-`null` exactly when `quiet_at` is `null`. |
 | `ssh_host`                | string or absent  | The SSH host the session runs on. Omitted for a local session. |
+| `worker`                  | string or absent  | The host the run runs on: under `environment.kind: remote` the worker that holds its lease, else its `ssh_host`, else Sortie's own host, `host.name`. Omitted when Sortie knows none of them. |
+| `phase`, `step`, `step_at` | string or absent | What the job last reported through its worker's heartbeat, under `environment.kind: remote` only: the phase it names (free text, such as `live_proof`), its step (such as `seed-vm-recreate`), and when it wrote it, in UTC. Each is omitted until the job reports it. A run under any other kind reports no step, so these are omitted. |
+| `estimated_end`           | string or absent  | `started_at` plus the median length of the 20 newest succeeded runs of the same `rule_name` in run history, in UTC. Read again at most once a minute per rule. Omitted when run history holds no succeeded run of the rule. |
 | `repository`              | string or absent  | The `name` of the configured repository the issue's workspace was seeded from, set once the workspace is prepared. Omitted when the workflow places no repository or its one `repository` block is unnamed. |
 | `workflow_file`           | string or absent  | Base filename of the `WORKFLOW.md` in force at dispatch. Omitted when unset. |
 | `agent_kind`              | string or absent  | The agent kind the session runs, from the configuration in force at dispatch. Omitted when unset. |
@@ -3679,6 +3688,43 @@ A session whose `usage_arrival` is `none` contributes nothing to the token total
 `dispatch_paused` is a top-level field, always present: `null` while Sortie dispatches, and while an operator has paused dispatch an object with `since` (when the pause began, in UTC), `by` (who paused it), and `reason` (empty when none was given). See [`POST /api/v1/dispatch/pause` and `/resume`](#post-apiv1dispatchpause-and-resume--drain-the-host).
 
 `platform_faults` is a top-level field, always present: every open platform fault, oldest first, `[]` when there is none. Each names its cause, the stories it holds, and the person action that clears it. See [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults).
+
+**Workers and what waits on them (`host`, `waits`, `pulls`):**
+
+These members say what each worker host does and what waits on it. Under `environment.kind: remote` the workers are `workers.workers[]`; under any other kind the one worker is Sortie's own host, `host`.
+
+`host` is a top-level object, omitted under `environment.kind: remote`:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `name` | string | The host name of Sortie's host. |
+| `capacity` | object or absent | `{"cpu", "mem_gib", "disk_gib"}`: the host's CPUs, its memory, and the size of the file system that holds smolvm's machines (under `smolvm`, when smolvm's cache directory exists) or else `workspace.root`. Read on Linux only; omitted when any of them cannot be read. |
+| `used` | object or absent | `{"cpu", "mem_gib", "disk_gib"}` under `environment.kind: smolvm`: what the machines a Sortie or a worker daemon started on the host were given, as `smolvm machine ls --json` lists them. CPUs and memory count the running machines, disk counts every machine, stopped ones included, as its `storage_gb` plus `overlay_gb`; a machine that lists neither adds no disk. Omitted under any other kind, and until a listing succeeds. |
+| `unmanaged` | array or absent | Under `environment.kind: smolvm`, each machine on the host that no Sortie or worker daemon started, that is with neither the `sortie.managed` label nor the `worker-daemon.job` label, such as a sandbox made by hand: `{"name", "since", "state"}`. `since` is when smolvm created it, else when this process first listed it; `state` is smolvm's word, such as `running` or `stopped`, and omitted when smolvm gives none. `[]` when there is none. Omitted under any other kind, and until a listing succeeds. |
+
+Sortie lists the machines at most every 30 seconds, when a request asks for the state, and serves the last listing in between; a failed listing keeps the last one and is logged.
+
+`waits` is a top-level array, always present and `[]` when nothing waits. Each entry is `{"issue_identifier", "worker", "kind", "reason", "release", "since"}`:
+
+| `kind` | When | `worker` |
+| ------ | ---- | -------- |
+| `slot` | A `held` issue whose hold reason is `agent_slots_full` or `ssh_hosts_full`, with its hold's `reason_text`, `release_text` and `held_since`. Under `remote`, also a queued job that a checked-in worker could run, with the queue's `waiting` reasons joined by `; `. | Sortie's host for `agent_slots_full`; the one worker that could run a queued job, when only one could. Omitted otherwise. |
+| `capability` | Under `remote`, a queued job that no checked-in worker can run, because none declares every capability in `requires.capabilities`. | Omitted. |
+| `drain` | While dispatch is paused, one entry per worker that still runs a run: the deploy that paused dispatch waits for it to drain. `reason` names who paused it and why, `release` how many runs must end, and `since` is the pause's `since`. | The worker. `issue_identifier` is omitted. |
+
+`issue_identifier` and `worker` are omitted when empty. `since` is in UTC. Sortie knows no live proof, so it serves no `live_proof` wait. A `slot` wait repeats a `held` entry or a `workers.queue` entry, and a `drain` wait repeats `dispatch_paused`, in the form a worker view reads; a client that reads `waits` does not derive the same wait from those members again.
+
+`pulls` is a top-level array, always present and `[]` when Sortie watches no open pull request. It lists once each pull request a `pending_reactions` entry watches, other than `merge-completion`, ordered by repository and number: `{"issue_identifier", "number", "repository", "url", "waits_on", "reason", "since", "worker"}`. `waits_on` is the first that applies:
+
+| `waits_on` | When |
+| ---------- | ---- |
+| `person` | A reaction's escalation stands. `since` is the escalation's start. |
+| `conflict` | The `merge-conflict` reaction's last check found the pull request does not merge. |
+| `ci` | The `ci` reaction has not checked yet, or its last check was pending or failing. |
+| `review` | A `review` or `bot-review` reaction has not checked yet, or its last check found actionable comments or an unmet approval rule. |
+| `none` | Every check the reactions made passed: the pull request is ready to merge. |
+
+`reason` says it in a short phrase, such as `2 checks pending`. Except for `person`, `since` is when this process first saw the pull request wait on its `waits_on`, so a restart starts it again. `worker` is Sortie's host, omitted under `remote`. A pull request no pending reaction watches is not listed, and Sortie serves no `live_proof`.
 
 **Workflow shape (`config`):**
 

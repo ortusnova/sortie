@@ -61,6 +61,8 @@ type stateResponse struct {
 	// Workers lists the checked-in workers, the queue and the live leases
 	// under environment.kind remote; omitted under any other kind.
 	Workers *worker.State `json:"workers,omitempty"`
+
+	workerView
 }
 
 type stateCounts struct {
@@ -165,6 +167,7 @@ type runningEntryResponse struct {
 	StallTextFull *string    `json:"stall_text_full"`
 	StallOffText  *string    `json:"stall_off_text"`
 	holdFields
+	runningWorkerView
 }
 
 // holdFields is a running run's hold as the API reports it. HeldSince is
@@ -1441,6 +1444,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Health = toStateHealthResponse(*health, words)
 	}
 	resp.Workers = s.workersState()
+	s.attachWorkerView(r.Context(), &resp, snap)
 	s.attachActivePRLoops(r, &resp, snap, words.Shape)
 	writeJSON(w, s.logger, http.StatusOK, resp)
 

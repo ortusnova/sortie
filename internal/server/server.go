@@ -477,6 +477,10 @@ type Params struct {
 	// /api/v1/{identifier}/sessions. When nil, that route answers 503.
 	SessionGrantFn SessionGrantFunc
 
+	// HostFn returns the host Sortie runs its agents on. Called on GET
+	// /api/v1/state, which omits host while it is nil or returns nil.
+	HostFn HostFunc
+
 	// PullBackFn and PlanCancelFn pull back and cancel a plan story by
 	// plan key. Called on POST /api/v1/plan/pull-back and
 	// /api/v1/plan/cancel. When nil, those routes answer 503.
@@ -563,6 +567,8 @@ type Server struct {
 	dispatchPauseFn     DispatchPauseFunc
 	platformFaultDoneFn PlatformFaultDoneFunc
 	sessionGrantFn      SessionGrantFunc
+	hostFn              HostFunc
+	workerView          workerViewState
 	pullBackFn          PlanControlFunc
 	brokerReportFn      BrokerReportFunc
 	planStatesFn        func() domain.TrackerStates
@@ -627,6 +633,7 @@ func New(params Params) *Server {
 		dispatchPauseFn:     params.DispatchPauseFn,
 		platformFaultDoneFn: params.PlatformFaultDoneFn,
 		sessionGrantFn:      params.SessionGrantFn,
+		hostFn:              params.HostFn,
 		planProjects:        params.PlanProjects,
 		terminalStatesFn:    params.TerminalStatesFn,
 		runHistory:          params.RunHistory,

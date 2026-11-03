@@ -183,7 +183,8 @@ func (a *GitHubSCMAdapter) GetCIStatus(ctx context.Context, prNumber int, owner,
 		return "", scmcore.AsSCMError(statusErr)
 	}
 
-	// Check runs, walked the same way and for the same reason.
+	// Check runs, walked the same way and for the same reason. A token
+	// that may not read them gets the Actions jobs instead.
 	checksPath := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(pr.Head.SHA))
 	checksPaginator := httpkit.NewPagePaginator(a.client, checksPath, url.Values{}, decodeCheckRunsPage, httpkit.PageOptions{
@@ -197,7 +198,9 @@ func (a *GitHubSCMAdapter) GetCIStatus(ctx context.Context, prNumber int, owner,
 				slog.Int("max_pages", limit))
 		},
 	})
-	checkRuns, checksErr := checksPaginator.All(ctx)
+	checkRuns, checksErr := readCheckRuns(ctx, a.client, &a.refusals, owner, repo, pr.Head.SHA, func() ([]githubCheckRun, error) {
+		return checksPaginator.All(ctx)
+	})
 	if checksErr != nil {
 		return "", scmcore.AsSCMError(checksErr)
 	}
