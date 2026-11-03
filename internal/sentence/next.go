@@ -28,10 +28,13 @@ type Situation struct {
 // Spend is the issue's completed sessions and their summed uncached tokens,
 // the figures the session and token budget gates compare, and the issue's
 // estimated cost in USD, which the money budget gate compares.
+// GrantedSessions is the sessions an operator granted the issue beyond
+// agent.max_sessions.
 type Spend struct {
-	Sessions int
-	Tokens   int64
-	CostUSD  float64
+	Sessions        int
+	Tokens          int64
+	CostUSD         float64
+	GrantedSessions int
 }
 
 // debounceWait is the Wait value of a review row that waits for comments to
@@ -188,7 +191,7 @@ func holdOf(s Situation, c Context, extra int) (budgetHold, bool) {
 		return budgetHold{money: true, sessions: sessions}, true
 	case agent.MaxTokens != nil && tokens >= int64(*agent.MaxTokens):
 		return budgetHold{tokens: true, sessions: sessions}, true
-	case agent.MaxSessions != nil && sessions >= *agent.MaxSessions:
+	case agent.MaxSessions != nil && sessions >= *agent.MaxSessions+s.Spend.GrantedSessions:
 		return budgetHold{sessions: sessions}, true
 	}
 	return budgetHold{}, false
@@ -205,6 +208,9 @@ func textOrHold(s Situation, c Context, extra int, data map[string]any, free, he
 	data["TokenHold"] = hold.tokens
 	data["Sessions"] = hold.sessions
 	setBudgets(data, c.Shape)
+	if c.Shape.Agent.MaxSessions != nil {
+		data["MaxSessions"] = *c.Shape.Agent.MaxSessions + s.Spend.GrantedSessions
+	}
 	return held
 }
 
