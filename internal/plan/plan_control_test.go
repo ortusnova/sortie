@@ -1,11 +1,11 @@
 package plan
 
 import (
-	"github.com/sortie-ai/sortie/internal/domain"
-
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/sortie-ai/sortie/internal/domain"
 )
 
 func v2(g Graph) Graph {
