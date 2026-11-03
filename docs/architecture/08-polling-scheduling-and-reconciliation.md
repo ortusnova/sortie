@@ -155,7 +155,7 @@ Stopped failure routing:
   | `repository_access` | platform | `permission to ... denied`, `repository not found`, the SCM not-found kind | `Give <host>'s <forge> account write access to the repository` |
   | `agent_runtime` | platform | the `agent_not_found` kind, `executable file not found`, `command not found` | `Install the agent runtime on <host>, or correct the agent command in WORKFLOW.md` |
   | `workflow_config` | platform | `no_seed`, `configures no repository`, hooks under the remote kind, a repository closed to dispatch or no longer listed, a prompt render error | `Correct WORKFLOW.md on <host>: the cause names the setting` |
-  | `worker_lost` | platform | an expired worker lease, a worker that ended the attempt without returning the branch or before the session started, a broken stdio stream | none: Sortie's own check clears it |
+  | `worker_lost` | platform | an expired worker lease, a worker that ended the attempt without returning the branch or before the session started, a broken stdio stream, a worker daemon that shut down under the run | none: Sortie's own check clears it |
   | `environment` | platform | a workspace preparation failure of the execution environment | none |
   | `story_tests` | story | `make test`, `make lint`, `make check`, `make vet`; `tests failed`; `FAIL` | none |
   | `story_turn` | story | the `turn_failed`, `turn_timeout`, `turn_incomplete`, `turn_token_limit`, and `turn_request_limit` kinds | none |

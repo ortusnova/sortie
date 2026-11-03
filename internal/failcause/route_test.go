@@ -40,7 +40,7 @@ func TestFaultClasses_AreAFixedList(t *testing.T) {
 			{`(?i)\bno_seed\b|configures no repository|only the agent runs in the job's workspace|closed to dispatch|no longer lists|^prompt_render`, true},
 		}},
 		{"worker_lost", RoutePlatform, []entry{
-			{`(?i)lease expired|ended the attempt without returning|ended before its agent session started|stdio stream broke`, false},
+			{`(?i)lease (?:held by worker \S+ )?expired|ended the attempt without returning|ended before its agent session started|stdio stream broke|worker daemon shut down`, false},
 		}},
 		{"environment", RoutePlatform, []entry{
 			{`(?i)^workspace_preparation \| [^|]* \| (?:workspace preparation: )?execution environment`, false},
@@ -105,6 +105,8 @@ func TestRouteOf(t *testing.T) {
 		{"prompt render", "prompt render (turn 1)", errors.New(`template: prompt:3: map has no entry for key "x"`), "workflow_config", RoutePlatform},
 		{"lease expired", "run", errors.New("the worker's lease expired"), "worker_lost", RoutePlatform},
 		{"no bundle back", "export", errors.New("the worker ended the attempt without returning the issue branch: gone"), "worker_lost", RoutePlatform},
+		{"worker's lease expired", "run", errors.New("lease held by worker taichi expired"), "worker_lost", RoutePlatform},
+		{"worker daemon shut down", "run", errors.New("worker daemon shut down"), "worker_lost", RoutePlatform},
 		{"environment start", "workspace preparation", errors.New("execution environment: machine did not start"), "environment", RoutePlatform},
 		{"make test", "agent turn 2", &domain.AgentError{Kind: domain.ErrTurnFailed, Message: "make test: exit status 2"}, "story_tests", RouteStory},
 		{"tests failed", "run", errors.New("tests failed"), "story_tests", RouteStory},

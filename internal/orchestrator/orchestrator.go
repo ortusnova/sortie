@@ -61,6 +61,7 @@ type OrchestratorStore interface {
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
 	GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error)
+	ReturnReactionDispatch(ctx context.Context, issueID, kind string) error
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
 	DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
@@ -1230,7 +1231,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
-		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
+		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter, o.store),
 		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
 		ClickProofs:                       planClickProofs(cfg, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,
