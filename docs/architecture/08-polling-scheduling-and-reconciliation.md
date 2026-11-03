@@ -107,6 +107,11 @@ Per-state limit:
 
 The runtime counts issues by their current tracked state in the `running` map.
 
+Supervisor slot:
+
+- The supervisor session (§5.3.12) runs in a slot of its own, outside both limits: it is never in the `running` map, so it never counts toward `running_count` or a state's count, and a story dispatches while it runs. At most one supervisor session runs at a time.
+- The poll tick starts a supervisor trigger when a pending reaction's newest progress (its creation, a new pull request head, or a restarted watch) is an hour or more old, once per progress mark, and when a pass leaves a global slot free, dispatches nothing, and stories are held (by a hold reason other than a full slot or host, a platform fault, or a budget), once per set of held stories. The park and the recording of an `unclassified` platform fault start one too, as does each sweep.
+
 Optional SSH host limit:
 
 - When `worker.max_concurrent_agents_per_host` is set, each configured SSH host may run at most that many concurrent agents at once.

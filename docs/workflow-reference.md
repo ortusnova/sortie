@@ -25,6 +25,7 @@
   - [2.10 `dispatch` — Rule-based Routing](#210-dispatch--rule-based-routing)
   - [2.11 `notifications` (operator notification backends)](#211-notifications-operator-notification-backends)
   - [2.12 `environment` — Execution Environment](#212-environment--execution-environment)
+  - [2.13 `supervisor` — Supervisor Session](#213-supervisor--supervisor-session)
 - [3. Environment Variable Overrides](#3-environment-variable-overrides)
   - [3.1 Source Precedence](#31-source-precedence)
   - [3.2 Curated Variable List](#32-curated-variable-list)
@@ -136,7 +137,7 @@ After parsing, the loader produces a struct with three fields:
 
 ### 2.1 Top-Level Keys
 
-The core schema recognizes eleven top-level keys:
+The core schema recognizes twelve top-level keys:
 
 ```yaml
 tracker: # Issue tracker connection and query settings
@@ -150,6 +151,7 @@ self_review: # Self-review verification loop (optional)
 dispatch: # Rule-based dispatch routing
 notifications: # Operator notification backends (notify_operator tool)
 environment: # Where workspace code runs: on the host or in a VM per issue
+supervisor: # The supervisor agent session, its triggers and its daily budget
 ```
 
 **Unknown top-level keys are ignored** by the core schema for forward compatibility. They are collected into an `Extensions` map and made available to consumers (e.g., `server`, `worker`, adapter-specific blocks like `claude-code`).
@@ -614,7 +616,7 @@ A runtime build that rejects one of these switches and exits before it responds 
 | `SORTIE_CHAIN_ID`         | The stage chain the run belongs to, as recorded in run history.                                          |
 | `SORTIE_WORKSPACE`        | Absolute path to the per-issue workspace directory.                                                      |
 | `SORTIE_API_URL`          | Base URL of Sortie's HTTP server (for example `http://127.0.0.1:7678`), or empty when the server is off. A server bound to `0.0.0.0` or `::` is named by its loopback address. |
-| `SORTIE_SESSION_PURPOSE`  | `credential-check` for the credential verification, `work` for the working session.                       |
+| `SORTIE_SESSION_PURPOSE`  | `credential-check` for the credential verification, `work` for the working session, `supervisor` for the supervisor session, which receives only `SORTIE_API_URL`, `SORTIE_WORKSPACE`, this variable, and `SORTIE_SUPERVISOR_TOKEN` (see [Section 2.13](#213-supervisor--supervisor-session)).                       |
 | `SORTIE_SESSION_TOKEN`    | Working session only. A random token that authorizes the per-issue control routes of this issue only, and stops working when the run ends. See [Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token). |
 
 Under `environment.kind: smolvm`, the agent in the VM receives these variables with `SORTIE_WORKSPACE` set to `/workspace`, and without `SORTIE_API_URL` and `SORTIE_SESSION_TOKEN`: the VM cannot reach Sortie's HTTP server. A process in `environment.host_prefix` runs on the host and receives all of them. See [Section 2.12](#212-environment--execution-environment).
@@ -2351,6 +2353,63 @@ To switch back, set `kind: local` and restore the clone in `after_create` and an
 
 ---
 
+### 2.13 `supervisor` — Supervisor Session
+
+```yaml
+supervisor:
+  agent: claude-code
+  prompt: supervisor.md
+  sweep_interval_ms: 1800000
+  max_sessions_per_day: 48
+  max_tokens_per_day: 2000000
+```
+
+The supervisor is an agent session that settles what Sortie's own rules cannot: a park whose question Sortie could answer from the forge, a failure that fits no fault class, a pull request nobody moves, or held stories while a slot is free. It acts only through the supervisor token's routes (see **Supervisor token** in [Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token)) and reads the state through the read-only API. Without the section no supervisor runs.
+
+| Field | Type | Required | Default | Description |
+| ----- | ---- | -------- | ------- | ----------- |
+| `supervisor.agent` | string | Yes | — | The agent kind the supervisor session runs, such as `claude-code`. Its command and settings come from the same places a story's session of that kind takes them: `agent.command` for the default kind, and the top-level block named for the kind. |
+| `supervisor.prompt` | string | Yes | — | The path of the supervisor's prompt template, relative to the directory of `WORKFLOW.md` when not absolute. `~` and `$VAR` expand. Sortie reads it at each session's start, so an edit takes effect at the next session. [`examples/supervisor.md`](../examples/supervisor.md) is a starting point. |
+| `supervisor.sweep_interval_ms` | integer | No | `1800000` | Time between two sweeps, each of which starts a session. Must be positive. |
+| `supervisor.max_sessions_per_day` | integer | No | `48` | The supervisor sessions one UTC day may start. Must be positive. |
+| `supervisor.max_tokens_per_day` | integer | No | `2000000` | The tokens, less cache reads (as `agent.max_tokens` counts them), the supervisor sessions of one UTC day may spend. A session whose spend reaches what the day has left is stopped with the outcome `budget_exhausted`. Must be positive. |
+
+The section needs `server.supervisor_token`: Sortie exits at startup with a configuration error naming it otherwise. A session also needs the HTTP server; with `server.port: 0` the supervisor's `status` is `unavailable`.
+
+**What starts a session.** Sortie runs at most one supervisor session at a time. Each of these events is a trigger:
+
+| Trigger (`kind`) | When |
+| ---------------- | ---- |
+| `park` | A story parks, for any reason. |
+| `unclassified_failure` | A story stops on a repeated failure whose signature is in no fault class, which records a platform fault of class `unclassified`. A failure in a class does not trigger it. |
+| `stalled_reaction` | A pending pull request reaction made no progress for an hour: no new reaction, pull request head, or restarted watch since. Once per reaction and progress mark. |
+| `idle_slot` | A poll left a story slot free and dispatched nothing while stories are held (held for a reason other than a full slot, by a platform fault, or by a budget). Once per set of held stories; a later poll with the same held stories triggers nothing. |
+| `sweep` | Every `sweep_interval_ms`, the first one interval after startup. |
+
+A trigger that comes while a session runs waits, and the next session starts when that one ends, with every trigger that waited (at most 32; a second trigger of the same kind for the same story replaces the first). A trigger that comes while the day's budget is spent is dropped, and the state still shows it as `last_trigger`. No supervisor runs under `--once`.
+
+**Its own slot.** The supervisor session runs beside the story sessions, never in one of their slots: it does not count against `agent.max_concurrent_agents` or `agent.max_concurrent_agents_by_state`, and a story dispatches while it runs. It runs on Sortie's own host, whatever `environment.kind`, in the directory `supervisor` beside the database, with no workspace hooks and no Sortie tool server, for one turn bounded by `agent.turn_timeout_ms`.
+
+**Its prompt.** Sortie renders the prompt file as a Go template in strict mode with the [FuncMap](#53-built-in-functions-funcmap) and these variables:
+
+| Variable | Holds |
+| -------- | ----- |
+| `.trigger` | The first trigger: `kind`, `issue_identifier` (empty for a trigger about no one story), `detail`, and `at`. |
+| `.triggers` | Every trigger of the session, in the same shape. |
+| `.state` | The state digest, as nested maps and lists. |
+| `.state_json` | The state digest as indented JSON. |
+| `.supervisor` | `token`, the supervisor token, and `api_url`, Sortie's API. |
+
+Sortie then appends a section that holds the API URL, the supervisor token, every trigger and the state digest, so a prompt file that names none of them still gives the session what it needs. The digest holds what the state API serves of `running`, `retrying`, `parked` (with each park's statement), `held`, `budget_held`, `platform_faults` (with each person action and the stories it holds), and `reactions` (with each pull request and its last progress), and the plan's blockers as `plan_blockers`: each held story with the blockers that hold it. Every free text in it is masked. The session's environment also carries `SORTIE_SUPERVISOR_TOKEN`, `SORTIE_API_URL`, `SORTIE_WORKSPACE`, and `SORTIE_SESSION_PURPOSE=supervisor`.
+
+**Asking a person.** For a credential, a key, a spec or story approval, an operator decision, or any action whose effect it cannot check, the supervisor raises a question with `POST /api/v1/supervisor/questions` (see [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults)). The question names the exact action, where to take it, the stories it holds, and what the supervisor already checked; it holds those stories out of dispatch, retries included, until a person marks the action done and its check passes. A second question with the same action and place joins the first, so each decision has one question.
+
+**Pause and budget.** `POST /api/v1/supervisor/pause` stops the running session (outcome `paused`) and starts no new one; triggers keep coming in and wait. `POST /api/v1/supervisor/resume` starts a session at once for what waited. The pause is in memory and a restart clears it. Each session is stored in the `supervisor_sessions` table, so the day's budget and the last session outlive a restart. `GET /api/v1/state` serves the supervisor's status, its last trigger and its budget use as `supervisor`.
+
+**Reload.** The section reloads. A new prompt path, sweep interval or budget applies from the next loop iteration; a running session finishes with the settings it started with. Removing the section lets a running session finish and starts no new one.
+
+---
+
 ## 3. Environment Variable Overrides
 
 Sortie supports a curated set of `SORTIE_*` environment variables that override YAML front matter values. This enables twelve-factor app deployment patterns: operators inject secrets, endpoint URLs, and tuning parameters via environment rather than committing them to a workflow file.
@@ -2567,7 +2626,7 @@ server:
 
 Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observability and operational control. `server.port` overrides the default port; `server.host` overrides the default bind address. CLI `--port` and `--host` flags take precedence over their extension counterparts. Port `0` disables the server entirely (no TCP listener, no Prometheus metrics).
 
-**Control authentication.** The endpoints that change Sortie's runtime state, `POST /api/v1/refresh`, `POST /api/v1/dispatch/pause` and `/resume`, `POST /api/v1/retries/{identifier}/run`, `POST /api/v1/attention/{id}/acknowledge`, `POST /api/v1/reactions/{identifier}/{kind}/check`, `POST /api/v1/issues`, and the per-issue control routes below, require `Authorization: Bearer <token>` once `server.control_token` is set. A missing or unknown token receives `401` and Sortie takes no action. Without a control token, those endpoints accept requests with no token, and Sortie refuses to start when the bind address (`server.host` or `--host`) is not a loopback address, with a configuration error that names `server.control_token`. The plan routes, `POST /api/v1/plan/sync`, `GET /api/v1/plan/graph`, `GET /api/v1/plan/capabilities`, and `GET` and `PUT /api/v1/plan/projects/{key}`, take the control token too, the reads included, because they reach the tracker with Sortie's credentials. The other read-only endpoints, the dashboard, `/api/v1/state`, the per-issue detail, `/livez`, `/readyz`, and `/metrics`, never require a token. Sortie removes every variable of its own environment that holds the control token's value at startup, so agents, hooks, and the tool server never inherit it.
+**Control authentication.** The endpoints that change Sortie's runtime state, `POST /api/v1/refresh`, `POST /api/v1/dispatch/pause` and `/resume`, `POST /api/v1/supervisor/pause` and `/resume`, `POST /api/v1/retries/{identifier}/run`, `POST /api/v1/attention/{id}/acknowledge`, `POST /api/v1/reactions/{identifier}/{kind}/check`, `POST /api/v1/issues`, `POST /api/v1/supervisor/questions`, and the per-issue control routes below, require `Authorization: Bearer <token>` once `server.control_token` is set. A missing or unknown token receives `401` and Sortie takes no action. Without a control token, those endpoints accept requests with no token, and Sortie refuses to start when the bind address (`server.host` or `--host`) is not a loopback address, with a configuration error that names `server.control_token`. The plan routes, `POST /api/v1/plan/sync`, `GET /api/v1/plan/graph`, `GET /api/v1/plan/capabilities`, and `GET` and `PUT /api/v1/plan/projects/{key}`, take the control token too, the reads included, because they reach the tracker with Sortie's credentials. The other read-only endpoints, the dashboard, `/api/v1/state`, the per-issue detail, `/livez`, `/readyz`, and `/metrics`, never require a token. Sortie removes every variable of its own environment that holds the control token's value at startup, so agents, hooks, and the tool server never inherit it.
 
 **Session tokens.** Each working session receives its own token in `SORTIE_SESSION_TOKEN` (see [Section 2.6](#26-agent--coding-agent-configuration)); the credential verification receives none. A session token is accepted only on the per-issue control routes of its own issue, so a wrapper such as an ACP broker in `agent.command` can call them with no operator setup. It receives `403` on any other route, refresh included, or for another issue, and `401` once its run has ended. Session tokens live only in memory, are masked in logs, and are never stored.
 
@@ -2584,8 +2643,9 @@ Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observab
 | `merge` | `POST /api/v1/{identifier}/merge` | Merge the issue's pull request once its review and CI passed, unless it is a `review: ui` story, whose merge the operator keeps. |
 | `file_issue` | `POST /api/v1/issues` | File an open issue in the tracker. |
 | `live_proof` | `POST /api/v1/{identifier}/live-proof` | Request a live proof of the issue. |
+| `ask_person` | `POST /api/v1/supervisor/questions` | Raise a question for a person through the person-action path: the action, where, the stories it holds, and what was checked. See [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults). |
 
-Every other control route, the plan routes included, answers the supervisor token `403` `forbidden` and does nothing: so the supervisor cannot approve a story (`POST /api/v1/plan/sync`), change a spec, or touch a credential, a key, or a pushed commit, since Sortie offers it no route that does. A request the supervisor token makes carries the evidence it is based on as an `evidence` string in its JSON body, beside the route's own members; one without evidence gets `400` `evidence_required` and does nothing. Sortie stores every request the supervisor token makes to a control route, refused ones included, with its evidence (masked, at most 8192 characters), its result and its time, and `GET /api/v1/state` serves the 50 newest as `supervisor_actions`. Sortie removes every variable of its own environment that holds the supervisor token's value at startup, as it does for the control token. The read-only endpoints need no token, so the supervisor reads `/api/v1/state` and the per-issue detail without one. The routes Sortie added for the supervisor, `unpark`, `merge-record`, `fix`, `draft`, `merge`, `issues` and `live-proof`, answer `200` with `{"action", "issue_identifier", "issue_id", "pull_request", "merge_commit"}`, the last two `null` when the action named none, and an error with the codes listed for each route in the table below; `503` (`orchestrator_unavailable`) during shutdown.
+Every other control route, the plan routes included, answers the supervisor token `403` `forbidden` and does nothing: so the supervisor cannot approve a story (`POST /api/v1/plan/sync`), pause or resume itself (`POST /api/v1/supervisor/pause`), change a spec, or touch a credential, a key, or a pushed commit, since Sortie offers it no route that does. A request the supervisor token makes carries the evidence it is based on as an `evidence` string in its JSON body, beside the route's own members; one without evidence gets `400` `evidence_required` and does nothing. Sortie stores every request the supervisor token makes to a control route, refused ones included, with its evidence (masked, at most 8192 characters), its result and its time, and `GET /api/v1/state` serves the 50 newest as `supervisor_actions`. Sortie removes every variable of its own environment that holds the supervisor token's value at startup, as it does for the control token. The supervisor session Sortie runs itself (see [Section 2.13](#213-supervisor--supervisor-session)) receives the token in its prompt and in `SORTIE_SUPERVISOR_TOKEN`. The read-only endpoints need no token, so the supervisor reads `/api/v1/state` and the per-issue detail without one. The routes Sortie added for the supervisor, `unpark`, `merge-record`, `fix`, `draft`, `merge`, `issues` and `live-proof`, answer `200` with `{"action", "issue_identifier", "issue_id", "pull_request", "merge_commit"}`, the last two `null` when the action named none, and an error with the codes listed for each route in the table below; `503` (`orchestrator_unavailable`) during shutdown.
 
 > **Migration (breaking):** a deployment that binds the server to a non-loopback address, such as a container started with `--host 0.0.0.0`, must set `server.control_token` before upgrading, for example `control_token: $SORTIE_CONTROL_TOKEN` with the variable supplied by your secret store. Without it Sortie exits at startup. A caller of `POST /api/v1/refresh` on such a deployment then sends `Authorization: Bearer <token>`.
 
@@ -2609,6 +2669,9 @@ A reverse proxy in front of Sortie must pass on the `Host` header the browser se
 | POST   | `/api/v1/refresh`        | Trigger an immediate poll+reconciliation cycle. Returns 202 Accepted normally, 409 Conflict during graceful shutdown. Best-effort; repeated requests are coalesced. Every response says in one sentence what it queued. |
 | POST   | `/api/v1/dispatch/pause` | Stop dispatching: Sortie starts no new run (no first dispatch, retry, continuation, or stage hop) and lets the running ones finish. Optional body `{"by": "...", "reason": "..."}`. 200 with `dispatch_paused`, also when dispatch was already paused (the first pause is kept). Lasts until resume or a restart. Control token only; a session token gets 403. See [`POST /api/v1/dispatch/pause` and `/resume`](#post-apiv1dispatchpause-and-resume--drain-the-host). |
 | POST   | `/api/v1/dispatch/resume` | Dispatch again, from the next poll tick, which the request queues. 200 with `dispatch_paused` null, also when dispatch was not paused. Control token only. |
+| POST   | `/api/v1/supervisor/pause` | Pause the supervisor: the running supervisor session stops (outcome `paused`) and none starts; triggers wait. Optional body `{"by": "...", "reason": "..."}`, `by` defaulting to `operator`. 200 with `supervisor_paused` (`since`, `by`, `reason`), also when already paused (the first pause is kept); 409 `supervisor_not_configured` without a `supervisor` section. Lasts until resume or a restart. Control token only; the supervisor token and a session token get 403. See [Section 2.13](#213-supervisor--supervisor-session). |
+| POST   | `/api/v1/supervisor/resume` | Resume the supervisor; a session starts at once for the triggers that waited. 200 with `supervisor_paused` null, also when not paused; 409 `supervisor_not_configured`. Control token only. |
+| POST   | `/api/v1/supervisor/questions` | Raise a question for a person. Body `{"action": "...", "where": "...", "stories": ["..."], "checked": "...", "cause": "..."}`; all but `cause` required. Records a platform fault of class `supervisor_question` whose person action is `action` at `where`, whose `detail` is what the supervisor `checked`, and which holds the `stories` out of dispatch, a scheduled retry included, until the action is marked done and the check passes. A question with the action and place of an open one, case and spacing folded, adds its stories to that one. 200 with `action` (`ask_person`), `existing`, and the `platform_fault`; 400 `invalid_request`; 404 `issue_not_found` for a story the runtime state does not know; 409 `running` for a story with a running worker. Control token or the supervisor token, whose request also carries `evidence`. |
 | POST   | `/api/v1/platform-faults/{id}/action-done` | Mark the person action of an open platform fault done and check the fault again at once. Optional body `{"by": "..."}`. 200 with `resolved` and the fault after the check, 404 for an unknown fault. Control token only. See [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults). |
 | POST   | `/api/v1/retries/{identifier}/run` | Make an issue's scheduled retry due now; the retry then goes through the same checks as a retry whose time came, and one that still cannot start keeps the time it was due before. Returns 202 Accepted, 404 when no retry is scheduled for the identifier, and 409 Conflict during graceful shutdown. Every 202 and 409 response says in one sentence what it did. |
 | POST   | `/api/v1/attention/{id}/acknowledge` | Record that a person has seen an item that needs a person: it leaves the attention count and stays listed with the time it was acknowledged until its cause clears, and a new cause shows as a new item. Changes nothing in the tracker or the pull request. Returns 200 OK, 404 when no current item has the ID, and 409 Conflict during graceful shutdown. Every 200 and 409 response says in one sentence what it did. |
@@ -3757,6 +3820,21 @@ A session whose `usage_arrival` is `none` contributes nothing to the token total
 `dispatch_paused` is a top-level field, always present: `null` while Sortie dispatches, and while an operator has paused dispatch an object with `since` (when the pause began, in UTC), `by` (who paused it), and `reason` (empty when none was given). See [`POST /api/v1/dispatch/pause` and `/resume`](#post-apiv1dispatchpause-and-resume--drain-the-host).
 
 `platform_faults` is a top-level field, always present: every open platform fault, oldest first, `[]` when there is none. Each names its cause, the stories it holds, and the person action that clears it. See [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults).
+
+`supervisor` is a top-level field, always present: `null` while the workflow has no `supervisor` section (see [Section 2.13](#213-supervisor--supervisor-session)), and otherwise:
+
+| Field | Description |
+| --- | --- |
+| `status` | `idle`, `running`, `paused`, `budget_exhausted` (the day's session or token budget is spent), or `unavailable` (no session can start; `unavailable` says why). |
+| `agent` | `supervisor.agent`. |
+| `unavailable` | Why no session can start, such as a missing `server.supervisor_token`, the server being off, or an agent kind with no adapter; `null` otherwise. |
+| `paused` | The pause in force, `since`, `by` and `reason`; `null` while the supervisor runs. |
+| `running` | The running session, `null` when none runs: `started_at`, `tokens` spent so far, `trigger_count`, `triggers`, and `ended_at`, `outcome` and `error` all `null`. |
+| `last_session` | The newest session that ended, in the same shape, with `outcome` `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled` (Sortie stopped), and `error`; `null` before the first. A session read back after a restart carries its first trigger only. |
+| `last_trigger` | The newest trigger, started or dropped: `kind` (`park`, `unclassified_failure`, `stalled_reaction`, `idle_slot`, or `sweep`), `issue_identifier` (`null` for a trigger about no one story), `detail`, and `at`. `null` before the first. |
+| `pending_triggers` | The triggers waiting for the next session. |
+| `budget` | The current UTC day's use: `day`, `resets_at`, `sessions_used` of `sessions_limit`, and `tokens_used` (the running session included) of `tokens_limit`. |
+| `next_sweep_at` | When the next sweep comes due. |
 
 **Workers and what waits on them (`host`, `waits`, `pulls`):**
 
@@ -5090,9 +5168,9 @@ A platform fault is a stopped failure no session of a story can fix (see **The s
 | Field | Description |
 | --- | --- |
 | `id` | The fault's ID, which the route takes. |
-| `class` | The fault class: `token_scope`, `credentials`, `repository_access`, `agent_runtime`, `workflow_config`, `worker_lost`, `environment`, or `unclassified` for a signature in no class. |
+| `class` | The fault class: `token_scope`, `credentials`, `repository_access`, `agent_runtime`, `workflow_config`, `worker_lost`, `environment`, or `unclassified` for a signature in no class, or `supervisor_question` for a question the supervisor raised. |
 | `step`, `signature` | The failed step and the failure signature the fault is recorded by. |
-| `cause`, `detail` | The first line of the error and the failing step's whole output, masked. |
+| `cause`, `detail` | The first line of the error and the failing step's whole output, masked; for a `supervisor_question`, why the action is needed and what the supervisor already checked. |
 | `person_action` | `action`, `where`, and `done_at` and `done_by` once someone marked it done; `null` for a fault Sortie's own check clears (`worker_lost`, `environment`). |
 | `stories` | Every story the fault holds, in the order they were held. |
 | `recorded_at`, `last_check_at`, `last_check_error`, `next_check_at`, `checking` | When the fault was recorded, the latest check and its error, when the next scheduled check is due (every 5 minutes), and whether a check runs now. |
@@ -5110,6 +5188,25 @@ HTTP/1.1 200 OK
 ```
 
 The request records the action done and checks the fault again at once; the answer waits for the check. `resolved` is `true` when the check passed: the fault leaves `platform_faults`, and its stories run again from the poll the release queues, with the budgets they have left. `false` keeps every hold and shows the check's error in `last_check_error`. A fault of the `export` step is checked by pushing the held branch again, so it passes only once the push does; any other fault with a person action passes once its action is marked done. When a scheduled check is already running, the answer does not wait: it serves the fault with `checking` set, and if that check fails, Sortie checks the fault again at once instead of 5 minutes later. The body is optional and `by` defaults to `operator`. The route takes the control token only; a session token gets `403`. An ID with no open fault gets `404` (`platform_fault_not_found`), a malformed body `400` (`invalid_request`), and `503` (`orchestrator_unavailable`) answers during shutdown.
+
+**A question the supervisor raises.** The supervisor (see [Section 2.13](#213-supervisor--supervisor-session)) asks a person through the same path. One question per decision, naming the exact action, where, the stories it holds, and what it already checked:
+
+```http
+POST /api/v1/supervisor/questions
+Authorization: Bearer <supervisor token>
+
+{"action": "Give taichi's GitHub token \"Workflows: Read and write\"",
+ "where": "GitHub, Settings > Developer settings > Personal access tokens",
+ "stories": ["ONS-49", "ONS-50"],
+ "checked": "Both pushes were refused for the workflow scope; the token lists repo but not workflow.",
+ "cause": "Pushes that change .github/workflows need the workflow scope.",
+ "evidence": "run 12 and run 14 of ONS-49 ended on the same refused push"}
+
+HTTP/1.1 200 OK
+{"action": "ask_person", "existing": false, "platform_fault": {"id": "pf-...", "class": "supervisor_question", "step": "supervisor", "cause": "Pushes that change .github/workflows need the workflow scope.", "detail": "Both pushes were refused ...", "person_action": {"action": "Give taichi's GitHub token \"Workflows: Read and write\"", "where": "GitHub, Settings > Developer settings > Personal access tokens", "done_at": null, "done_by": ""}, "stories": [...], ...}}
+```
+
+The question is a platform fault like any other: it is listed in `platform_faults`, its stories are held out of dispatch and their scheduled retries end, and marking its action done checks it, which passes and releases the stories. A question whose action and place match an open one, case and spacing folded, adds its stories to it and answers `existing: true`. A story the runtime state does not know (running, retrying, held, parked, watched, or held by a platform fault) gets `404`, and a story with a running worker `409` `running`.
 
 #### `POST /api/v1/{identifier}/hold` and `/release` — Held Runs
 
@@ -6620,6 +6717,7 @@ Sortie watches `WORKFLOW.md` for filesystem changes and automatically re-reads a
 | `environment.smolvm.binary`            | Future worker runs. The reload runs the version check against the new binary.                  |
 | `environment.smolvm.pack`, sizing, `allow_hosts`, `credentials`, `ssh_agent` | VMs created after the reload. An existing VM keeps the settings it was created with. |
 | `environment.smolvm.pass_env`, `environment.smolvm.repository` | Future worker runs. A reload whose `repository.provider` differs from an active SCM reaction's provider is rejected. |
+| `supervisor.*`                         | **Immediate**: the next loop iteration applies it; a running supervisor session keeps the settings it started with. |
 | `db_path`                              | **No effect** — requires restart. In-memory config updated, but database connection unchanged. |
 | `reactions.<kind>.provider`                     | **No effect** — requires restart. Adapters are created once at process start.                  |
 | `reactions.ci_failure.max_retries`              | Future dispatches.                                                                             |
@@ -7140,6 +7238,11 @@ A flat reference of every configuration field, for quick lookup. The "Env Overri
 | `environment.smolvm.default_repository` | string           | _(absent)_                   | —                                        | Optional; must name a listed entry open to dispatch; absent dispatches no unlabeled issue |
 | `environment.smolvm.pass_env`           | `[string]`       | `[]`                         | —                                        | Host variables copied into the VM in plain text                                        |
 | `environment.smolvm.ssh_agent`          | boolean          | `false`                      | —                                        | Forwards the host SSH agent into new VMs                                               |
+| `supervisor.agent`                      | string           | _(required in `supervisor`)_ | —                                        | Agent kind of the supervisor session; the section needs `server.supervisor_token` |
+| `supervisor.prompt`                     | path             | _(required in `supervisor`)_ | —                                        | Prompt template, relative to the `WORKFLOW.md` directory; read at each session |
+| `supervisor.sweep_interval_ms`          | integer          | `1800000`                    | —                                        | Time between sweeps; positive |
+| `supervisor.max_sessions_per_day`       | integer          | `48`                         | —                                        | Sessions per UTC day; positive |
+| `supervisor.max_tokens_per_day`         | integer          | `2000000`                    | —                                        | Tokens less cache reads per UTC day; positive; stops a session that reaches it |
 | **Extensions**                          |                  |                              |                                          |                                                                                        |
 | `server.port`                           | integer          | `7678`                       | —                                        | CLI `--port` overrides; `0` disables server                                    |
 | `server.host`                           | string (IP)      | `127.0.0.1`                  | —                                        | CLI `--host` overrides                                                         |
