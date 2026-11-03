@@ -110,7 +110,7 @@ func buildSupervisorDigest(state *State, now time.Time) supervisorDigest {
 	d := supervisorDigest{
 		GeneratedAt:    now.UTC(),
 		DispatchPaused: state.dispatchPause != nil,
-		SlotsUsed:      len(state.Running),
+		SlotsUsed:      AgentsRunning(state.Running),
 		SlotsLimit:     state.MaxConcurrentAgents,
 		Running:        []digestRun{},
 		Retrying:       []digestRetry{},

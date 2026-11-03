@@ -103,6 +103,57 @@ func TestStateServesTheRemoteJobsWorkerAndStep(t *testing.T) {
 	}
 }
 
+// Under remote, a job queued for a worker's slot is not running: it is
+// a wait, with why it waits, and counts.running leaves it out; a run
+// still preparing its job is running on no worker, never on Sortie's
+// host (live, 2026-11-03: ONS-101, ONS-105 and ONS-109 read as running
+// on p1 while every worker's slots were in use).
+func TestStateServesAQueuedJobAsAWaitNotARun(t *testing.T) {
+	t.Parallel()
+
+	m := worker.NewMatcher(worker.NewTTLLeaser(time.Minute), func() time.Time { return viewNow }, nil)
+	snap := orchestrator.RuntimeSnapshotResult{GeneratedAt: viewNow, Running: []orchestrator.SnapshotRunningEntry{
+		running("ONS-34", "build"), running("ONS-101", "build"), running("ONS-110", "build")}}
+	ts := viewServer(t, Params{
+		SnapshotFn: fixedSnapshot(snap),
+		WorkersFn:  func() *worker.Matcher { return m },
+		HostFn:     func(context.Context) *hostview.Host { return &hostview.Host{Name: "p1"} },
+	})
+	m.Submit(worker.Job{ID: "ONS-34", Attempt: 1, Issue: worker.Issue{Identifier: "ONS-34"}})
+	checkIn := `{"os":"linux","arch":"x86_64","kvm":true,"nested":true,"backends":["smolvm"],"run_slots":1,"running":0,` +
+		`"free":{"cpu":16,"mem_gib":52,"disk_gib":210}}`
+	for _, path := range []string{"/api/v1/workers/checkin", "/api/v1/workers/poll"} {
+		if got := workerPost(t, ts, path, checkIn); got != http.StatusOK {
+			t.Fatalf("%s = %d", path, got)
+		}
+	}
+	m.Submit(worker.Job{ID: "ONS-101", Attempt: 1, Issue: worker.Issue{Identifier: "ONS-101"}, QueuedAt: viewNow})
+
+	body := getJSONMap(t, ts.URL+"/api/v1/state")
+	var got []string
+	for _, r := range rows(t, body, "running") {
+		got = append(got, r["issue_identifier"].(string)+"@"+strconv.Quote(fmtAny(r["worker"])))
+	}
+	if want := []string{`ONS-34@"taichi"`, `ONS-110@""`}; !reflect.DeepEqual(got, want) {
+		t.Errorf("running = %v, want %v: the queued ONS-101 is not running, and the preparing ONS-110 is on no worker", got, want)
+	}
+	if n := body["counts"].(map[string]any)["running"]; n != 2.0 {
+		t.Errorf("counts.running = %v, want 2", n)
+	}
+	waits := rows(t, body, "waits")
+	if len(waits) != 1 || waits[0]["issue_identifier"] != "ONS-101" || waits[0]["kind"] != "slot" ||
+		waits[0]["reason"] != "worker taichi: all 1 run slots in use" {
+		t.Errorf("waits = %v, want ONS-101 waiting for taichi's slot", waits)
+	}
+}
+
+func fmtAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	return v.(string)
+}
+
 // A queued job that a checked-in worker could run waits for that
 // worker's slot.
 func TestQueueWaitForASlot(t *testing.T) {
