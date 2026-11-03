@@ -938,6 +938,37 @@ func TestGrantedNamesTheWorker(t *testing.T) {
 	}
 }
 
+// A poll that leases the job before its submitter asks for the grant
+// still names the worker: a submitter's Granted call races the workers'
+// polls.
+func TestGrantedAfterThePollNamesTheWorker(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	m := newM(c)
+	m.CheckIn("taichi", host())
+	m.Submit(job("ONS-30", 1))
+	if _, ok, err := m.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll = %v %v", ok, err)
+	}
+	granted := m.Granted("ONS-30")
+	if granted == nil {
+		t.Fatal("Granted after the poll = nil, want the grant's channel")
+	}
+	select {
+	case id := <-granted:
+		if id != "taichi" {
+			t.Fatalf("granted to %q, want taichi", id)
+		}
+	default:
+		t.Fatal("no worker ID on the grant's channel after the poll")
+	}
+	if err := m.Report("taichi", "ONS-30", 1, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if ch := m.Granted("ONS-30"); ch != nil {
+		t.Error("Granted after the job ended = a channel, want nil")
+	}
+}
+
 // A restarted matcher that adopts a job the worker still runs accepts
 // the worker's heartbeat and report for it, as if it had granted it;
 // unrenewed, the adopted lease expires as any other.
