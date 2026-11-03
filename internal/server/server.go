@@ -446,6 +446,24 @@ type Params struct {
 	// session serves. When nil, no session token is accepted.
 	SessionTokenFn SessionTokenFunc
 
+	// SupervisorToken is the bearer token of the supervisor, which only
+	// the supervisor action routes accept; every other control route
+	// answers it 403. Empty accepts no supervisor token.
+	SupervisorToken string
+
+	// SupervisorSessionCap bounds the sessions granted to one issue in
+	// total that a supervisor grant may reach; 0 refuses every
+	// supervisor grant.
+	SupervisorSessionCap int
+
+	// Supervisor carries out the supervisor action routes. When nil,
+	// those routes answer 503.
+	Supervisor SupervisorActions
+
+	// SupervisorLog stores each request the supervisor token makes, and
+	// GET /api/v1/state serves the newest. When nil, nothing is stored.
+	SupervisorLog SupervisorLog
+
 	// HoldFn and ReleaseFn hold and release a running issue. Called on
 	// POST /api/v1/{identifier}/hold and /release. When nil, those
 	// routes answer 503.
@@ -571,6 +589,11 @@ type Server struct {
 	planCancelFn     PlanControlFunc
 	planProjects     *plan.Projects
 	terminalStatesFn func() []string
+
+	supervisorToken      string
+	supervisorSessionCap int
+	supervisor           SupervisorActions
+	supervisorLog        SupervisorLog
 }
 
 // Compile-time assertion: Server satisfies orchestrator.Observer.
@@ -632,6 +655,11 @@ func New(params Params) *Server {
 		runEventsFn:      params.RunEventsFn,
 		runEventsAfterFn: params.RunEventsAfterFn,
 		stats:            params.Stats,
+
+		supervisorToken:      params.SupervisorToken,
+		supervisorSessionCap: params.SupervisorSessionCap,
+		supervisor:           params.Supervisor,
+		supervisorLog:        params.SupervisorLog,
 
 		modelUse:           params.ModelUse,
 		configuredModelsFn: params.ConfiguredModelsFn,
@@ -695,8 +723,9 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/{identifier}/hold", s.controlRoute(scopeSession, s.handleHold))
 	mux.HandleFunc("/api/v1/{identifier}/release", s.controlRoute(scopeSession, s.handleRelease))
 	mux.HandleFunc("/api/v1/{identifier}/escalate", s.controlRoute(scopeSession, s.handleEscalate))
-	mux.HandleFunc("/api/v1/{identifier}/answer", s.controlRoute(scopeOperator, s.handleAnswer))
-	mux.HandleFunc("/api/v1/{identifier}/sessions", s.controlRoute(scopeOperator, s.handleSessionGrant))
+	mux.HandleFunc("/api/v1/{identifier}/answer", s.supervisorRoute(supervisorActionAnswer, s.handleAnswer))
+	mux.HandleFunc("/api/v1/{identifier}/sessions", s.supervisorRoute(supervisorActionGrant, s.handleSessionGrant))
+	s.registerSupervisorRoutes(mux)
 	mux.HandleFunc("/api/v1/{identifier}/broker", s.routeBroker)
 
 	if params.MetricsRegistry != nil {

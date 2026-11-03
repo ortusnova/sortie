@@ -616,6 +616,11 @@ type ScheduleRetryParams struct {
 	// value for a non-reaction retry.
 	Continuation ContinuationTarget
 
+	// Command is the label command a label-review or label-fix
+	// continuation runs. Propagated verbatim into the new [RetryEntry]; the
+	// zero value for every other retry.
+	Command LabelCommand
+
 	// RuleName is the rule name of the dispatch. Propagated verbatim
 	// into the new [RetryEntry].
 	RuleName string
@@ -715,6 +720,7 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		AgentKind:           params.AgentKind,
 		ConfiguredModel:     params.ConfiguredModel,
 		Continuation:        params.Continuation,
+		Command:             params.Command,
 		scheduledAt:         scheduledAt,
 		scheduledDelayMS:    delayMS,
 	}

@@ -25,8 +25,9 @@ const (
 	ReviewHuman    = "human"
 	ReviewCriteria = "criteria"
 	// ReviewUI marks a story that is built before it is approved: once it
-	// covers a requirement a sync releases it without an approval, and the
-	// operator's merge of its pull request is its approval.
+	// covers a requirement a sync releases it without an approval: its
+	// approval is the design prototype approved before it was written, and
+	// Sortie merges it once its review, CI and click-proofs pass.
 	ReviewUI = "ui"
 )
 
@@ -207,7 +208,7 @@ func (g Graph) checkVersion2(where string, n Node) []string {
 		problems = append(problems, fmt.Sprintf("%s: review %q is not human, criteria, or ui", where, n.Review))
 	}
 	if n.Review == ReviewUI && (n.ApprovedBy != nil || n.ApprovedAt != "") {
-		problems = append(problems, where+": a ui story carries no approved_by or approved_at; the merge of its pull request is its approval")
+		problems = append(problems, where+": a ui story carries no approved_by or approved_at; its approval is its approved design prototype")
 	}
 	if n.Repository != "" && !changeNamePattern.MatchString(n.Repository) {
 		problems = append(problems, fmt.Sprintf("%s: repository %q must match [a-z0-9]+(-[a-z0-9]+)*", where, n.Repository))

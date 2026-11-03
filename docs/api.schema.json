@@ -5863,6 +5863,19 @@
             }
           ]
         },
+        "supervisor_actions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorActionResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "version": {
           "type": "string"
         },
@@ -5895,7 +5908,8 @@
         "rate_limits",
         "dispatch_paused",
         "waits",
-        "pulls"
+        "pulls",
+        "supervisor_actions"
       ],
       "type": "object"
     },
@@ -5999,6 +6013,127 @@
         "cost_unpriced_runs",
         "cost_partial_runs",
         "tokens_unmeasured_runs"
+      ],
+      "type": "object"
+    },
+    "SupervisorActionResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "issue_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "merge_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "type": "string"
+        },
+        "route": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "action",
+        "route",
+        "issue_identifier",
+        "evidence",
+        "result",
+        "status",
+        "detail",
+        "pull_request",
+        "merge_commit",
+        "at"
+      ],
+      "type": "object"
+    },
+    "SupervisorResultResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "merge_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "issue_identifier",
+        "issue_id",
+        "pull_request",
+        "merge_commit"
       ],
       "type": "object"
     },

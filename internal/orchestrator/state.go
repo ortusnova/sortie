@@ -470,6 +470,10 @@ type RetryEntry struct {
 	// retry. Runtime-only.
 	Continuation ContinuationTarget
 
+	// Command is the label command this retry runs; the zero value for
+	// every other retry. Runtime-only.
+	Command LabelCommand
+
 	// pausedSinceMS is the wall-clock ms at which this entry first took one
 	// of HandleRetryTimer's paused-by-issue-state arms. Zero means not
 	// paused. Runtime-only: never persisted, never on ScheduleRetryParams.
@@ -924,6 +928,9 @@ type AutoMergeReactionData struct {
 	Repo     string
 	Branch   string
 	SHA      string
+
+	// story is what the entry's story is, set by the review gate.
+	story reviewStory
 }
 
 // AutoMergeReactionConfig holds validated auto-merge-specific
@@ -1277,6 +1284,16 @@ type ContinuationTarget struct {
 	Attempt  int // 0 for a kind that counts no tries
 }
 
+// LabelCommand is a person's label command a label-review or label-fix
+// continuation runs. When the run starts, the retry handler records Mark as
+// the kind's handled journal position and removes Label from the pull
+// request named by the retry's [ContinuationTarget]. The zero value is no
+// command.
+type LabelCommand struct {
+	Label string
+	Mark  string
+}
+
 // RuleAgent is the agent kind and configured model a dispatch of one rule
 // resolves to under the configuration in force.
 type RuleAgent struct {
@@ -1348,6 +1365,10 @@ type State struct {
 	// CriteriaReviewWarned holds the plan stories already warned that the
 	// forge requires a review their criteria gate cannot give.
 	CriteriaReviewWarned map[string]struct{}
+
+	// ClickProofsAsked holds, per ui story, the head commit whose
+	// click-proofs the tracker was last asked for.
+	ClickProofsAsked map[string]string
 
 	// WorkerWg tracks in-flight worker goroutines spawned by
 	// [DispatchIssue]. Callers dispatching outside the Run() loop can
@@ -1715,6 +1736,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		TokenBudgetIncomplete:     make(map[string]struct{}),
 		DispatchBlocks:            make(map[string]DispatchBlock),
 		CriteriaReviewWarned:      make(map[string]struct{}),
+		ClickProofsAsked:          make(map[string]string),
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
 	}
 }
@@ -2631,7 +2653,7 @@ func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
 			row.EscalatedAt = &escalatedAt
 			row.EscalationTrigger = string(entry.EscalationTrigger)
 		}
-		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !waitsForOperator(entry) {
+		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !watchesUIStory(entry) {
 			watchEndsAt := watchBasis(entry).Add(window)
 			row.WatchEndsAt = &watchEndsAt
 		}

@@ -799,7 +799,7 @@ Template input variables:
   - `reason` (string): `agent_blocked`, `handoff_absence`, or `repeated_failure`.
   - `statement` (string): the stop statement of the run the park follows, or for `repeated_failure` the first line of the run's error; empty when that run declared none.
   - `parked_at` and `released_at` (strings): RFC 3339 times in UTC, whole seconds.
-  - `gesture` (string): `label_removed`, `state_changed`, or `answered` for an answer posted through `POST /api/v1/{identifier}/answer`.
+  - `gesture` (string): `label_removed`, `state_changed`, `answered` for an answer posted through `POST /api/v1/{identifier}/answer`, or `released` for a release through `POST /api/v1/{identifier}/unpark`.
   - `comments` (list, never null): the comments created since the park, oldest first, each with `id`, `author`, `body`, and `created_at`.
 
 Define blocks and calls:

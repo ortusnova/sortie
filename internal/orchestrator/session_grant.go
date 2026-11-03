@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 type SessionGrantStore interface {
 	AddSessionGrant(ctx context.Context, g persistence.SessionGrant) (int, error)
 	SessionGrantTotals(ctx context.Context) (map[string]int, error)
+	SessionGrantTotal(ctx context.Context, issueID string) (int, error)
 }
 
 var _ SessionGrantStore = (*persistence.Store)(nil)
@@ -65,6 +67,9 @@ type SessionGrantRequest struct {
 	Add        int
 	By         string
 	Reason     string
+	// Cap, when positive, bounds the sessions granted to the issue in
+	// total, this grant included; a grant that would pass it is refused.
+	Cap int
 }
 
 // SessionGrantStatus is what a session grant request did.
@@ -76,6 +81,7 @@ const (
 	SessionGrantUnavailable                                // the store could not record the grant; nothing changed
 	SessionGrantDraining                                   // shutdown began before the loop took the request; nothing changed
 	SessionGrantWithdrawn                                  // the caller's context ended before the loop took the request; nothing changed
+	SessionGrantOverCap                                    // the grant would pass the request's cap; nothing changed
 )
 
 // SessionGrantResult is the answer to a session grant request. The counts
@@ -128,8 +134,21 @@ func (o *Orchestrator) grantSessionsOnLoop(ctx context.Context, req SessionGrant
 	if !ok {
 		return SessionGrantResult{Status: SessionGrantUnavailable, Message: "session grants are not available"}
 	}
-	sessionGrantsOf(ctx, o.state, o.store, o.logger)
 	log := logging.WithIssue(o.logger, issueID, req.Identifier)
+	if req.Cap > 0 {
+		total, err := store.SessionGrantTotal(ctx, issueID)
+		if err != nil {
+			log.Error("session grant read failed", slog.Any("error", err))
+			return SessionGrantResult{Status: SessionGrantUnavailable, Message: "the issue's grants could not be read"}
+		}
+		if total+req.Add > req.Cap {
+			return SessionGrantResult{
+				Status: SessionGrantOverCap, IssueID: issueID, Identifier: req.Identifier, GrantedSessions: total,
+				Message: fmt.Sprintf("issue %s has %d granted sessions; %d more would pass the cap of %d", req.Identifier, total, req.Add, req.Cap),
+			}
+		}
+	}
+	sessionGrantsOf(ctx, o.state, o.store, o.logger)
 	granted, err := store.AddSessionGrant(ctx, persistence.SessionGrant{
 		IssueID:    issueID,
 		Identifier: req.Identifier,

@@ -333,9 +333,9 @@ The reset point is read from `run_history` inside the write, so a work-observed 
 | `template_id` | TEXT | Prompt template of that run, kept under the same rule as `session_id` and filled by the same migration step; empty for the workflow body template and when the run does not meet the rule |
 | `statement` | TEXT | The stop statement of the run the park follows, as that run's `agent_text` stores it, kept whatever the run's reaction kind or status; for a `repeated_failure` park, the first line of the run's error, credentials masked. Empty when the run declared none or the park records no run. Its migration fills an older row from the `agent_text` of the park's run, selected as above |
 | `released_at` | TEXT | RFC 3339 timestamp in UTC, whole seconds, of the gesture that released the park; empty while the park holds |
-| `release_gesture` | TEXT | `label_removed`, `state_changed`, or `answered`; empty while the park holds |
+| `release_gesture` | TEXT | `label_removed`, `state_changed`, `answered`, or `released`; empty while the park holds |
 
-One row per parked issue, holding current state rather than history. The row moves through stages. While the park holds, `released_at` is empty. A release by a person's gesture, a label removal, a state change, or an answer through `POST /api/v1/<issue_identifier>/answer`, keeps the row and sets `released_at` and `release_gesture`: the row now records a pending release that the issue's next primary dispatch from the poll tick consumes by deleting the row. A release by a worker exit that observed work deletes the row at once, since it is not a person's answer. A new park of the same issue replaces the row entirely, which clears the release columns. Startup loads a row with `released_at` set as a pending release and every other row as a park, so a restart neither undoes a release nor drops its hand-over. `parked_state` is nullable in meaning though not in type: an empty string means no tracker state was observed at park time, which only a park taken from the retry lane produces, since that lane parks ahead of its own tracker fetch by design (§14.2). `label_applied` has exactly one writer: the orchestrator's release-rule observation of the label on a later fetch of the issue, never the outcome of the label write itself. A park the poll tick records reads its run from `run_history` and writes it with the row; a failed read writes the row with the run columns empty, and they stay empty until the park is released.
+One row per parked issue, holding current state rather than history. The row moves through stages. While the park holds, `released_at` is empty. A release by a person's gesture, a label removal, a state change, an answer through `POST /api/v1/<issue_identifier>/answer`, or a release through `POST /api/v1/<issue_identifier>/unpark`, keeps the row and sets `released_at` and `release_gesture`: the row now records a pending release that the issue's next primary dispatch from the poll tick consumes by deleting the row. A release by a worker exit that observed work deletes the row at once, since it is not a person's answer. A new park of the same issue replaces the row entirely, which clears the release columns. Startup loads a row with `released_at` set as a pending release and every other row as a park, so a restart neither undoes a release nor drops its hand-over. `parked_state` is nullable in meaning though not in type: an empty string means no tracker state was observed at park time, which only a park taken from the retry lane produces, since that lane parks ahead of its own tracker fetch by design (§14.2). `label_applied` has exactly one writer: the orchestrator's release-rule observation of the label on a later fetch of the issue, never the outcome of the label write itself. A park the poll tick records reads its run from `run_history` and writes it with the row; a failed read writes the row with the run columns empty, and they stay empty until the park is released.
 
 **`budget_hold_notices`**: cross-restart dedup for the `budget.held` notice delivered for an issue held by a per-issue budget ceiling
 
@@ -457,7 +457,25 @@ Every write of `run_events` updates `bytes` in its own transaction, so the figur
 
 One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budget is `agent.max_sessions` plus the sum of its rows' `sessions`. Rows are never deleted. The event loop reads the sums once, at the first budget check after startup, and keeps them in memory with each new grant; a failed read counts no grant and is tried again at the next check.
 
-**`standing_holds`**: leases on issues that are not running (migration 1008)
+**`supervisor_actions`**: what the supervisor token did or tried (migration 1008)
+
+| Column             | Type                | Notes                                                                                  |
+| ------------------ | ------------------- | -------------------------------------------------------------------------------------- |
+| `id`               | INTEGER PRIMARY KEY | Auto-increment                                                                         |
+| `action`           | TEXT NOT NULL       | The action's name, such as `record_merge`, or the method and route of a refused request |
+| `route`            | TEXT NOT NULL       | The method and path of the request                                                     |
+| `issue_identifier` | TEXT NOT NULL       | The issue the route names or the action created; empty for none                        |
+| `evidence`         | TEXT NOT NULL       | The request's `evidence`, masked, at most 8192 characters; may be empty               |
+| `result`           | TEXT NOT NULL       | `done`, `refused`, `rejected`, or `failed`                                             |
+| `status`           | INTEGER NOT NULL    | The HTTP status Sortie answered                                                        |
+| `detail`           | TEXT NOT NULL       | The error code and message answered, masked; empty on success                          |
+| `pull_request`     | TEXT NOT NULL       | `owner/repo#N` the action named; may be empty                                          |
+| `merge_commit`     | TEXT NOT NULL       | The merge commit the forge gave; may be empty                                          |
+| `acted_at`         | TEXT NOT NULL       | RFC 3339 timestamp with nanoseconds, in UTC; indexed                                   |
+
+One row per request the supervisor token makes to a control route, written by the HTTP server after it answers; a failed write is logged and the answer stands. Rows are never deleted. `GET /api/v1/state` reads the 50 newest by `id`.
+
+**`standing_holds`**: leases on issues that are not running (migration 1009)
 
 | Column       | Type             | Notes                                                                 |
 | ------------ | ---------------- | --------------------------------------------------------------------- |
