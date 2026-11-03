@@ -140,8 +140,8 @@ func (v CriteriaVerdict) notMet() string {
 		if verdict == CriterionMet && strings.TrimSpace(c.Evidence) != "" {
 			continue
 		}
-		fmt.Fprintf(&b, "- criterion %d (%s): %s", i+1, verdict, oneLine(c.Criterion))
-		if e := oneLine(c.Evidence); e != "" {
+		fmt.Fprintf(&b, "- criterion %d (%s): %s", i+1, verdict, verdictLine(c.Criterion))
+		if e := verdictLine(c.Evidence); e != "" {
 			fmt.Fprintf(&b, ": %s", e)
 		}
 		b.WriteString("\n")
@@ -149,7 +149,7 @@ func (v CriteriaVerdict) notMet() string {
 	return b.String()
 }
 
-func oneLine(s string) string {
+func verdictLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > 400 {
 		s = s[:400] + "…"

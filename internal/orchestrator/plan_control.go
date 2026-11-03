@@ -433,16 +433,20 @@ const maxCriteriaSummary = 4000
 func handleCriteriaFailure(ctx context.Context, state *State, params HandleWorkerExitParams, entry *RunningEntry, result WorkerResult, log *slog.Logger) {
 	rule, _ := params.Dispatch.RuleByName(entry.RuleName)
 	summary := strings.TrimSpace(redact.Mask(entry.LastAgentMessage))
-	if statement := strings.TrimSpace(redact.Mask(result.SoftStopStatement.Text)); statement != "" {
-		summary = strings.TrimSpace(statement + "\n\n" + summary)
-	}
 	if len(summary) > maxCriteriaSummary {
 		summary = summary[:maxCriteriaSummary] + "…"
 	}
 	if summary == "" {
 		summary = "(the check left no summary)"
 	}
-	comment := fmt.Sprintf("The acceptance-criteria check (rule %s) did not pass, so the pull request is not merged.\n\n%s", rule.Name, summary)
+	// The story's comment also carries the stop's statement, such as the
+	// criteria a review found not met; the escalation does not, since the
+	// stop's own notification already carries it.
+	detail := summary
+	if statement := strings.TrimSpace(redact.Mask(result.SoftStopStatement.Text)); statement != "" {
+		detail = statement + "\n\n" + summary
+	}
+	comment := fmt.Sprintf("The acceptance-criteria check (rule %s) did not pass, so the pull request is not merged.\n\n%s", rule.Name, detail)
 	if params.TrackerAdapter != nil {
 		if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 			log.Warn("criteria failure comment failed", slog.Any("error", err))
