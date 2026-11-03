@@ -361,11 +361,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - The high-water mark advances to the newest examined event on every tick that reads new events, including `unlabeled` entries, foreign labels, and retracted gestures
 - All matching `labeled` events in one batch collapse to at most one command
 - A command is confirmed only when its label is still present on the PR at detection time; otherwise the mark advances and nothing dispatches
-- The mark is persisted before the dispatch is scheduled, so a crash between the two loses the command rather than duplicating it
+- Queueing a command's run persists no mark and removes no label; the retry handler persists the command's mark and removes the label when the run starts. A command whose run was queued for a busy agent slot when the process stops is queued again by the entry rebuilt after a restart, with its label still present, and dispatched once a slot frees; a command whose run started before the restart is not dispatched again
 - The `dispatched` flag is not a deduplication input for either label kind, and the review pass's "stored fingerprint matches and dispatched" skip is not adopted
 - A failed mark read backs off without dispatching, while a failed mark upsert proceeds
 - Neither label kind carries a TTL, a drop-on-age branch, an attempt counter, or an escalation posture
-- A foreign-kind retry-slot incumbent and a running session of another kind each defer with the mark unchanged and no label removal, a same-kind incumbent or a running command of the same kind advances the mark and collapses the gesture, and only a free slot with no session running dispatches
+- A foreign-kind retry-slot incumbent and a running session of another kind each defer with the mark unchanged and no label removal, a same-kind incumbent re-enqueues with the mark unchanged and no journal read, a running command of the same kind advances the mark and collapses the gesture, and only a free slot with no session running dispatches
 - Each label-command pass re-enqueues its own detection entry on dispatch, because neither command's exit satisfies the reaction-enqueue gate and so re-seeds nothing
 - A `label-review` entry seeds and recovers on PR metadata without a branch, while a `label-fix` entry additionally requires a non-empty head branch and seeds none without one
 - A `label-review` dispatch runs the read-only, no-clone posture with the operator hooks skipped and a `label-fix` dispatch takes the normal workspace preparation path with the hooks run; both suppress the dispatch-time transition, the dispatch comment, the per-turn tracker-state refresh, the self-review loop, the handoff transition, and the active-issue continuation retry

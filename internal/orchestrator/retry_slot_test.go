@@ -543,8 +543,8 @@ func TestRetrySlot_LivenessWithHandoffConfigured(t *testing.T) {
 	if _, ok := lrIncumbent.ContinuationContext["label_review"]; !ok {
 		t.Error("incumbent ContinuationContext missing label_review key")
 	}
-	if scm.removeLabelCalls != 1 {
-		t.Errorf("RemoveLabel calls = %d, want 1 across both ticks", scm.removeLabelCalls)
+	if scm.removeLabelCalls != 0 {
+		t.Errorf("RemoveLabel calls = %d, want 0 across both ticks (the label stays until the queued run starts)", scm.removeLabelCalls)
 	}
 }
 

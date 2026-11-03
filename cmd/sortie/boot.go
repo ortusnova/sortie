@@ -84,6 +84,8 @@ type bootResult struct {
 	serverPort      int
 	serverHost      string
 	controlToken    string
+	supervisorToken string
+	supervisorCap   int
 	serverEnabled   bool
 	portIsImplicit  bool
 	dryRun          bool
@@ -298,6 +300,15 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 	if removed := unsetControlTokenEnv(controlToken); len(removed) > 0 {
 		logger.Info("control token removed from the environment agents inherit", slog.Any("names", removed))
 	}
+	supervisorToken, supervisorCap, supervisorErr := resolveSupervisor(cfg.ExtensionSection("server"), controlToken)
+	if supervisorErr != nil {
+		logger.Error("server supervisor token configuration error", slog.Any("error", supervisorErr))
+		return bootResult{}, 1
+	}
+	redact.Add(supervisorTokenSetting, supervisorToken)
+	if removed := unsetControlTokenEnv(supervisorToken); len(removed) > 0 {
+		logger.Info("supervisor token removed from the environment agents inherit", slog.Any("names", removed))
+	}
 
 	trackerCtor, err := registry.Trackers.Get(cfg.Tracker.Kind)
 	if err != nil {
@@ -342,6 +353,8 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 		serverPort:      serverPort,
 		serverHost:      serverHost,
 		controlToken:    controlToken,
+		supervisorToken: supervisorToken,
+		supervisorCap:   supervisorCap,
 		serverEnabled:   serverEnabled,
 		portIsImplicit:  !portFlagSet && !hasServerPortExtension(cfg.ExtensionSection("server")),
 		dryRun:          *dryRun,
