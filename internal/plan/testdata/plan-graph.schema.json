@@ -91,7 +91,7 @@
           "type": "boolean"
         },
         "review": {
-          "description": "Version 2, stories only. The review gate: human (a person merges the pull request), criteria (a separate agent checks the acceptance criteria, then Sortie merges), or ui (built before it is approved once it covers a requirement, checked against its criteria, and merged by the operator, whose merge is its approval; it carries no approved_by or approved_at).",
+          "description": "Version 2, stories only. The review gate: human (a person merges the pull request), criteria (a separate agent checks the acceptance criteria, then Sortie merges), or ui (built before it is approved once it covers a requirement, checked against its criteria, and merged by Sortie once its criteria review, CI and the click-proofs on its preview pass, its approval being the design prototype the operator approved before it was written; it carries no approved_by or approved_at).",
           "enum": ["human", "criteria", "ui"]
         },
         "approved_by": {

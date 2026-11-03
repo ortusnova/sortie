@@ -130,7 +130,7 @@ The SCM adapter also implements the optional `domain.PullRequestOpener`. Its one
 
 ## Conversation comments on a pull request
 
-The SCM adapter also implements the optional `domain.PullRequestCommentReader`. Its one method, `FetchPullRequestComments`, reads `GET /repos/{owner}/{repo}/issues/{number}/comments`: on GitHub a pull request's conversation comments are issue comments, apart from the review comments of `pulls/{number}/comments`. Under plan control the review watch reads it only for a story labelled `sortie-review:ui`, whose operator answers there.
+The SCM adapter also implements the optional `domain.PullRequestCommentReader`. Its one method, `FetchPullRequestComments`, reads `GET /repos/{owner}/{repo}/issues/{number}/comments`: on GitHub a pull request's conversation comments are issue comments, apart from the review comments of `pulls/{number}/comments`. Under plan control it is read only for a story labelled `sortie-review:ui`: the review watch takes its comments as feedback, and auto-merge looks there for the record of its click-proofs on the preview. The endpoint leaves out comments whose author GitHub reports as a bot, so a click-proofs record written by a bot account (a GitHub App or `github-actions[bot]`) is not seen.
 
 **The two ID spaces are kept apart.** Issue comments and review comments are numbered separately, so the adapter returns each issue comment's ID as `issuecomment-<id>`, GitHub's own anchor for it, and a fingerprint over both kinds cannot confuse two comments. An author whose `user.type` is `Bot` and an empty body are left out; the pages are read with the review reads' cap of 20.
 

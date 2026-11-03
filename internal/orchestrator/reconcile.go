@@ -64,6 +64,11 @@ type ReconcileParams struct {
 	// read them.
 	OperatorComments OperatorCommentsFunc
 
+	// ClickProofs, when non-nil, holds auto-merge of a ui story until its
+	// pull request records the click-proofs on its preview. Plan control
+	// sets it.
+	ClickProofs ClickProofsFunc
+
 	// TrackerAdapter fetches current issue states for running issues.
 	TrackerAdapter domain.TrackerAdapter
 

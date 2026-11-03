@@ -205,8 +205,8 @@ const ReviewCriteriaLabel = "sortie-review:criteria"
 const ReviewHumanLabel = "sortie-review:human"
 
 // ReviewUILabel is the label plan sync keeps on a ui story: one built
-// before it is approved, checked against its criteria, and merged by the
-// operator. Sortie never merges it.
+// before it is approved, checked against its criteria, and merged by
+// Sortie once its click-proofs on the preview are recorded.
 const ReviewUILabel = "sortie-review:ui"
 
 // criteriaChecked reports whether a rule matching label must lead to a
