@@ -9,9 +9,9 @@ import (
 )
 
 // supervisorDigest is the state a supervisor session's prompt carries:
-// what the state API serves of runs, retries, parks, holds, platform
-// faults and pull request reactions, and the plan blockers that hold
-// stories.
+// what the state API serves of runs, retries, parks, holds, leases,
+// platform faults and pull request reactions, and the plan blockers that
+// hold stories.
 type supervisorDigest struct {
 	GeneratedAt    time.Time             `json:"generated_at"`
 	DispatchPaused bool                  `json:"dispatch_paused"`
@@ -21,6 +21,7 @@ type supervisorDigest struct {
 	Retrying       []digestRetry         `json:"retrying"`
 	Parked         []digestPark          `json:"parked"`
 	Held           []digestHold          `json:"held"`
+	Leases         []digestLease         `json:"leases"`
 	BudgetHeld     []digestBudgetHold    `json:"budget_held"`
 	PlatformFaults []digestPlatformFault `json:"platform_faults"`
 	Reactions      []digestReaction      `json:"reactions"`
@@ -52,6 +53,18 @@ type digestHold struct {
 	Identifier string    `json:"issue_identifier"`
 	Reason     string    `json:"reason"`
 	Since      time.Time `json:"since"`
+}
+
+// digestLease is a standing hold: who holds the story, why, the evidence
+// of the work, and when the lease ends or ended.
+type digestLease struct {
+	Identifier string     `json:"issue_identifier"`
+	Holder     string     `json:"holder"`
+	Reason     string     `json:"reason,omitempty"`
+	Evidence   string     `json:"evidence"`
+	RenewedAt  time.Time  `json:"renewed_at"`
+	Until      time.Time  `json:"until"`
+	ExpiredAt  *time.Time `json:"expired_at,omitempty"`
 }
 
 type digestBudgetHold struct {
@@ -103,6 +116,7 @@ func buildSupervisorDigest(state *State, now time.Time) supervisorDigest {
 		Retrying:       []digestRetry{},
 		Parked:         []digestPark{},
 		Held:           []digestHold{},
+		Leases:         []digestLease{},
 		BudgetHeld:     []digestBudgetHold{},
 		PlatformFaults: []digestPlatformFault{},
 		Reactions:      []digestReaction{},
@@ -129,6 +143,17 @@ func buildSupervisorDigest(state *State, now time.Time) supervisorDigest {
 			story.BlockedBy = append(story.BlockedBy, digestBlocker{Identifier: b.Identifier, State: b.State, Reason: b.Reason})
 		}
 		d.PlanBlockers = append(d.PlanBlockers, story)
+	}
+	for _, h := range snapshotStandingHolds(state) {
+		lease := digestLease{
+			Identifier: h.Identifier, Holder: h.Holder, Reason: redact.Mask(h.Reason), Evidence: redact.Mask(h.Evidence),
+			RenewedAt: h.RenewedAt.UTC(), Until: h.Until.UTC(),
+		}
+		if !h.ExpiredAt.IsZero() {
+			at := h.ExpiredAt.UTC()
+			lease.ExpiredAt = &at
+		}
+		d.Leases = append(d.Leases, lease)
 	}
 	for _, e := range state.BudgetExhausted {
 		d.BudgetHeld = append(d.BudgetHeld, digestBudgetHold{Identifier: e.Identifier, Reason: e.Reason})

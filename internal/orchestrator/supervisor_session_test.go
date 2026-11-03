@@ -464,6 +464,54 @@ func TestSupervisor_StartsOnAFreeSlotWithStoriesHeld(t *testing.T) {
 	}
 }
 
+// A live lease is the holder's work, so a story it holds starts no session
+// on a free slot; once the lease expires, the story counts as held, and the
+// digest carries the lease with its evidence and expiry.
+func TestSupervisor_FreeSlotAndALease(t *testing.T) {
+	t.Parallel()
+	h := newSupHarness(t, nil)
+	h.run()
+
+	now := time.Now().UTC()
+	until := now.Add(time.Hour)
+	h.tracker.setCandidates(domain.Issue{ID: "id-5", Identifier: "ONS-5", Title: "five", State: "To Do"})
+	h.onLoop(func(context.Context) {
+		h.o.state.StandingHolds["id-5"] = &StandingHold{
+			Identifier: "ONS-5", Holder: "supervisor", Reason: "proving the chain",
+			Evidence: "sandbox run chain-4", Since: now, RenewedAt: now, Until: until,
+		}
+	})
+	h.refresh()
+	h.refresh()
+	var last *SupervisorTrigger
+	var held bool
+	h.onLoop(func(context.Context) {
+		last = h.o.state.supervisor.lastTrigger
+		_, held = h.o.state.Held["id-5"]
+	})
+	if !held || last != nil || h.sup.sessions() != 0 {
+		t.Fatalf("a live lease (held %v) noted %+v and started %d sessions, want none", held, last, h.sup.sessions())
+	}
+
+	h.onLoop(func(context.Context) { h.o.state.StandingHolds["id-5"].ExpiredAt = now })
+	h.refresh()
+	prompt := waittest.Receive(t, h.sup.turns, "the supervisor's turn")
+	for _, want := range []string{
+		"Started by idle_slot.",
+		"1 stories are held",
+		`"leases": [`,
+		`"holder": "supervisor"`,
+		`"evidence": "sandbox run chain-4"`,
+		`"until": "` + until.Format(time.RFC3339Nano) + `"`,
+		`"expired_at": "` + now.Format(time.RFC3339Nano) + `"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	h.waitEnded()
+}
+
 // The sweep starts a session every sweep interval.
 func TestSupervisor_StartsOnTheSweep(t *testing.T) {
 	t.Parallel()

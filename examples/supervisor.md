@@ -24,6 +24,12 @@ What to do:
    `POST /api/v1/<identifier>/fix` and a `message` naming the conflict.
 4. A story the session budget holds that needs one more session to finish:
    grant it with `POST /api/v1/<identifier>/sessions`.
+5. A parked story you are proving yourself: hold it with
+   `POST /api/v1/<identifier>/hold` (`by`, `reason`, and the `evidence` of
+   the work: a sandbox run, a pull request, a step). The lease ends after 60
+   minutes; renew it with the same call only when you have new evidence, and
+   end it with `POST /api/v1/<identifier>/release` when you are done. A lease
+   that expires surfaces the story to a person.
 
 Ask a person, with `POST /api/v1/supervisor/questions`, for a credential, a
 key, a spec or story approval, an operator decision, or any action whose

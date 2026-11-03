@@ -274,11 +274,12 @@ func noteIdleSlot(state *State, dispatched int, now time.Time) {
 }
 
 // heldStoryIDs returns the sorted IDs of the stories held out of dispatch
-// for a reason other than a full slot.
+// for a reason other than a full slot or a live lease, whose holder is
+// already at work on the story.
 func heldStoryIDs(state *State) []string {
 	set := map[string]struct{}{}
 	for id, h := range state.Held {
-		if h.Reason != SkipAgentSlotsFull && h.Reason != SkipSSHHostsFull {
+		if h.Reason != SkipAgentSlotsFull && h.Reason != SkipSSHHostsFull && h.Reason != SkipStandingHold {
 			set[id] = struct{}{}
 		}
 	}
