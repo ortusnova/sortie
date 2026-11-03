@@ -72,3 +72,16 @@ func listSmolvm(ctx context.Context, cli *smolvm.CLI) ([]hostview.Listed, error)
 	}
 	return listed, nil
 }
+
+// newMachineLister lists the machines smolvm runs on this host while the
+// environment in force is smolvm, for the health check of the machines
+// of running issues; under any other kind it lists none.
+func newMachineLister(cfg func() config.ServiceConfig) func(ctx context.Context) ([]hostview.Listed, error) {
+	return func(ctx context.Context) ([]hostview.Listed, error) {
+		c := cfg()
+		if c.Environment.Kind != config.EnvironmentKindSmolvm {
+			return nil, nil
+		}
+		return listSmolvm(ctx, smolvm.NewCLI(c.Environment.Smolvm.Binary))
+	}
+}

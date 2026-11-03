@@ -15,6 +15,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/hostview"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -324,6 +325,14 @@ type OrchestratorParams struct {
 	// the default check.
 	PlatformFaultChecker PlatformFaultChecker
 
+	// MachineLister lists the machines on this host, for the health check
+	// of the machines of running issues under smolvm. Nil checks none.
+	MachineLister func(ctx context.Context) ([]hostview.Listed, error)
+
+	// SCMTokenInspector reports what the forge says of the token Sortie
+	// calls it with, for the health check. Nil asserts it on SCMAdapter.
+	SCMTokenInspector domain.SCMTokenInspector
+
 	// SupervisorToken is server.supervisor_token, which a supervisor
 	// session receives to act through Sortie's API. Empty starts no
 	// supervisor session.
@@ -468,6 +477,17 @@ type Orchestrator struct {
 	// faultChecker checks an open platform fault again; nil uses
 	// [Orchestrator.checkPlatformFault].
 	faultChecker PlatformFaultChecker
+
+	// health is the state of Sortie's own health checks; healthNow, when
+	// set, is the clock they read. tokenInspector is the SCM adapter's
+	// token report, nil when it has none; machineLister lists the
+	// machines on this host; storyChanges, when set, reads the paths an
+	// issue's branch changes in place of [Orchestrator.storyChangedPaths].
+	health         healthState
+	healthNow      func() time.Time
+	tokenInspector domain.SCMTokenInspector
+	machineLister  func(ctx context.Context) ([]hostview.Listed, error)
+	storyChanges   func(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue) ([]string, error)
 
 	// supervisorToken and supervisorWorkDir are what a supervisor session
 	// runs with; supervisorWg tracks the session's goroutine.
@@ -620,6 +640,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		abandonCh:                         params.AbandonCh,
 		hostName:                          faultHostName(params.HostName),
 		faultChecker:                      params.PlatformFaultChecker,
+		health:                            newHealthState(),
+		machineLister:                     params.MachineLister,
+		tokenInspector:                    params.SCMTokenInspector,
 		supervisorToken:                   params.SupervisorToken,
 		supervisorWorkDir:                 params.SupervisorDir,
 	}
@@ -646,6 +669,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.scmAdapter = observeSCM(params.SCMAdapter, o.scmHealth)
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
+		if o.tokenInspector == nil {
+			o.tokenInspector, _ = params.SCMAdapter.(domain.SCMTokenInspector)
+		}
 	}
 	if params.CIProvider != nil {
 		o.ciProvider = observeCI(params.CIProvider, o.scmHealth)
@@ -974,6 +1000,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				WorkerWait: func(issue domain.Issue) *WorkerHold {
 					return o.workerWait(cfg, issue)
 				},
+				HealthHold: func(issue domain.Issue, hold bool) bool {
+					return o.healthHold(ctx, cfg, issue, hold) != nil
+				},
 			})
 			if heldReleased && !o.once.hasOutcome(issueID) {
 				o.once.record(issueID, retryIdentifier, RunOutcomeStopped)
@@ -1221,6 +1250,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	}
 
 	o.startDueFaultChecks(ctx, time.Now())
+	o.runDueHealthChecks(ctx, cfg)
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
@@ -1451,6 +1481,10 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		if wait := o.workerWait(cfg, issue); wait != nil {
 			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
 			o.once.deferFor(issue.ID, deferTick)
+			continue
+		}
+		if o.healthHold(ctx, cfg, issue, true) != nil {
+			o.once.declined(issue, SkipIneligible)
 			continue
 		}
 		adapter, adapterErr := o.agentAdapterByKind(resolution.AgentKind)

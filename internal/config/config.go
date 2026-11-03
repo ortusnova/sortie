@@ -98,6 +98,10 @@ type ServiceConfig struct {
 	// == "") means no supervisor runs.
 	Supervisor SupervisorConfig
 
+	// Health configures what Sortie's own health check reads beyond the
+	// rest of the configuration. The zero value reads nothing more.
+	Health HealthConfig
+
 	// Environment selects where the workspace code of every issue runs.
 	// Its Kind is [EnvironmentKindLocal] when the workflow has no
 	// environment block.
@@ -629,6 +633,7 @@ var knownTopLevelKeys = map[string]bool{
 	"notifications": true,
 	"environment":   true,
 	"supervisor":    true,
+	"health":        true,
 }
 
 // NewServiceConfig converts a raw front matter map into a validated
@@ -833,6 +838,11 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		return ServiceConfig{}, err
 	}
 
+	health, err := buildHealthConfig(raw)
+	if err != nil {
+		return ServiceConfig{}, err
+	}
+
 	registerConfigSecrets(tracker, reactions, notifications, extensions, raw)
 
 	cfg := ServiceConfig{
@@ -851,6 +861,7 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		Notifications:           notifications,
 		Environment:             environment,
 		Supervisor:              supervisor,
+		Health:                  health,
 		conversions:             conversions,
 		envSet:                  envKeys,
 	}

@@ -240,6 +240,15 @@ type SmolvmCredential struct {
 	// standard output is the value. It runs each time a VM starts.
 	// Excludes File.
 	Command string
+
+	// ExpiresCommand optionally holds a shell command run on the host
+	// whose standard output is when the value expires: an RFC 3339 time,
+	// or Unix seconds or milliseconds. Sortie's health check runs it.
+	ExpiresCommand string
+
+	// Login optionally names, as a person knows it, the login that
+	// renews the value. The health check's person action names it.
+	Login string
 }
 
 // Sourced reports whether the binding's value comes from File or
@@ -859,12 +868,39 @@ func parseSmolvmCredentials(m map[string]any) ([]SmolvmCredential, error) {
 			return nil, err
 		}
 
-		creds = append(creds, SmolvmCredential{Name: name, Env: env, Hosts: hosts, Header: header, File: file, Command: command})
+		expiresCommand, login, err := parseCredentialHealth(entry, field)
+		if err != nil {
+			return nil, err
+		}
+
+		creds = append(creds, SmolvmCredential{Name: name, Env: env, Hosts: hosts, Header: header, File: file, Command: command,
+			ExpiresCommand: expiresCommand, Login: login})
 	}
 	if len(creds) == 0 {
 		return nil, nil
 	}
 	return creds, nil
+}
+
+// parseCredentialHealth reads the optional expires_command and login keys
+// of the credential binding entry at field. Neither may be blank.
+func parseCredentialHealth(entry map[string]any, field string) (expiresCommand, login string, err error) {
+	expiresCommand, present, err := requireStringField(entry, "expires_command", field+".expires_command")
+	if err != nil {
+		return "", "", err
+	}
+	if present && strings.TrimSpace(expiresCommand) == "" {
+		return "", "", &ConfigError{Field: field + ".expires_command", Message: "must not be empty; remove the key when the expiry is not known"}
+	}
+	login, present, err = requireStringField(entry, "login", field+".login")
+	if err != nil {
+		return "", "", err
+	}
+	login = strings.TrimSpace(login)
+	if present && login == "" {
+		return "", "", &ConfigError{Field: field + ".login", Message: "must not be empty; remove the key to name the binding instead"}
+	}
+	return expiresCommand, login, nil
 }
 
 // parseCredentialSource reads the optional file and command keys of the

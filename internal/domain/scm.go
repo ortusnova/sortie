@@ -331,6 +331,34 @@ type PullRequestDrafter interface {
 	MarkPullRequestDraft(ctx context.Context, prNumber int, owner, repo string) error
 }
 
+// SCMTokenReport is what a forge says of the token an [SCMAdapter] calls
+// it with.
+type SCMTokenReport struct {
+	// Scopes lists the scopes the token is granted, nil when the forge
+	// does not say, as for a token whose permissions it does not list.
+	Scopes []string
+
+	// ExpiresAt is when the token expires; zero when it does not or the
+	// forge does not say.
+	ExpiresAt time.Time
+}
+
+// SCMTokenInspector is an optional capability of an [SCMAdapter]: an
+// adapter that implements it reports what the forge says of its token,
+// and which scopes a change needs. Implementations must be safe for
+// concurrent use.
+type SCMTokenInspector interface {
+	// InspectToken asks the forge about the token. A token the forge
+	// refuses is a [*SCMError] of Kind [ErrSCMAuth].
+	InspectToken(ctx context.Context) (SCMTokenReport, error)
+
+	// ChangeScopes returns the scopes, as [SCMTokenReport.Scopes] names
+	// them, that a push of a change touching paths needs beyond write
+	// access to the repository's contents, sorted; nil when it needs
+	// none. A path is relative to the repository root, with slashes.
+	ChangeScopes(paths []string) []string
+}
+
 // SCMErrorKind enumerates the normalized error categories that SCM
 // adapter implementations map their native errors to. The orchestrator
 // uses these categories for logging and observability; all SCM errors

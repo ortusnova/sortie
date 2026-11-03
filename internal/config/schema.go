@@ -137,6 +137,11 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			}},
 		},
 	},
+	"health": {
+		Fields: []FieldDef{
+			{Name: "deploy_state", Type: FieldString},
+		},
+	},
 	"supervisor": {
 		Fields: []FieldDef{
 			{Name: "agent", Type: FieldString},

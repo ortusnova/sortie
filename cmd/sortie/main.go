@@ -1051,6 +1051,8 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		Rates:                             startupRates,
 		Once:                              br.once,
 		SupervisorToken:                   br.supervisorToken,
+		SCMTokenInspector:                 tokenInspectorOf(sharedSCM),
+		MachineLister:                     newMachineLister(br.mgr.Config),
 	})
 	o.RestoreRemoteRuns(ctx)
 

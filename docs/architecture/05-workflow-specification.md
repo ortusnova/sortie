@@ -49,6 +49,7 @@ Top-level keys:
 - `notifications`
 - `environment`
 - `supervisor`
+- `health`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -760,7 +761,7 @@ Fields:
   - An argv that stays on Sortie's host in front of the agent session launch and the credential verification launch (Section 10.10). An empty list, or an empty element, fails validation. It never wraps hooks, verification commands, triage, auxiliary commands, or git inspection.
 - `smolvm` (object)
   - Read and validated only when `kind` is `smolvm`.
-  - `binary` (path, default `smolvm`), `pack` (path, required, a readable regular file), `cpus`, `memory_mib`, `storage_gib` (non-negative integers, `0` for smolvm's default), `allow_hosts` (exact host names or `*.domain` patterns), `credentials` (list of `{name, env, hosts, header}` bindings), `repository` (optional object), `pass_env` (list of variable names), `ssh_agent` (boolean, default `false`).
+  - `binary` (path, default `smolvm`), `pack` (path, required, a readable regular file), `cpus`, `memory_mib`, `storage_gib` (non-negative integers, `0` for smolvm's default), `allow_hosts` (exact host names or `*.domain` patterns), `credentials` (list of `{name, env, hosts, header, file, command, expires_command, login}` bindings), `repository` (optional object), `pass_env` (list of variable names), `ssh_agent` (boolean, default `false`).
   - `repository`: `url` and `base` required; `branch_prefix` default `sortie/`; `provider` and `project` optional, with `project` required when `provider` is set; `max_bundle_mib` a positive integer, default `512`.
   - `repositories`: a list of `repository` blocks, each with a unique `name` (`[a-z0-9]+(-[a-z0-9]+)*`), not set together with `repository`; the optional `default_repository` names the entry an issue without a `sortie-repository:<name>` label runs in. An entry may set `dispatch: false`: it stays listed, so plan sync accepts its name, and its issues are not dispatched. Without a default, plan sync refuses a story that names no repository, naming its plan key. The orchestrator dispatches an issue only when the repository it runs in is listed and open to dispatch, so an issue whose label names an unlisted or closed repository, or that names none while no default is set, is left out of the poll: it is not claimed, moved, commented on, held, run, or counted against `max_sessions`. Two Sorties can so share one tracker project, each running the issues of its own repositories. A workspace keeps the repository it was seeded from. Under plan control a blocker in a repository the orchestrator does not dispatch (by its seeded workspace record, else by the same label rule) is judged by its tracker state alone, satisfied in `done_state` and never in `cancel_state`, because its merge record belongs to the Sortie that runs it; a blocker in a dispatched repository keeps the merge rule.
 
@@ -778,6 +779,16 @@ Fields:
 - `max_sessions_per_day` (positive integer, default `48`) and `max_tokens_per_day` (positive integer, default `2000000`): the daily budget, per UTC day, the tokens counted less cache reads.
 
 The section needs `server.supervisor_token`; startup fails without it. A session starts on a park, on a repeated stopped failure whose signature is in no fault class, on a pull request reaction without progress for an hour, on a poll that leaves a story slot free and dispatches nothing while stories are held, and on each sweep. Triggers that come while a session runs wait for the next one; triggers that come while the day's budget is spent are dropped. The session runs on Sortie's host in a directory beside the database, outside `agent.max_concurrent_agents`, for one turn bounded by `agent.turn_timeout_ms`, and is stopped when its tokens reach what the day's budget has left. Its prompt is the rendered template (variables `trigger`, `triggers`, `state`, `state_json`, `supervisor.token`, `supervisor.api_url`) followed by a section holding the token, the API URL, every trigger, and a state digest of the runs, retries, parks, holds, platform faults, reactions and plan blockers. The operator pauses and resumes it with `POST /api/v1/supervisor/pause` and `/resume`. A question it raises for a person is a platform fault of class `supervisor_question` (Section 8.4). Each session is stored in `supervisor_sessions` (Section 19.2). The section reloads; a running session keeps the settings it started with. The full reference is in the [workflow reference](../workflow-reference.md#213-supervisor--supervisor-session).
+
+#### 5.3.13 `health` (object, optional)
+
+What Sortie's own health checks (Section 8.4, Health checks before dispatch) read beyond the rest of the configuration. Absent, they check no deploy.
+
+Fields:
+
+- `deploy_state` (path, optional): the deploy state file a deploy kit writes for this Sortie, with `~` and `$VAR` expanded; it must be absolute then. Its format is in the [workflow reference](../workflow-reference.md#deploy-state-file).
+
+The section reloads: the next health check reads the new path. The full reference is in the [workflow reference](../workflow-reference.md#214-health--health-checks-before-runs-fail).
 
 ### 5.4 Prompt Template Contract
 
