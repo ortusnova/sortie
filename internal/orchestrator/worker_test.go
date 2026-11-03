@@ -10031,12 +10031,20 @@ func TestRunWorkerAttempt_ReactionRunNeverSendsWorkPrompt(t *testing.T) {
 		wantHandedOff []string
 	}{
 		{
-			name:         "label-fix turn 2 keeps the fix branch",
+			name:         "label-fix turn 2 keeps the fix branch's own continuation",
+			kind:         ReactionKindLabelFix,
+			template:     "{{ if .label_fix }}{{ if .run.is_continuation }}FIX MORE{{ else }}FIX{{ end }}{{ else }}WORK{{ end }}",
+			turns:        2,
+			continuation: map[string]any{"label_fix": map[string]any{"branch": "feature/x"}},
+			wantContains: "FIX MORE",
+		},
+		{
+			name:         "label-fix turn 2 of a branch without continuation gets the built-in continuation",
 			kind:         ReactionKindLabelFix,
 			template:     "{{ if .label_fix }}FIX{{ else }}WORK{{ end }}",
 			turns:        2,
 			continuation: map[string]any{"label_fix": map[string]any{"branch": "feature/x"}},
-			wantContains: "FIX",
+			wantContains: "origin/<branch> does not move during the run",
 		},
 		{
 			name:     "review turn 1 shows the comment instead of the work prompt",

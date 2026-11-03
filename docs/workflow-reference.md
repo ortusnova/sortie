@@ -6088,11 +6088,11 @@ The log excerpt and each comment body come from outside Sortie, so the built-in 
 - `label_review`: fetch the diff of the pull request, review it, and post the review comments, without modifying the branch or pushing.
 - `label_fix`: check out the pull request's branch, fetch the outstanding review comments, address them, push to that branch only, and post a summary comment.
 
-Each first-turn built-in prompt ends by asking the agent to signal the outcome as the first-turn status instructions describe, so a run that finishes its task ends without using every turn. On later turns the built-in prompt sends the agent back to the instructions it received at the start of the session and adds no task. That text suits a session whose first turn came from your branch as well as one whose first turn came from the built-in prompt.
+Each first-turn built-in prompt ends by asking the agent to signal the outcome as the first-turn status instructions describe, so a run that finishes its task ends without using every turn. On later turns the built-in prompt sends the agent back to the instructions it received at the start of the session and adds no task. It also says that the commits of earlier turns are in the workspace, that a branch Sortie pushes moves upstream only after the run ends, so `origin/<branch>` does not move during the run, and that the agent must not repeat a fix it already committed. That text suits a session whose first turn came from your branch as well as one whose first turn came from the built-in prompt.
 
-A branch is rendered again on every turn, so it sends the same text each time unless it tests `.run.is_continuation`. Put that test inside the branch, as Section 5.5 shows, to send shorter resume text on later turns.
+A branch is rendered again on every turn. On a later turn Sortie sends your branch only when it tests `.run.is_continuation`, that is, when its text differs with the test false. A branch that renders the same text on every turn gets the built-in continuation text on later turns, so the agent is not sent the first turn's task again. Put the test inside the branch, as Section 5.5 shows, to send your own resume text on later turns.
 
-**A reaction block inside the work prompt.** A block appended to the work prompt counts as your branch, because the render differs with the data. The run then receives the whole work prompt with the block on every turn, a label-fix run included. Sortie does not separate the block from the surrounding text; your branch always wins. To send only the reaction's instructions, put the branches in one exclusive chain, with the work prompt in the last `else`:
+**A reaction block inside the work prompt.** A block appended to the work prompt counts as your branch, because the render differs with the data. The run then receives the whole work prompt with the block on its first turn, and on every later turn when the template tests `.run.is_continuation`, a label-fix run included. Sortie does not separate the block from the surrounding text; your branch always wins. To send only the reaction's instructions, put the branches in one exclusive chain, with the work prompt in the last `else`:
 
 ```
 {{ if .label_review }}
@@ -6185,7 +6185,7 @@ A previous attempt failed. Diagnose the root cause.
 **Turn semantics within a session:**
 
 - The full prompt template is rendered on **every** turn. The runtime always passes the full rendered result to the agent, regardless of turn number.
-- Workflow authors control what the agent receives on continuation turns by branching on `.run.is_continuation`. Without such branching, the agent receives identical instructions every turn.
+- Workflow authors control what the agent receives on continuation turns by branching on `.run.is_continuation`. Without such branching, the agent receives identical instructions every turn, except on a reaction run, whose later turns then get the built-in continuation text (see below).
 - After each turn, the worker re-checks the tracker issue state. If the issue is still active, another turn begins (up to `agent.max_turns`).
 - On a reaction run, the reaction's key stays set on every turn. A template that switches on `.run.is_continuation` at the top level, with the reaction branches only in the first-turn text, renders its resume text on later turns with and without the key. Sortie treats that as no branch for the key and sends the built-in continuation text, which points back to the instructions of the first turn:
 
