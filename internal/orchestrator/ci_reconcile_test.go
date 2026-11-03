@@ -188,6 +188,15 @@ func (s *ciReconcileStore) GetReactionFingerprint(_ context.Context, _, _ string
 	return s.getFingerprintResult, s.getFingerprintDispatched, s.getFingerprintErr
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *ciReconcileStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *ciReconcileStore) MarkReactionDispatched(_ context.Context, _, _ string) error {
 	s.markDispatchedCalls++
 	return s.markDispatchedErr

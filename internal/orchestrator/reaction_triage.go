@@ -1052,4 +1052,9 @@ const (
 	// completion fires when the grace period for the forge to report the
 	// merge commit of a merged pull request has run out.
 	EscalationTriggerMissingMergeCommit ReactionEscalationTrigger = "missing_merge_commit"
+
+	// EscalationTriggerUnresolved is the escalation a kind fires when
+	// every run it may start on one subject ended and left the subject as
+	// it was.
+	EscalationTriggerUnresolved ReactionEscalationTrigger = "unresolved"
 )

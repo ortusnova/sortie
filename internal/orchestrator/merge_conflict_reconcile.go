@@ -231,19 +231,35 @@ func handleMergeConflictDirty(
 	// Head-SHA dedup before the increment so a same-head re-observation
 	// never re-increments the per-episode counter, and before the
 	// attribution query below so a same-head re-observation never
-	// reaches run_history either.
-	storedFP, dispatched, fpErr := params.Store.GetReactionFingerprint(ctx, pending.IssueID, ReactionKindMergeConflict)
+	// reaches run_history either. A head already dispatched for gets
+	// another run only when its earlier runs ended and left it
+	// conflicting.
+	sameHeadRun := false
+	storedFP, dispatches, fpErr := params.Store.GetReactionDispatches(ctx, pending.IssueID, ReactionKindMergeConflict)
 	if fpErr != nil {
 		log.Warn("failed to get merge conflict reaction fingerprint, proceeding without dedup",
 			slog.Any("error", fpErr),
 		)
-	} else if storedFP == fingerprint && dispatched {
-		pending.PendingRetryAt = now.Add(pollInterval)
-		requeueReaction(state, key, pending, waitPollInterval)
-		log.Debug("merge conflict already dispatched for this head, skipping",
+	} else if storedFP == fingerprint && dispatches > 0 {
+		switch sameHeadMergeConflictRun(state, pending, dispatches, now, pollInterval) {
+		case sameHeadWait:
+			pending.PendingRetryAt = now.Add(pollInterval)
+			requeueReaction(state, key, pending, waitPollInterval)
+			log.Debug("merge conflict already dispatched for this head, skipping",
+				slog.Int("pr_number", data.PRNumber),
+			)
+			return
+		case sameHeadSpent:
+			escalateMergeConflictFailure(state, params, pending, dispatches, EscalationTriggerUnresolved,
+				data, fingerprint, now, pollInterval, log, ctx, metrics)
+			return
+		}
+		sameHeadRun = true
+		log.Info("merge conflict runs ended with the head unchanged, retrying",
 			slog.Int("pr_number", data.PRNumber),
+			slog.Int("runs_on_head", dispatches),
+			slog.Int("max_runs_on_head", mergeConflictRunsPerHead),
 		)
-		return
 	}
 
 	// The gate sits above the head-change block so that block runs
@@ -282,25 +298,75 @@ func handleMergeConflictDirty(
 	// Reset the per-episode counter first when the change is positively
 	// not the orchestrator's own work, so a person's push yields
 	// attempts == 1 rather than continuing to climb across successive
-	// conflicting heads regardless of who produced them.
-	if classifyHeadChange(state, params, pending, now, ctx) == headChangeNotOurs {
-		delete(state.ReactionAttempts, rkey)
-	}
-	pending.HeadRecordedAt = now
+	// conflicting heads regardless of who produced them. Another run on
+	// a head already dispatched for is bounded per head instead, so it
+	// neither resets nor spends the counter.
+	if !sameHeadRun {
+		if classifyHeadChange(state, params, pending, now, ctx) == headChangeNotOurs {
+			delete(state.ReactionAttempts, rkey)
+		}
+		pending.HeadRecordedAt = now
 
-	// Per-episode increment for this new conflicting head, then the strict
-	// over-limit cap. The increment happens before the cap so the new
-	// conflicting head is what pushes the episode over budget, and the
-	// escalation reports attempts == MaxRetries + 1.
-	state.ReactionAttempts[rkey]++
-	attempts := state.ReactionAttempts[rkey]
-	if attempts > params.MergeConflictConfig.MaxRetries {
-		escalateMergeConflictFailure(state, params, pending, attempts, EscalationTriggerBudget, data, fingerprint, now, pollInterval, log, ctx, metrics)
-		return
+		// Per-episode increment for this new conflicting head, then the
+		// strict over-limit cap. The increment happens before the cap so
+		// the new conflicting head is what pushes the episode over
+		// budget, and the escalation reports attempts == MaxRetries + 1.
+		state.ReactionAttempts[rkey]++
+		attempts := state.ReactionAttempts[rkey]
+		if attempts > params.MergeConflictConfig.MaxRetries {
+			escalateMergeConflictFailure(state, params, pending, attempts, EscalationTriggerBudget, data, fingerprint, now, pollInterval, log, ctx, metrics)
+			return
+		}
 	}
 
 	dispatchMergeConflictContinuation(state, params, pending, data, status, now, log, ctx)
 	metrics.IncMergeConflictChecks("dispatched")
+}
+
+// mergeConflictRunsPerHead is how many rebase runs one conflicting head
+// gets. A run that ends and leaves the head as it was, because it could
+// not merge the base, stopped, or never got past its start, is followed
+// by another until the head has had this many; then the reaction
+// escalates.
+const mergeConflictRunsPerHead = 3
+
+// sameHeadDecision is what a pass does with a conflicting head that runs
+// were already dispatched for.
+type sameHeadDecision int
+
+const (
+	// sameHeadWait waits: a run of the issue is in flight, or the earlier
+	// runs ended less than a poll interval ago, so a head the last run
+	// pushed may not be reported yet.
+	sameHeadWait sameHeadDecision = iota
+	// sameHeadRetry dispatches another run on the head.
+	sameHeadRetry
+	// sameHeadSpent escalates: the head has had all its runs.
+	sameHeadSpent
+)
+
+// sameHeadMergeConflictRun decides what a pass does with a conflicting
+// head that dispatches runs were already dispatched for. The dispatches
+// are counted in the store, so the bound holds across restarts, and a
+// mark left by a run a previous process lost is followed by a run rather
+// than skipped for ever.
+func sameHeadMergeConflictRun(state *State, pending *PendingReaction, dispatches int, now time.Time, pollInterval time.Duration) sameHeadDecision {
+	if _, running := state.Running[pending.IssueID]; running {
+		pending.SameHeadSince = time.Time{}
+		return sameHeadWait
+	}
+	if pending.SameHeadSince.IsZero() {
+		pending.SameHeadSince = now
+		return sameHeadWait
+	}
+	if now.Sub(pending.SameHeadSince) < pollInterval {
+		return sameHeadWait
+	}
+	if dispatches >= mergeConflictRunsPerHead {
+		return sameHeadSpent
+	}
+	pending.SameHeadSince = time.Time{}
+	return sameHeadRetry
 }
 
 // standingMergeConflictHolds ends the standing escalation when its ceiling
@@ -474,13 +540,20 @@ func applyMergeConflictEscalation(
 	ctx context.Context,
 	metrics domain.Metrics,
 ) {
-	if trigger == EscalationTriggerTriage {
+	switch trigger {
+	case EscalationTriggerTriage:
 		log.Warn("merge conflict triage requested escalation",
 			slog.Int("attempts", attempts),
 			slog.Int("max_retries", params.MergeConflictConfig.MaxRetries),
 			slog.Int("pr_number", data.PRNumber),
 		)
-	} else {
+	case EscalationTriggerUnresolved:
+		log.Warn("merge conflict runs left the pull request conflicting on the same head, escalating",
+			slog.Int("runs_on_head", attempts),
+			slog.Int("max_runs_on_head", mergeConflictRunsPerHead),
+			slog.Int("pr_number", data.PRNumber),
+		)
+	default:
 		log.Warn("merge conflict resolution attempts exhausted, escalating",
 			slog.Int("attempts", attempts),
 			slog.Int("max_retries", params.MergeConflictConfig.MaxRetries),
