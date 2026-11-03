@@ -564,6 +564,36 @@ export interface PendingReactionResponse {
   status_text_full: string;
 }
 
+export interface PersonActionResponse {
+  action: string;
+  where: string;
+  done_at: string | null;
+  done_by: string;
+}
+
+export interface PlatformFaultResponse {
+  id: string;
+  class: string;
+  step: string;
+  signature: string;
+  cause: string;
+  detail: string;
+  person_action: PersonActionResponse | null;
+  stories: PlatformFaultStoryResponse[] | null;
+  recorded_at: string;
+  last_check_at: string | null;
+  last_check_error: string;
+  next_check_at: string;
+  checking: boolean;
+}
+
+export interface PlatformFaultStoryResponse {
+  issue_id: string;
+  issue_identifier: string;
+  display_identifier?: string;
+  held_at: string;
+}
+
 export interface PollHealthResponse {
   status: string;
   checked_at: string | null;
@@ -1192,6 +1222,7 @@ export interface StateResponse {
   cost_unpriced_running?: number;
   spend_ceiling?: SpendCeilingResponse;
   dispatch_paused: DispatchPausedResponse | null;
+  platform_faults: PlatformFaultResponse[] | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;

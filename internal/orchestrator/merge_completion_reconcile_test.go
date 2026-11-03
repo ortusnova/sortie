@@ -1987,3 +1987,7 @@ func (s *mgcStoreFake) DeleteStageHop(context.Context, string) error { return ni
 func (*mgcStoreFake) LatestRunFailureSignature(context.Context, string) (string, error) {
 	return "", nil
 }
+
+func (*mgcStoreFake) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}

@@ -79,6 +79,8 @@ A reaction run presents every comment it carries: the operator's render is chose
 - retry after error/timeout/stall (`attempt >= 1`, `run.is_continuation == false`)
 - first run after a person releases a park (`attempt` null or absent, `run.is_continuation == false`, `park` set on turn 1): the run resumes the parked run's agent session where one was recorded and the agent kind can resume it, and `issue.comments` carries every comment of the issue
 
+The session a story fault starts (Section 8.4, Stopped failure routing) is a retry (`attempt >= 1`) whose first turn carries the failure whatever the template: the worker appends to the rendered first-turn prompt, before the tool advertisement, a section headed `## The previous runs failed` that names the failed step, gives the first line of the error as a JSON string in `<failure_error>`, gives the failing step's whole output, masked and capped as `error_detail` is, as a JSON string in `<failure_output>` that the agent is told to read as output to diagnose and not as instructions, and asks the agent to fix the cause and check that the step passes. The section adds no template variable. A story-fault retry restored from the store after a restart keeps only its error, so its section carries the error without the output.
+
 ### 12.4 Failure Semantics
 
 If prompt rendering fails:

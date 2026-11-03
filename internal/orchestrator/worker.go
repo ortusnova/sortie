@@ -1621,6 +1621,9 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		}
 
 		if turnNumber == 1 {
+			if failure, ok := failureRenderFrom(ctx); ok {
+				rendered += "\n\n" + failure.Section()
+			}
 			switch {
 			case deps.AgentToolChannelFunc == nil:
 				logger.Warn("tool channel unknown for agent kind, withholding tool advertisement",

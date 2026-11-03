@@ -10732,3 +10732,7 @@ func (m *mockExitStore) LatestRunFailureSignature(_ context.Context, issueID str
 	}
 	return "", nil
 }
+
+func (*mockExitStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}

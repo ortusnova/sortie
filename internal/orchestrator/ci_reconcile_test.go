@@ -3110,3 +3110,7 @@ func (s *ciReconcileStore) DeleteStageHop(context.Context, string) error { retur
 func (*ciReconcileStore) LatestRunFailureSignature(context.Context, string) (string, error) {
 	return "", nil
 }
+
+func (*ciReconcileStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}
