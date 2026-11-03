@@ -47,5 +47,8 @@ func memTotalKiB(path string) (uint64, bool) {
 			return kib, err == nil && kib > 0
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return 0, false // a read error: no MemTotal to report
+	}
 	return 0, false
 }
