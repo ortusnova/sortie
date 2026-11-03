@@ -304,6 +304,7 @@ var retryTemplates = map[string]string{
 	"stall":        "retry_stall",
 	"timer":        "retry_timer",
 	"ci_fix":       "retry_ci_fix",
+	"story_fault":  "retry_story_fault",
 }
 
 // issueKey is how a sentence names its issue.

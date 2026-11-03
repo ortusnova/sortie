@@ -55,7 +55,9 @@
 
 - Worker failures:
   - Convert to retries with exponential backoff.
-  - A run that fails with the same failure signature as the issue's previous run (Section 8.4, Repeated failure) is not retried on a timer: the issue is parked with the reason `repeated_failure`, on the park mechanism and release rule the `blocked` stop and the consecutive-absence ceiling share, so a person sees the failure once instead of a retry loop repeating it. The park spends no session, and the issue keeps the rest of its `agent.max_sessions` budget for the runs after its release.
+  - A run that fails with the same failure signature as the issue's previous run (Section 8.4, Repeated failure) is a stopped failure: it is not retried on a timer but routed by its fault class to whoever can act on it (Section 8.4, Stopped failure routing).
+  - A story fault, such as a test that fails the same way twice, starts one new session of the story's agent with the failure in its prompt, within the issue's budgets. When that session fails the same way, the issue is parked with the reason `repeated_failure`, on the park mechanism and release rule the `blocked` stop and the consecutive-absence ceiling share, so a person sees the failure once instead of a retry loop repeating it. The park spends no session, and the issue keeps the rest of its `agent.max_sessions` budget for the runs after its release.
+  - A platform fault, such as a token without a scope, is recorded once with its cause and every story it holds; each story that stops on it is held without using its budget, Sortie checks the condition again on a schedule, and a passing check releases the held stories. A platform fault only a person can clear names the exact action and where to take it, and is served on `/api/v1/state` for the workbench to ask; marking it done checks again at once. A signature in no class is a platform fault with a person action.
   - A failure of a transient class (`network_timeout`, `server_error`, `rate_limit`, `usage_limit`) keeps the backoff however often it repeats, because it is expected to clear on its own.
 
 - Provider usage limit reached:

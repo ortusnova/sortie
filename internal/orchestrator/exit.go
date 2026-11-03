@@ -50,6 +50,7 @@ type WorkerExitStore interface {
 	DeleteParkedIssue(ctx context.Context, issueID string) error
 	CountWorkerRunsCompletedSince(ctx context.Context, issueID string, since time.Time) (int, error)
 	LatestRunFailureSignature(ctx context.Context, issueID string) (string, error)
+	SavePlatformFault(ctx context.Context, fault persistence.PlatformFault) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
 	RecordStageHop(ctx context.Context, hop persistence.StageHop) error
 	DeleteStageHop(ctx context.Context, issueID string) error
@@ -85,6 +86,12 @@ type HandleWorkerExitParams struct {
 
 	// OnRetryFire routes an expired retry timer back into the event loop.
 	OnRetryFire func(issueID string)
+
+	// FaultHost and FaultForge name the host Sortie runs on and the forge
+	// its repository is on in the person action of a platform fault. An
+	// empty FaultHost names this machine.
+	FaultHost  string
+	FaultForge string
 
 	// NowFunc returns the current UTC time; nil uses time.Now().UTC().
 	// Injected for testability.
@@ -466,12 +473,18 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 
 	// A repeated failure parks only a run that drives the issue's state, as
 	// a blocked stop does; a read-only or fix pass keeps its backoff.
+	// A run that stops on an open platform fault is held under it at once,
+	// so it spends no more of its budget on a failure it cannot fix.
 	var failureSignature failcause.Signature
 	repeatedFailure := false
+	var heldByFault *PlatformFault
 	if workerResult.ExitKind == WorkerExitError && (status == "failed" || status == "usage_limited") {
 		failureSignature = runFailureSignature(runError)
 		if dispatchPostureForReactionKind(entry.ReactionKind).DrivesIssueState() {
-			repeatedFailure = repeatsPreviousFailure(ctx, params.Store, workerResult.IssueID, failureSignature, log)
+			heldByFault = openPlatformFault(state, failureSignature)
+			if heldByFault == nil {
+				repeatedFailure = repeatsPreviousFailure(ctx, params.Store, workerResult.IssueID, failureSignature, log)
+			}
 		}
 	}
 
@@ -1534,9 +1547,74 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				)
 				delete(state.Claimed, workerResult.IssueID)
 
+			case heldByFault != nil:
+				log.Warn("worker run stopped on an open platform fault, holding the issue",
+					slog.Any("error", workerResult.Error),
+					slog.String("platform_fault_id", heldByFault.ID),
+				)
+				holdUnderPlatformFault(ctx, state, params.Store, heldByFault, faultHoldOf(entry, workerResult, now), log)
+
+			case repeatedFailure && failcause.RouteOf(failureSignature).Route == failcause.RoutePlatform:
+				// The run failed as the previous run did, on something no
+				// session of the issue can fix: record the platform fault
+				// once and hold the issue under it.
+				routed := failcause.RouteOf(failureSignature)
+				fault := recordPlatformFault(state, newPlatformFaultParams{
+					Signature: failureSignature,
+					Fault:     routed,
+					Cause:     failureStatement(runError),
+					Detail:    failcause.Of(runError),
+					Host:      faultHostName(params.FaultHost),
+					Forge:     params.FaultForge,
+					Now:       now,
+				})
+				log.Warn("worker run failed as the previous run did on a platform fault, holding the issue",
+					slog.Any("error", workerResult.Error),
+					slog.String("failure_signature", failureSignature.String()),
+					slog.String("platform_fault_id", fault.ID),
+					slog.String("fault_class", fault.Class),
+					slog.Bool("person_action", fault.Action != nil),
+				)
+				holdUnderPlatformFault(ctx, state, params.Store, fault, faultHoldOf(entry, workerResult, now), log)
+
+			case repeatedFailure && entry.Trigger != triggerStoryFault && incumbent == nil:
+				// The run failed as the previous run did, on something the
+				// story's agent can fix: one new session starts with the
+				// failure in its prompt, within the issue's budget.
+				nextAttempt = NextAttempt(entry.RetryAttempt)
+				retry := ScheduleRetryParams{
+					IssueID:             workerResult.IssueID,
+					Identifier:          workerResult.Identifier,
+					DisplayID:           entry.Issue.DisplayID,
+					Attempt:             nextAttempt,
+					Error:               redact.Mask(WorkerExitedErrorPrefix + runError.Error()),
+					LastSSHHost:         workerResult.SSHHost,
+					AgentKind:           entry.AgentKind,
+					ConfiguredModel:     entry.ConfiguredModel,
+					RuleName:            entry.RuleName,
+					StageLineage:        entry.StageLineage,
+					RuleSettingsApplied: entry.RuleSettingsApplied,
+					TemplateID:          entry.TemplateID,
+					Logger:              log,
+					IssueIdentity:       issueIdentityOf(entry.Issue),
+					Trigger:             triggerStoryFault,
+					Failure:             storyFailureOf(runError),
+				}
+				log.Warn("worker run failed as the previous run did on a story fault, starting a session with the failure",
+					slog.Any("error", workerResult.Error),
+					slog.String("failure_signature", failureSignature.String()),
+					slog.String("fault_class", failcause.RouteOf(failureSignature).Class),
+					slog.Int("next_attempt", nextAttempt),
+				)
+				ScheduleRetry(state, retry, params.OnRetryFire)
+				metrics.IncRetries(retry.Trigger)
+				retryScheduled = true
+
 			case repeatedFailure:
-				// The run failed as the issue's previous run did, so a
-				// timer would only repeat it: park the issue for a person.
+				// The run failed as the previous run did, and either the
+				// session started with that failure failed the same way or
+				// another unit of work holds the retry slot: park the issue
+				// for a person.
 				log.Warn("worker run failed as the previous run did, parking instead of retrying",
 					slog.Any("error", workerResult.Error),
 					slog.String("failure_signature", failureSignature.String()),

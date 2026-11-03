@@ -1755,3 +1755,7 @@ func (s *statefulFingerprintStore) DeleteStageHop(context.Context, string) error
 func (*mcAttributionStore) LatestRunFailureSignature(context.Context, string) (string, error) {
 	return "", nil
 }
+
+func (*mcAttributionStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
+	return nil
+}

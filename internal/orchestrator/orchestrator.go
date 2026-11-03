@@ -71,6 +71,7 @@ type OrchestratorStore interface {
 	MarkReactionObservationDispatched(ctx context.Context, issueID, kind, fingerprint string) error
 	CountWorkerRunsCompletedSince(ctx context.Context, issueID string, since time.Time) (int, error)
 	LatestRunFailureSignature(ctx context.Context, issueID string) (string, error)
+	SavePlatformFault(ctx context.Context, fault persistence.PlatformFault) error
 	LatestRunCompletionByIdentifier(ctx context.Context, identifiers []string) (map[string]string, error)
 	UpsertParkedIssue(ctx context.Context, entry persistence.ParkedIssue) error
 	DeleteParkedIssue(ctx context.Context, issueID string) error
@@ -313,6 +314,14 @@ type OrchestratorParams struct {
 	// Once makes Run dispatch from one candidate poll and return when that
 	// work settles. See [Orchestrator.OnceResult].
 	Once bool
+
+	// HostName names the host Sortie runs on in the person action of a
+	// platform fault. Empty names this machine by its host name.
+	HostName string
+
+	// PlatformFaultChecker checks an open platform fault again. Nil uses
+	// the default check.
+	PlatformFaultChecker PlatformFaultChecker
 }
 
 // Orchestrator owns the poll-and-dispatch event loop and all runtime state.
@@ -442,6 +451,13 @@ type Orchestrator struct {
 	// completed" record, nil before the first. Read and written only by
 	// handleTick.
 	lastTickSummary []slog.Attr
+
+	// hostName names the host Sortie runs on in a person action.
+	hostName string
+
+	// faultChecker checks an open platform fault again; nil uses
+	// [Orchestrator.checkPlatformFault].
+	faultChecker PlatformFaultChecker
 }
 
 // NewOrchestrator creates an [Orchestrator] with all dependencies wired.
@@ -586,6 +602,8 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		ciTriage:                          ciTriage,
 		blockerResolver:                   params.BlockerResolver,
 		abandonCh:                         params.AbandonCh,
+		hostName:                          faultHostName(params.HostName),
+		faultChecker:                      params.PlatformFaultChecker,
 	}
 	workflowPath := ""
 	if params.WorkflowManager != nil {
@@ -771,6 +789,8 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			MaxConsecutiveAbsences:            cfg.Agent.MaxConsecutiveAbsences,
 			HandoffParkingLabel:               o.handoffParkingLabel,
 			OnRetryFire:                       o.onRetryFire,
+			FaultHost:                         o.hostName,
+			FaultForge:                        faultForge(RepositoryProvider(cfg.Environment)),
 			Ctx:                               ctx,
 			Logger:                            o.logger,
 			BeforeRemoveHook:                  cfg.Hooks.BeforeRemove,
@@ -914,6 +934,13 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				ReleaseHeld:            o.once != nil,
 				Dispatches: func(issue domain.Issue) bool {
 					return dispatchesIssue(cfg.Environment, cfg.Workspace.Root, issue)
+				},
+				CompleteMerged: func(issue domain.Issue) (domain.Issue, bool) {
+					completed := o.completeMerged(ctx, cfg, []domain.Issue{issue})
+					if len(completed) == 0 {
+						return issue, false
+					}
+					return completed[0], true
 				},
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
@@ -1161,6 +1188,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		o.databaseHealth.record(time.Now(), err)
 	}
 
+	o.startDueFaultChecks(ctx, time.Now())
+
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
@@ -1282,6 +1311,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var dispatchable []domain.Issue
 	dispatchable, o.leftAlone = dispatchableIssues(cfg.Environment, cfg.Workspace.Root, issues, o.leftAlone, o.logger)
 	sorted := SortForDispatch(dispatchable)
+	sorted = o.completeMerged(ctx, cfg, sorted)
 	clearDispatchBlocks(o.state, sorted, time.Now(), o.logger)
 	o.once.setCandidates(sorted)
 	input := pausedDispatchInput(o.state, o.once.dispatchInput(sorted))

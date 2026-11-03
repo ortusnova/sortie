@@ -2623,6 +2623,146 @@
       ],
       "type": "object"
     },
+    "PersonActionResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "done_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "done_by": {
+          "type": "string"
+        },
+        "where": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "where",
+        "done_at",
+        "done_by"
+      ],
+      "type": "object"
+    },
+    "PlatformFaultResponse": {
+      "properties": {
+        "cause": {
+          "type": "string"
+        },
+        "checking": {
+          "type": "boolean"
+        },
+        "class": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_check_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_check_error": {
+          "type": "string"
+        },
+        "next_check_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "person_action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersonActionResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "stories": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PlatformFaultStoryResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "class",
+        "step",
+        "signature",
+        "cause",
+        "detail",
+        "person_action",
+        "stories",
+        "recorded_at",
+        "last_check_at",
+        "last_check_error",
+        "next_check_at",
+        "checking"
+      ],
+      "type": "object"
+    },
+    "PlatformFaultStoryResponse": {
+      "properties": {
+        "display_identifier": {
+          "type": "string"
+        },
+        "held_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id",
+        "issue_identifier",
+        "held_at"
+      ],
+      "type": "object"
+    },
     "PollHealthResponse": {
       "properties": {
         "checked_at": {
@@ -5811,6 +5951,19 @@
             }
           ]
         },
+        "platform_faults": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PlatformFaultResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "pulls": {
           "items": {
             "$ref": "#/$defs/PullWaitResponse"
@@ -5907,6 +6060,7 @@
         "agent_totals",
         "rate_limits",
         "dispatch_paused",
+        "platform_faults",
         "waits",
         "pulls",
         "supervisor_actions"

@@ -1,4 +1,4 @@
--- Migration 1009 (fork range): standing holds, leases on issues that are not running
+-- Migration 1010 (fork range): standing holds, leases on issues that are not running
 --
 -- One row per held issue. A row keeps the issue out of dispatch until a
 -- release deletes it, so the hold outlives a restart. A hold is a lease:

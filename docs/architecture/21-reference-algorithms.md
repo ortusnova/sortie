@@ -1338,14 +1338,32 @@ on_worker_exit(issue_id, reason, worker_result, state):
           usage_limit_notified: true
         })
       # else: an incumbent retry takes usage_limit_notified: true
+    elif open_platform_fault(state, signature) is fault:
+      # a run that drives the issue's state stopped on a fault already open
+      hold_under_platform_fault(state, fault, issue_id)  // releases the claim, cancels the retry, saves the fault
     elif repeated_failure:
       # signature = failure_signature(step, class, normalized first line),
       # recorded on the run's row; repeated_failure was read before the row
       # was written: the signature is not transient, the run drives the
       # issue's state, and it equals the latest row's failure_signature.
-      log_warn("worker run failed as the previous run did, parking instead of retrying", signature)
-      park_issue(state, issue_id, reason="repeated_failure",
-        statement=first_line(mask(reason)))           // releases the claim, cancels the retry
+      routed = route_of(signature)                    // first fault class whose list matches
+      if routed.route == "platform":
+        fault = record_platform_fault(state, signature, routed,
+          cause=first_line(mask(reason)), detail=error_detail,
+          action=routed.action(host, forge))          // next check due in 5m
+        hold_under_platform_fault(state, fault, issue_id)
+      elif running_entry.trigger != "story_fault" and retry_slot_incumbent(state, issue_id) is nil:
+        state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
+          identifier: running_entry.identifier,
+          error: format("worker exited: %reason"),
+          delay: 0,
+          trigger: "story_fault",
+          failure: {step, first_line(mask(reason)), error_detail}  // appended to the first turn's prompt
+        })
+      else:
+        log_warn("worker run failed as the previous run did, parking instead of retrying", signature)
+        park_issue(state, issue_id, reason="repeated_failure",
+          statement=first_line(mask(reason)))         // releases the claim, cancels the retry
     elif retry_slot_incumbent(state, issue_id) is nil:
       state = schedule_retry(state, issue_id, next_attempt_from(running_entry), {
         identifier: running_entry.identifier,
