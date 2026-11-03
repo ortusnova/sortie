@@ -35,6 +35,7 @@ type RetryTimerStore interface {
 	LatestAgentRuns(ctx context.Context, issueIDs []string) (map[string]persistence.RunHistory, error)
 	TokenUsageByIssue(ctx context.Context, issueID string) (persistence.IssueTokenUsage, error)
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
+	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	UpsertParkedIssue(ctx context.Context, entry persistence.ParkedIssue) error
 	DeleteParkedIssue(ctx context.Context, issueID string) error
 	ResetHandoffAbsenceSequence(ctx context.Context, issueID string) error
@@ -52,6 +53,10 @@ type HandleRetryTimerParams struct {
 	Store RetryTimerStore
 
 	TrackerAdapter domain.TrackerAdapter
+
+	// SCMAdapter removes the command label of a label command whose run
+	// starts. Nil removes none.
+	SCMAdapter domain.SCMAdapter
 
 	// Router selects the destinations of the budget-hold event. Nil
 	// routes nothing.
@@ -248,6 +253,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			ContinuationContext: popped.ContinuationContext,
 			ReactionKind:        popped.ReactionKind,
 			Continuation:        popped.Continuation,
+			Command:             popped.Command,
 			AgentKind:           popped.AgentKind,
 			ConfiguredModel:     popped.ConfiguredModel,
 			RuleName:            popped.RuleName,
@@ -987,6 +993,8 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 	metrics.IncDispatches(outcomeSuccess)
 
+	acknowledgeLabelCommand(ctx, params, issueID, popped, log)
+
 	// Mark the reaction fingerprint dispatched only after dispatch
 	// succeeds. Non-reaction retries have no fingerprint row.
 	if isKnownReaction {
@@ -1014,6 +1022,38 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		)
 	}
 	return false
+}
+
+// acknowledgeLabelCommand records the label command a started run handles:
+// it persists the command's journal position as the kind's mark, then
+// removes the command label as the person's acknowledgment. It runs when
+// the run starts, not when the reaction queues it, because a queued retry
+// is runtime-only: a restart that loses it leaves the label and the mark
+// as they were, so the watch rebuilt at startup runs the command again. A
+// failed write is logged; a failed removal does not affect dedup, which
+// rests on the mark.
+func acknowledgeLabelCommand(ctx context.Context, params HandleRetryTimerParams, issueID string, popped *RetryEntry, log *slog.Logger) {
+	if popped.Command == (LabelCommand{}) {
+		return
+	}
+	if err := params.Store.UpsertReactionFingerprint(ctx, issueID, popped.ReactionKind, popped.Command.Mark); err != nil {
+		log.Warn("failed to record label command handled after retry dispatch",
+			slog.String("kind", popped.ReactionKind),
+			slog.Any("error", err),
+		)
+	}
+	if params.SCMAdapter == nil {
+		return
+	}
+	pr := popped.Continuation
+	if err := params.SCMAdapter.RemoveLabel(ctx, pr.PRNumber, pr.Owner, pr.Repo, popped.Command.Label); err != nil {
+		log.Warn("command label removal failed",
+			slog.String("kind", popped.ReactionKind),
+			slog.Int("pr_number", pr.PRNumber),
+			slog.String("label", popped.Command.Label),
+			slog.Any("error", err),
+		)
+	}
 }
 
 // isStaleRetryTimer reports whether the entry belongs to a newer

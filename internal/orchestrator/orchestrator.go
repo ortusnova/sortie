@@ -883,6 +883,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			heldReleased := HandleRetryTimer(o.state, issueID, HandleRetryTimerParams{
 				Store:                  o.store,
 				TrackerAdapter:         o.trackerAdapter,
+				SCMAdapter:             o.scmAdapter,
 				Router:                 o.router,
 				ActiveStates:           cfg.Tracker.ActiveStates,
 				TerminalStates:         cfg.Tracker.TerminalStates,
