@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ func remoteWorkflow(intervalMS int, extraRemote, extraTop string) []byte {
 	b.WriteString(strconv.Itoa(intervalMS))
 	b.WriteString("\nenvironment:\n  kind: remote\n  remote:\n    image: ghcr.io/ortusnova/agent:1\n    flows:\n")
 	for _, f := range config.RemoteFlows {
-		b.WriteString("      " + f + ": { url: https://edge.example/" + f + " }\n")
+		fmt.Fprintf(&b, "      %s: { url: https://edge.example/%s }\n", f, f)
 	}
 	b.WriteString("    repositories:\n")
 	b.WriteString("      - { name: homelab, url: https://example.com/o/homelab.git, base: main, image: ghcr.io/ortusnova/homelab:1, requires: { capabilities: [nested] } }\n")

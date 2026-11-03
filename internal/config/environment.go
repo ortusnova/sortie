@@ -52,7 +52,6 @@ const (
 	smolvmField               = environmentField + ".smolvm"
 	smolvmRepositoryField     = smolvmField + ".repository"
 	smolvmRepositoriesField   = smolvmField + ".repositories"
-	smolvmDefaultRepoField    = smolvmField + ".default_repository"
 	smolvmCredentialsField    = smolvmField + ".credentials"
 	maxHostNameLength         = 253
 )
