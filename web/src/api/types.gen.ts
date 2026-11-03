@@ -121,6 +121,7 @@ export interface BudgetExhaustedResponse {
   reason: string;
   used_sessions: number;
   budget_sessions: number | null;
+  granted_sessions: number;
   used_tokens: number | null;
   budget_tokens: number | null;
   used_usd: number | null;
@@ -845,6 +846,7 @@ export interface RunningEntryResponse {
   api_requests_measured: boolean;
   used_sessions: number | null;
   budget_sessions: number | null;
+  granted_sessions: number;
   issue_tokens_completed: number | null;
   unmeasured_sessions: number | null;
   used_tokens: number | null;

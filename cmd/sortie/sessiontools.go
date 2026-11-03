@@ -123,7 +123,7 @@ func BuildSessionToolRegistry(ctx context.Context, logger *slog.Logger, params S
 		} else {
 			store = openedStore
 			reg.Register(history.New(buildHistoryQuery(store), params.IssueID))
-			reg.Register(budget.New(buildBudgetQuery(store), params.IssueID, params.DispatchID, params.MaxTokens, params.MaxSessions, params.TokenWarningThreshold, params.MaxCostUSD))
+			reg.Register(budget.New(buildBudgetQuery(store), params.IssueID, params.DispatchID, params.MaxTokens, grantedSessionBudget(ctx, logger, store, params), params.TokenWarningThreshold, params.MaxCostUSD))
 		}
 	}
 

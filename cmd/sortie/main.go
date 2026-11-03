@@ -1086,6 +1086,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			AnswerFn:               server.AnswerFunc(o.AnswerFunc()),
 			DispatchPauseFn:        server.DispatchPauseFunc(o.DispatchPauseFunc()),
 			PlatformFaultDoneFn:    server.PlatformFaultDoneFunc(o.PlatformFaultDoneFunc()),
+			SessionGrantFn:         server.SessionGrantFunc(o.SessionGrantFunc()),
 			PullBackFn:             server.PlanControlFunc(o.PullBackFunc()),
 			PlanCancelFn:           server.PlanControlFunc(o.PlanCancelFunc()),
 			BrokerReportFn:         server.BrokerReportFunc(o.BrokerReportFunc()),

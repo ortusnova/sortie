@@ -1621,6 +1621,10 @@ type State struct {
 	// FaultHolds maps the ID of each issue an open platform fault holds out
 	// of dispatch to that fault's ID. Only the event loop mutates this map.
 	FaultHolds map[string]string
+
+	// sessionGrants is what the store holds of the sessions operators
+	// granted beyond agent.max_sessions. Owned by the event loop.
+	sessionGrants sessionGrantCache
 }
 
 // continuationCtxKey is the context key for reaction continuation data
@@ -2031,6 +2035,7 @@ type SnapshotBudgetEntry struct {
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
+	GrantedSessions    int       `json:"granted_sessions"`
 	UsedTokens         *int64    `json:"used_tokens"`
 	BudgetTokens       int64     `json:"budget_tokens"`
 	UnmeasuredSessions *int      `json:"unmeasured_sessions"`
@@ -2177,6 +2182,10 @@ type RuntimeSnapshotResult struct {
 	// PlatformFaults is a copy of every open platform fault, oldest first;
 	// empty when there is none.
 	PlatformFaults []SnapshotPlatformFault `json:"-"`
+
+	// SessionGrants is the sessions granted to each issue beyond
+	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
+	SessionGrants map[string]int `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -2468,6 +2477,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
 	snap.DispatchPause = state.dispatchPause.snapshot()
 	snap.PlatformFaults = snapshotPlatformFaults(state)
+	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
@@ -2485,6 +2495,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			Reason:             entry.Reason,
 			UsedSessions:       entry.UsedSessions,
 			BudgetSessions:     entry.BudgetSessions,
+			GrantedSessions:    state.sessionGrants.totals[id],
 			UsedTokens:         entry.UsedTokens,
 			BudgetTokens:       entry.BudgetTokens,
 			UnmeasuredSessions: entry.UnmeasuredSessions,

@@ -2226,6 +2226,9 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 	// post a second comment for a hold that never ended.
 	budgetEvidenceComplete := true
 
+	grants := sessionGrantsOf(ctx, o.state, o.store, o.logger)
+	budgetSessions := func(id string) int { return sessionBudget(cfg.Agent.MaxSessions, grants[id]) }
+
 	if cfg.Agent.MaxSessions > 0 {
 		counts, qErr := o.store.QueryBudgetExhaustedIssues(ctx, candidateIDs, cfg.Agent.MaxSessions)
 		if qErr != nil {
@@ -2242,13 +2245,18 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 			}
 		} else {
 			for id, count := range counts {
+				// The store returns the issues at agent.max_sessions; an
+				// issue granted more sessions is held only at its own budget.
+				if grants[id] > 0 && count < budgetSessions(id) {
+					continue
+				}
 				fresh[id] = &BudgetExhaustedEntry{
 					Identifier:     identifierByID[id],
 					DisplayID:      displayIDByID[id],
 					IssueIdentity:  identityByID[id],
 					Reason:         budgetReasonSession,
 					UsedSessions:   count,
-					BudgetSessions: cfg.Agent.MaxSessions,
+					BudgetSessions: budgetSessions(id),
 					BudgetTokens:   int64(cfg.Agent.MaxTokens),
 					BudgetUSD:      cfg.Agent.MaxCostUSD,
 				}
@@ -2292,7 +2300,7 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 							IssueIdentity:  identityByID[id],
 							Reason:         budgetReasonToken,
 							UsedSessions:   usage.Sessions,
-							BudgetSessions: cfg.Agent.MaxSessions,
+							BudgetSessions: budgetSessions(id),
 							BudgetTokens:   int64(cfg.Agent.MaxTokens),
 							BudgetUSD:      cfg.Agent.MaxCostUSD,
 						}
@@ -2325,7 +2333,7 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 							IssueIdentity:  identityByID[id],
 							Reason:         budgetReasonMoney,
 							UsedSessions:   usage.Sessions,
-							BudgetSessions: cfg.Agent.MaxSessions,
+							BudgetSessions: budgetSessions(id),
 							BudgetTokens:   int64(cfg.Agent.MaxTokens),
 							BudgetUSD:      cfg.Agent.MaxCostUSD,
 						}

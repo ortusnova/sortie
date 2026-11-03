@@ -181,6 +181,24 @@ func TestNextOutcomes(t *testing.T) {
 			},
 		},
 		{
+			name:      "sessions granted beyond the budget keep a running stage free",
+			situation: Situation{Running: workSession("specify", 0), Spend: &Spend{Sessions: 4, GrantedSessions: 1}},
+			shape:     withSessionBudget(fixtureShape(noReactions), 5),
+			want: []NextOutcome{
+				{succeeds, "Sortie adds `stage-implement`, and a poll tick then starts stage implement in a new session."},
+				{fails, retries},
+			},
+		},
+		{
+			name:      "a granted budget that is used up names the granted budget",
+			situation: Situation{Running: workSession("specify", 0), Spend: &Spend{Sessions: 6, GrantedSessions: 2}},
+			shape:     withSessionBudget(fixtureShape(noReactions), 5),
+			want: []NextOutcome{
+				{succeeds, "Sortie adds `stage-implement`, then holds the issue at its session budget (7 of 7 sessions used) before stage implement starts."},
+				{fails, "Sortie holds the issue at its session budget (7 of 7 sessions used)."},
+			},
+		},
+		{
 			name:      "a CI failure with a triage command runs it even when fixes are used up",
 			situation: Situation{PendingReactions: pendingRow("ci", watchedFor(1500*time.Second, 2, 2))},
 			shape:     fixtureShape(ciTriage),

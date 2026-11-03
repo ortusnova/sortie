@@ -458,6 +458,9 @@
           "format": "date-time",
           "type": "string"
         },
+        "granted_sessions": {
+          "type": "integer"
+        },
         "issue_id": {
           "type": "string"
         },
@@ -575,6 +578,7 @@
         "reason",
         "used_sessions",
         "budget_sessions",
+        "granted_sessions",
         "used_tokens",
         "budget_tokens",
         "used_usd",
@@ -3975,6 +3979,9 @@
             }
           ]
         },
+        "granted_sessions": {
+          "type": "integer"
+        },
         "held": {
           "type": "boolean"
         },
@@ -4308,6 +4315,7 @@
         "api_requests_measured",
         "used_sessions",
         "budget_sessions",
+        "granted_sessions",
         "issue_tokens_completed",
         "unmeasured_sessions",
         "used_tokens",

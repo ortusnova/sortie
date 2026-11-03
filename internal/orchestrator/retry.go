@@ -389,6 +389,10 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	// announcement memory when it already knows this issue under the same
 	// reason, so a hold surviving a gap in candidacy keeps its onset time.
 	blocked := false
+	budgetSessions := params.MaxSessions
+	if budgetSessions > 0 {
+		budgetSessions = sessionBudget(params.MaxSessions, sessionGrantsOf(ctx, state, params.Store, log)[issueID])
+	}
 	blockBudget := func(reason string, usedSessions int, usage *persistence.IssueTokenUsage) {
 		at := time.Now().UTC()
 		if told, wasTold := state.BudgetAnnounced[issueID]; wasTold && told.Reason == reason {
@@ -400,7 +404,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			IssueIdentity:   popped.IssueIdentity,
 			Reason:          reason,
 			UsedSessions:    usedSessions,
-			BudgetSessions:  params.MaxSessions,
+			BudgetSessions:  budgetSessions,
 			BudgetTokens:    int64(params.MaxTokens),
 			BudgetUSD:       params.MaxCostUSD,
 			ExhaustedAt:     at,
@@ -456,18 +460,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 
 	// Effort budget gate: release the claim if completed sessions have
-	// reached max_sessions. Runs before the tracker fetch.
+	// reached max_sessions plus the sessions granted to the issue. Runs
+	// before the tracker fetch.
 	if params.MaxSessions > 0 {
 		count, countErr := params.Store.CountRunHistoryByIssue(ctx, issueID)
 		if countErr != nil {
 			log.Warn("effort budget check failed, proceeding with dispatch",
 				slog.Any("error", countErr),
 			)
-		} else if count >= params.MaxSessions {
+		} else if count >= budgetSessions {
 			log.Warn("effort budget exhausted, blocking re-dispatch",
 				slog.String("reason", budgetReasonSession),
 				slog.Int("count", count),
 				slog.Int("max_sessions", params.MaxSessions),
+				slog.Int("budget_sessions", budgetSessions),
 			)
 			blockBudget(budgetReasonSession, count, nil)
 		}
@@ -498,7 +504,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 						slog.Int64("used_tokens", usage.UncachedTokens),
 						slog.Int("budget_tokens", params.MaxTokens),
 						slog.Int("used_sessions", usage.Sessions),
-						slog.Int("budget_sessions", params.MaxSessions),
+						slog.Int("budget_sessions", budgetSessions),
 					)
 					blockBudget(budgetReasonToken, usage.Sessions, &usage)
 				} else {
@@ -520,7 +526,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 						slog.Float64("used_usd", used),
 						slog.Float64("budget_usd", params.MaxCostUSD),
 						slog.Int("used_sessions", usage.Sessions),
-						slog.Int("budget_sessions", params.MaxSessions),
+						slog.Int("budget_sessions", budgetSessions),
 					)
 					blockBudget(budgetReasonMoney, usage.Sessions, &usage)
 					state.BudgetExhausted[issueID].setMoneyUsage(usage)

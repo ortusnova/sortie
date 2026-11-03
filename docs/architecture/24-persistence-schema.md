@@ -443,7 +443,21 @@ The rows of a run are written once, at worker exit, in the transaction that appe
 
 Every write of `run_events` updates `bytes` in its own transaction, so the figure the 2 GiB bound reads is exact and a write never sums the table, a cost that grows with the stored volume. The migration creates the row at 0 beside the empty table.
 
-**`platform_faults`**: platform faults, each recorded once by its failure signature (Section 8.4, Stopped failure routing) (migration 1007)
+**`session_grants`**: sessions an operator granted an issue beyond `agent.max_sessions` (migration 1007)
+
+| Column       | Type                | Notes                                                                 |
+| ------------ | ------------------- | --------------------------------------------------------------------- |
+| `id`         | INTEGER PRIMARY KEY | Auto-increment                                                        |
+| `issue_id`   | TEXT NOT NULL       | Tracker-internal issue ID; indexed                                    |
+| `identifier` | TEXT NOT NULL       | The identifier the grant named                                        |
+| `sessions`   | INTEGER NOT NULL    | The sessions the grant added, from 1 to 64                            |
+| `granted_by` | TEXT NOT NULL       | Who granted them, `operator` when the request named no one            |
+| `reason`     | TEXT NOT NULL       | Why, as the request said; may be empty                                |
+| `granted_at` | TEXT NOT NULL       | RFC 3339 timestamp with nanoseconds, in UTC                           |
+
+One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budget is `agent.max_sessions` plus the sum of its rows' `sessions`. Rows are never deleted. The event loop reads the sums once, at the first budget check after startup, and keeps them in memory with each new grant; a failed read counts no grant and is tried again at the next check.
+
+**`platform_faults`**: platform faults, each recorded once by its failure signature (Section 8.4, Stopped failure routing) (migration 1008)
 
 | Column             | Type    | Notes |
 | ------------------ | ------- | ----- |
@@ -462,7 +476,7 @@ Every write of `run_events` updates `bytes` in its own transaction, so the figur
 | `last_check_error` | TEXT    | The error of the latest check, credentials masked; empty when it passed or none ran |
 | `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed; empty while the fault is open. A resolved row is kept and never loaded again |
 
-**`platform_fault_holds`**: the stories an open platform fault holds out of dispatch (migration 1007)
+**`platform_fault_holds`**: the stories an open platform fault holds out of dispatch (migration 1008)
 
 | Column       | Type | Notes |
 | ------------ | ---- | ----- |
