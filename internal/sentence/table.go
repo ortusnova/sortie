@@ -294,7 +294,7 @@ var table = map[string]parts{
 	"attn_budget_sessions": {
 		reason: "Session budget reached",
 		why:    "The issue has used {{plural .UsedSessions \"session\" \"sessions\"}} of its budget of {{count .BudgetSessions}}.",
-		clears: "Clears on the next poll tick after `agent.max_sessions` is raised above {{count .UsedSessions}} or is removed, " + budgetLeaves,
+		clears: "Clears when more sessions are granted to the issue, or on the next poll tick after `agent.max_sessions` is raised above {{count .Above}} or is removed, " + budgetLeaves,
 	},
 	"attn_reload": {
 		reason: "{{.File}} failed to load",

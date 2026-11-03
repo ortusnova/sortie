@@ -325,7 +325,14 @@ func TestAttentionTexts(t *testing.T) {
 		{"session hold", budgetInput(nil), nil, texts{
 			"Session budget reached",
 			"The issue has used 3 sessions of its budget of 3.",
-			"Clears on the next poll tick after `agent.max_sessions` is raised above 3 or is removed, or after the issue leaves the active tracker states.",
+			"Clears when more sessions are granted to the issue, or on the next poll tick after `agent.max_sessions` is raised above 3 or is removed, or after the issue leaves the active tracker states.",
+		}},
+		{"session hold after a grant", budgetInput(func(r *orchestrator.SnapshotBudgetEntry) {
+			r.UsedSessions, r.BudgetSessions, r.GrantedSessions = 7, 7, 4
+		}), nil, texts{
+			"Session budget reached",
+			"The issue has used 7 sessions of its budget of 7.",
+			"Clears when more sessions are granted to the issue, or on the next poll tick after `agent.max_sessions` is raised above 3 or is removed, or after the issue leaves the active tracker states.",
 		}},
 		{"workflow reload failure", healthInput(failingHealth(attentionAt, time.Time{}, false)), nil, texts{
 			"WORKFLOW.md failed to load",

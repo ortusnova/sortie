@@ -210,6 +210,7 @@ func budgetItem(cause orchestrator.AttentionCause) AttentionItem {
 		data = map[string]any{
 			"UsedSessions":   e.UsedSessions,
 			"BudgetSessions": e.BudgetSessions,
+			"Above":          e.UsedSessions - e.GrantedSessions,
 		}
 		evidence.UsedSessions = new(e.UsedSessions)
 		evidence.BudgetSessions = new(e.BudgetSessions)
