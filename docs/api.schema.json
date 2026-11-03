@@ -6779,6 +6779,9 @@
         "declaration": {
           "$ref": "#/$defs/Declaration"
         },
+        "gone": {
+          "type": "boolean"
+        },
         "id": {
           "type": "string"
         },
@@ -6791,7 +6794,8 @@
         "id",
         "declaration",
         "last_check_in",
-        "available"
+        "available",
+        "gone"
       ],
       "type": "object"
     },

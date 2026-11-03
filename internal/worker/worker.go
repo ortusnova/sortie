@@ -85,7 +85,15 @@ type Worker struct {
 	Declaration Declaration `json:"declaration"`
 	LastCheckIn time.Time   `json:"last_check_in"`
 	Available   Capacity    `json:"available"`
+	// Gone reports that the worker has not checked in for more than
+	// [GoneHeartbeats] heartbeat intervals. A gone worker takes no new
+	// job until it checks in again; the jobs it holds keep their leases.
+	Gone bool `json:"gone"`
 }
+
+// GoneHeartbeats is how many heartbeat intervals may pass without a
+// check-in before a worker counts as gone.
+const GoneHeartbeats = 3
 
 // Requires is what a job needs of a worker: every capability listed,
 // and at least the CPUs, memory and disk free, besides a run slot.
@@ -397,6 +405,26 @@ func (m *Matcher) Timings() (heartbeat, lease time.Duration) {
 	return lease / 3, lease
 }
 
+// gone reports whether w last checked in more than [GoneHeartbeats]
+// heartbeat intervals ago.
+func (m *Matcher) gone(w *Worker) bool {
+	heartbeat, _ := m.Timings()
+	return m.now().Sub(w.LastCheckIn) > GoneHeartbeats*heartbeat
+}
+
+// workersLocked returns a copy of each worker ordered by ID, with Gone
+// set as of now.
+func (m *Matcher) workersLocked() []Worker {
+	out := make([]Worker, 0, len(m.workers))
+	for _, w := range m.workers {
+		c := *w
+		c.Gone = m.gone(w)
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 // Submit queues a job and returns the channel its outcome arrives on,
 // once.
 func (m *Matcher) Submit(j Job) <-chan Outcome {
@@ -488,8 +516,12 @@ func (w *Worker) release(r Requires, machine Machine) {
 	}
 }
 
-// misfits returns why w cannot run j now; none means it can.
+// misfits returns why w cannot run j now; none means it can. A gone
+// worker can run nothing, whatever it last declared.
 func misfits(w *Worker, j Job) []string {
+	if w.Gone {
+		return []string{"no check-in since " + w.LastCheckIn.UTC().Format(time.RFC3339)}
+	}
 	var out []string
 	for _, c := range j.Requires.Capabilities {
 		if w.Declaration.has(c) {
@@ -522,14 +554,17 @@ func misfits(w *Worker, j Job) []string {
 
 // Poll offers the worker the first queued job it can run, charging a
 // run slot and the job's resources until its next check-in. It returns
-// false when none fits, and [ErrUnknownWorker] before the worker's
-// first check-in.
+// false when none fits or the worker is gone, and [ErrUnknownWorker]
+// before the worker's first check-in.
 func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w, ok := m.workers[workerID]
 	if !ok {
 		return Offer{}, false, ErrUnknownWorker
+	}
+	if m.gone(w) {
+		return Offer{}, false, nil
 	}
 	for i, j := range m.pending {
 		if len(misfits(w, j)) > 0 {
@@ -562,18 +597,14 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	return Offer{}, false, nil
 }
 
-// Placeable reports whether a checked-in worker could take a job that
-// requires r now, after the queued jobs took what they fit, and else
-// why it waits, per worker. A job that waits here is better not
-// submitted: no worker would take it.
+// Placeable reports whether a checked-in worker that is not gone could
+// take a job that requires r now, after the queued jobs took what they
+// fit, and else why it waits, per worker. A job that waits here is
+// better not submitted: no worker would take it.
 func (m *Matcher) Placeable(r Requires) ([]string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	workers := make([]Worker, 0, len(m.workers))
-	for _, w := range m.workers {
-		workers = append(workers, *w)
-	}
-	sort.Slice(workers, func(i, j int) bool { return workers[i].ID < workers[j].ID })
+	workers := m.workersLocked()
 	for _, j := range m.pending {
 		for i := range workers {
 			if len(misfits(&workers[i], j)) == 0 {
@@ -715,11 +746,7 @@ func (m *Matcher) ExpireLeases() []string {
 func (m *Matcher) Snapshot() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := State{Workers: []Worker{}, Queue: []Queued{}, Leases: []LeaseView{}}
-	for _, w := range m.workers {
-		s.Workers = append(s.Workers, *w)
-	}
-	sort.Slice(s.Workers, func(i, j int) bool { return s.Workers[i].ID < s.Workers[j].ID })
+	s := State{Workers: m.workersLocked(), Queue: []Queued{}, Leases: []LeaseView{}}
 	for _, j := range m.pending {
 		s.Queue = append(s.Queue, Queued{Job: j, QueuedAt: j.QueuedAt, Waiting: waiting(j, s.Workers)})
 	}

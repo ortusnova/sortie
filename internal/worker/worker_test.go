@@ -1017,3 +1017,87 @@ func TestPlaceable(t *testing.T) {
 		t.Fatalf("Placeable() while ONS-54 waits for taichi's one slot = %v, %v; want not placeable, %v", why, ok, want)
 	}
 }
+
+// A worker that stops checking in counts as gone once three heartbeat
+// intervals pass without a check-in: no job is placed on it or offered
+// to it, a job waits with the time it last checked in, and the state
+// shows it gone. Its next check-in brings it back.
+func TestASilentWorkerIsGone(t *testing.T) {
+	c := &clock{t: time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)}
+	m := newM(c)
+	a := newAPI(t, m)
+	r := a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	if r.Code != http.StatusOK {
+		t.Fatalf("check-in = %d, want 200", r.Code)
+	}
+	var timings struct {
+		HeartbeatMS int64 `json:"heartbeat_ms"`
+	}
+	if err := json.Unmarshal(r.Body.Bytes(), &timings); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := time.Duration(timings.HeartbeatMS) * time.Millisecond
+	ordinary := Requires{CPU: 2, MemGiB: 4, DiskGiB: 10}
+
+	c.add(3 * heartbeat)
+	if why, ok := m.Placeable(ordinary); !ok {
+		t.Fatalf("Placeable() three heartbeats after the check-in = %v; want placeable", why)
+	}
+	if w := m.Snapshot().Workers[0]; w.Gone {
+		t.Fatal("worker gone three heartbeats after its check-in, want available")
+	}
+
+	c.add(time.Millisecond)
+	want := []string{"worker taichi: no check-in since 2026-11-03T09:00:00Z"}
+	if why, ok := m.Placeable(ordinary); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() past three heartbeats = %v, %v; want not placeable, %v", why, ok, want)
+	}
+	j := job("ONS-60", 1)
+	j.Requires = ordinary
+	m.Submit(j)
+	s := m.Snapshot()
+	if len(s.Workers) != 1 || !s.Workers[0].Gone {
+		t.Fatalf("state workers = %+v, want taichi gone", s.Workers)
+	}
+	if len(s.Queue) != 1 || !reflect.DeepEqual(s.Queue[0].Waiting, want) {
+		t.Fatalf("state queue = %+v, want ONS-60 waiting with %v", s.Queue, want)
+	}
+	if r := a.post("taichi", "/api/v1/workers/poll", ""); r.Code != http.StatusNoContent {
+		t.Fatalf("poll by a gone worker = %d, want 204", r.Code)
+	}
+
+	if r := a.post("taichi", "/api/v1/workers/checkin", completeCheckIn); r.Code != http.StatusOK {
+		t.Fatalf("check-in = %d, want 200", r.Code)
+	}
+	if w := m.Snapshot().Workers[0]; w.Gone {
+		t.Fatal("worker still gone after it checked in, want available")
+	}
+	if r := a.post("taichi", "/api/v1/workers/poll", ""); r.Code != http.StatusOK {
+		t.Fatalf("poll after the check-in = %d, want 200 with ONS-60", r.Code)
+	}
+}
+
+// A gone worker keeps the jobs it holds until their leases expire: being
+// gone ends no lease and refuses no heartbeat.
+func TestAGoneWorkerKeepsItsLease(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := NewMatcher(NewTTLLeaser(3*time.Minute), c.now, nil)
+	m.CheckIn("taichi", host())
+	ch := m.Submit(job("ONS-60", 1))
+	if _, ok, err := m.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll() = %v, %v; want an offer", ok, err)
+	}
+	for range 4 {
+		c.add(time.Minute)
+		if _, err := m.Heartbeat("taichi", "ONS-60", 1); err != nil {
+			t.Fatalf("Heartbeat() of a gone worker's lease = %v, want renewed", err)
+		}
+	}
+	if !m.Snapshot().Workers[0].Gone {
+		t.Fatal("worker not gone four minutes after its check-in")
+	}
+	if ids := m.ExpireLeases(); len(ids) != 0 {
+		t.Fatalf("ExpireLeases() = %v, want none: the lease is renewed", ids)
+	}
+	notEnded(t, ch)
+}

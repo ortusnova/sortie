@@ -1384,6 +1384,7 @@ export interface Worker {
   declaration: Declaration;
   last_check_in: string;
   available: Capacity;
+  gone: boolean;
 }
 
 export interface WorkerWaitResponse {
