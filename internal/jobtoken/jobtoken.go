@@ -15,7 +15,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -140,6 +142,48 @@ func (i *Issuer) revokeLocked(jobID string) {
 		delete(i.grants, d)
 	}
 	delete(i.byJob, jobID)
+}
+
+// Digests returns the attempt of jobID's live tokens and the SHA-256
+// digest of each, hex-encoded, by flow; nil when it has none. A digest
+// admits nothing by itself: a process that restarts hands the digests
+// to [Issuer.Restore], so the tokens the worker holds stay valid.
+func (i *Issuer) Digests(jobID string) (uint64, map[Flow]string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	var attempt uint64
+	var out map[Flow]string
+	for _, d := range i.byJob[jobID] {
+		g := i.grants[d]
+		if out == nil {
+			out = map[Flow]string{}
+		}
+		attempt = g.Attempt
+		out[g.Flow] = hex.EncodeToString(d[:])
+	}
+	return attempt, out
+}
+
+// Restore starts the given attempt of jobID again with the tokens whose
+// digests [Issuer.Digests] returned, ending any other attempt of it.
+func (i *Issuer) Restore(jobID string, attempt uint64, digests map[Flow]string) error {
+	parsed := make(map[Flow]digest, len(digests))
+	for f, s := range digests {
+		raw, err := hex.DecodeString(s)
+		if err != nil || len(raw) != sha256.Size {
+			return fmt.Errorf("jobtoken: the %s digest of %s is not a SHA-256 digest", f, jobID)
+		}
+		parsed[f] = digest(raw)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.revokeLocked(jobID)
+	i.attempts[jobID] = max(i.attempts[jobID], attempt)
+	for f, d := range parsed {
+		i.grants[d] = Grant{JobID: jobID, Attempt: attempt, Flow: f}
+		i.byJob[jobID] = append(i.byJob[jobID], d)
+	}
+	return nil
 }
 
 // Lookup returns what the token grants, or [ErrInvalid].

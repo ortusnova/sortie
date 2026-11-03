@@ -611,6 +611,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	}
 	o.environments = newEnvironmentResolver(params.DBPath, workflowPath, logger)
 	o.remote = newRemoteWorkers(time.Now)
+	if runs, ok := params.Store.(remoteRunStore); ok {
+		o.remote.runs = runs
+	}
 	if o.preflightParams.EnvironmentFunc == nil {
 		o.preflightParams.EnvironmentFunc = o.environments.resolve
 	}
@@ -780,6 +783,9 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 	rates := o.workflowManager.Rates()
 	o.updateRouter(cfg)
 	for _, result := range exits {
+		if o.keepRemoteExit(ctx, result) {
+			continue
+		}
 		outcome := HandleWorkerExit(o.state, result, HandleWorkerExitParams{
 			Rates:                             rates,
 			Store:                             o.store,
@@ -856,6 +862,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.prepareConfiguredModels(startCfg)
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
+	o.adoptRemoteRuns(ctx)
 
 	leaseSweep := time.NewTicker(leaseSweepInterval)
 	defer leaseSweep.Stop()
@@ -1793,6 +1800,8 @@ func (o *Orchestrator) makeWorkerFn(resumeSessionID, sshHost, agentKind, templat
 			RunRemoteAttempt(ctx, o.remote, issue, attempt, deps, RemoteAttemptParams{
 				DefaultCommand: meta.DefaultCommand,
 				OnStreamBroken: o.reportStreamBroken,
+				Adopt:          remoteAdoptionFrom(ctx),
+				OnRecord:       o.recordRemoteEntrySoon,
 			})
 			return
 		}
@@ -2659,6 +2668,10 @@ func (o *Orchestrator) drainRunningWorkers() {
 		slog.Int("count", remaining),
 	)
 
+	// The parent ctx is already cancelled; SQLite writes need a live one.
+	drainCtx := context.Background()
+
+	o.detachRemoteRuns(drainCtx)
 	for _, entry := range o.state.Running {
 		entry.cancelRun(errCancelShutdown)
 	}
@@ -2672,12 +2685,12 @@ func (o *Orchestrator) drainRunningWorkers() {
 	deadline := time.NewTimer(waitFor)
 	defer deadline.Stop()
 
-	// The parent ctx is already cancelled; SQLite writes need a live one.
-	drainCtx := context.Background()
-
 	for len(o.state.Running) > 0 {
 		select {
 		case workerExit := <-o.workerExitCh:
+			if o.keepRemoteExit(drainCtx, workerExit) {
+				continue
+			}
 			applyQueued(o.agentEventCh, func(msg agentEventMsg) {
 				o.applyAgentEvent(drainCtx, msg, false)
 			})
@@ -2919,6 +2932,9 @@ func (o *Orchestrator) handleControl(ctx context.Context, req controlRequest) Co
 		})
 	case controlBrokerReport:
 		reply = applyBrokerReport(o.state, req.Identifier, req.Broker, o.logger)
+		if issueID, _, ok := findIssue(o.state, req.Identifier); ok && reply.Outcome == ControlDone {
+			o.recordRemoteEntry(ctx, issueID)
+		}
 	case controlBrokerRead:
 		reply = readBroker(o.state, req.Identifier)
 	case controlAnswer:
