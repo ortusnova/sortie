@@ -535,3 +535,26 @@ func TestSessionEscalatedBody(t *testing.T) {
 		})
 	}
 }
+
+func TestHoldExpiredBody(t *testing.T) {
+	t.Parallel()
+
+	until := time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC)
+	got := holdExpiredBody(domain.HoldExpiredFacts{
+		By:        "supervisor",
+		Reason:    "full vm chain proof running",
+		Evidence:  "sandbox hl-ons-54-proof-1 on taichi",
+		RenewedAt: until.Add(-time.Hour),
+		Until:     until,
+	})
+	want := "The hold by supervisor expired at 2026-11-03T14:00:00Z without a renewal. The issue waits for a person.\n" +
+		"Reason: full vm chain proof running\n" +
+		"Last evidence: sandbox hl-ons-54-proof-1 on taichi\n" +
+		"Last renewed: 2026-11-03T13:00:00Z"
+	if got != want {
+		t.Errorf("holdExpiredBody() = %q, want %q", got, want)
+	}
+	if got := holdExpiredBody(domain.HoldExpiredFacts{Until: until}); got != "The hold by its holder expired at 2026-11-03T14:00:00Z without a renewal. The issue waits for a person." {
+		t.Errorf("holdExpiredBody(no by) = %q", got)
+	}
+}
