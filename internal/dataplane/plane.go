@@ -57,6 +57,10 @@ const StdioProtocol = "sortie-stdio/1"
 // MaxPRFile bounds the .sortie/pr.json a returned result carries.
 const MaxPRFile = 64 << 10
 
+// MaxHandoffFile bounds the .sortie/handoff.json a returned result
+// carries.
+const MaxHandoffFile = 64 << 10
+
 // ErrClosed reports an attempt that ended before what was waited for
 // arrived.
 var ErrClosed = errors.New("dataplane: the attempt ended")
@@ -82,6 +86,10 @@ type Result struct {
 	// PR is the agent's .sortie/pr.json, nil when the worker returned
 	// none.
 	PR []byte
+
+	// Handoff is the agent's .sortie/handoff.json, nil when the worker
+	// returned none.
+	Handoff []byte
 }
 
 // Options configures one attempt.
@@ -427,7 +435,7 @@ func (a *Attempt) broken(err error) {
 // Handler serves the data-plane routes:
 //
 //	GET  /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/seed    the workspace seed
-//	POST /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/result  multipart: bundle, pr; 204
+//	POST /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/result  multipart: bundle, pr, handoff; 204
 //	GET  /api/v1/flows/stdio/jobs/{job}/attempts/{attempt}           Upgrade: sortie-stdio/1; 101
 //	POST /api/v1/flows/usage/jobs/{job}/attempts/{attempt}           body Usage; 204
 //	*    /api/v1/flows/mcp/jobs/{job}/attempts/{attempt}             the session's tool server, as at /mcp
@@ -515,10 +523,10 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	unbounded(w)
-	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+(64<<10))
+	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxHandoffFile+(64<<10))
 	parts, err := r.MultipartReader()
 	if err != nil {
-		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle and pr")
+		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr and handoff")
 		return
 	}
 	var res Result
@@ -559,9 +567,17 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			res.PR = body
+		case "handoff":
+			body, err := io.ReadAll(io.LimitReader(part, MaxHandoffFile+1))
+			if err != nil || len(body) > MaxHandoffFile {
+				cleanup()
+				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", "the handoff part exceeds 64 KiB")
+				return
+			}
+			res.Handoff = body
 		default:
 			cleanup()
-			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr", part.FormName()))
+			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, handoff", part.FormName()))
 			return
 		}
 	}

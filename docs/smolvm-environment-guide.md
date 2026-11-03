@@ -125,8 +125,13 @@ Do not push and do not open a pull request: Sortie does both after the run.
 Only committed work leaves this machine.
 
 Before you finish, write `.sortie/pr.json` with a JSON object holding a
-short `title` and a `body` that explains the change.
+short `title` and a `body` that explains the change. Record each part of
+the issue you cannot do here, such as a check that needs a host this
+machine cannot reach or a change in another repository, in
+`.sortie/handoff.json`, with what it needs and how to check it.
 ```
+
+The format of `.sortie/handoff.json`, and the work Sortie turns each part into, are in the [workflow reference](workflow-reference.md#sortiehandoffjson--work-a-session-could-not-do).
 
 `SORTIE_WORKSPACE_ROOT`, `OPENROUTER_API_KEY`, and `SORTIE_GITHUB_TOKEN` are set in Sortie's environment. The first reaches the VM only as a placeholder; the second never reaches it. The base pack's opencode configuration selects an OpenRouter model, so no other setting is needed for it.
 
@@ -155,7 +160,7 @@ The agent's binary must be in the pack: the VM cannot see the host's. The `base`
 
 The agent runs as root in the VM. Claude Code refuses `--dangerously-skip-permissions` as root unless `IS_SANDBOX=1` is set: export it in Sortie's environment and list it in `pass_env`.
 
-codex's `workspaceWrite` sandbox allows writes only under the workspace. In the VM, `.sortie` is a link to the control directory outside it, so codex cannot write `.sortie/status`, `.sortie/review_verdict.json`, or `.sortie/pr.json`. Set `codex.thread_sandbox: dangerFullAccess`; the VM is the sandbox. codex 0.154 refuses `externalSandbox` in `thread/start`.
+codex's `workspaceWrite` sandbox allows writes only under the workspace. In the VM, `.sortie` is a link to the control directory outside it, so codex cannot write `.sortie/status`, `.sortie/review_verdict.json`, `.sortie/pr.json`, or `.sortie/handoff.json`. Set `codex.thread_sandbox: dangerFullAccess`; the VM is the sandbox. codex 0.154 refuses `externalSandbox` in `thread/start`.
 
 ### `allow_hosts` for each agent
 

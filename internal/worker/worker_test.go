@@ -1101,3 +1101,67 @@ func TestAGoneWorkerKeepsItsLease(t *testing.T) {
 	}
 	notEnded(t, ch)
 }
+
+// A worker declares what else it offers a job, such as a host it
+// reaches, and only a worker that declares it takes a job that requires
+// it. A malformed list is dropped, not refused.
+func TestDeclaredCapabilities(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	withReach := strings.TrimSuffix(completeCheckIn, "}") + `,"capabilities":["reach:homelab"," reach:homelab ","","gpu"]}`
+	if r := a.post("near", "/api/v1/workers/checkin", withReach); r.Code != http.StatusOK {
+		t.Fatalf("check-in with capabilities: %d %s", r.Code, r.Body)
+	}
+	malformed := strings.TrimSuffix(completeCheckIn, "}") + `,"capabilities":"reach:homelab"}`
+	if r := a.post("far", "/api/v1/workers/checkin", malformed); r.Code != http.StatusOK {
+		t.Fatalf("check-in with a malformed list: %d %s", r.Code, r.Body)
+	}
+	snap := m.Snapshot()
+	if got := snap.Workers[1].Declaration.Capabilities; !reflect.DeepEqual(got, []string{"reach:homelab", "gpu"}) {
+		t.Fatalf("capabilities of near = %v", got)
+	}
+	if got := snap.Workers[0].Declaration.Capabilities; got != nil {
+		t.Fatalf("capabilities of far = %v, want none", got)
+	}
+	if !m.Capable([]string{"smolvm", "reach:homelab"}) || m.Capable([]string{"reach:office"}) {
+		t.Fatal("Capable does not follow the declared capabilities")
+	}
+
+	j := job("handoff-ONS-77-live-chain", 1)
+	j.Kind = JobKindCheck
+	j.Requires = Requires{Capabilities: []string{"reach:homelab"}}
+	j.Run = Run{Command: "sh", Args: []string{"-c", "curl https://gitea.homelab.lan"}}
+	m.Submit(j)
+	if r := a.post("far", "/api/v1/workers/poll", ""); r.Code != http.StatusNoContent {
+		t.Fatalf("far poll = %d, want nothing", r.Code)
+	}
+	r := a.post("near", "/api/v1/workers/poll", "")
+	if r.Code != http.StatusOK {
+		t.Fatalf("near poll = %d", r.Code)
+	}
+	offer, raw := decodeOffer(t, r)
+	var jobRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["job"], &jobRaw); err != nil {
+		t.Fatal(err)
+	}
+	if offer.Job.Kind != JobKindCheck || string(jobRaw["kind"]) != `"check"` || offer.Run.Command != "sh" {
+		t.Fatalf("offer = %+v, want the check job", offer)
+	}
+}
+
+// A gone worker is capable of nothing.
+func TestCapableNeedsALiveWorker(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	d := host()
+	d.Capabilities = []string{"reach:homelab"}
+	m.CheckIn("w", d)
+	if !m.Capable([]string{"reach:homelab"}) {
+		t.Fatal("a live worker that declares it is not capable")
+	}
+	c.add(time.Hour)
+	if m.Capable([]string{"reach:homelab"}) {
+		t.Fatal("a gone worker is capable")
+	}
+}

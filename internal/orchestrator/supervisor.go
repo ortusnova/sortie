@@ -366,9 +366,9 @@ func (s Supervisor) MarkDraft(ctx context.Context, identifier string) Supervisor
 
 // Merge merges the issue's watched pull request when it is open, not a
 // draft, mergeable, its review decision is approved or requires no
-// review, its CI conclusion is success, and the story is not a ui story,
-// whose merge the operator keeps. The merge records the plan merge as
-// [Supervisor.RecordMerge] does.
+// review, its CI conclusion is success, the story has no open hand-off
+// part, and the story is not a ui story, whose merge the operator keeps.
+// The merge records the plan merge as [Supervisor.RecordMerge] does.
 func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResult {
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
@@ -376,6 +376,13 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 	}
 	if issue.watch == nil {
 		return precondition(issue, "no_pull_request", "Sortie watches no pull request of issue "+identifier)
+	}
+	var open []*HandoffPart
+	if r, ok := s.onLoop(ctx, func(context.Context) { open = openHandoffParts(s.o.state, issue.issueID) }); !ok {
+		return r
+	}
+	if len(open) > 0 {
+		return precondition(issue, "handoff_open", fmt.Sprintf("issue %s has %d open hand-off part(s), %s first", identifier, len(open), open[0].ID))
 	}
 	if s.o.scmAdapter == nil || s.o.trackerAdapter == nil {
 		return SupervisorResult{Status: SupervisorUnavailable, Message: "no forge or tracker is configured"}

@@ -55,6 +55,11 @@ type stateResponse struct {
 	// cause, the stories it holds, and the person action that clears it.
 	PlatformFaults []platformFaultResponse `json:"platform_faults"`
 
+	// HandoffParts lists every open part of a story a session could not
+	// do, oldest first: what it needs, how to check it, and the work it
+	// became. A story with one is kept out of Done.
+	HandoffParts []handoffPartResponse `json:"handoff_parts"`
+
 	// Supervisor is the supervisor session's status, its last trigger, and
 	// its budget use; null while the workflow configures no supervisor.
 	Supervisor *supervisorResponse `json:"supervisor"`
@@ -1414,6 +1419,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 	resp.SpendCeiling = spendCeilingOf(snap.SpendCeilings)
 	resp.DispatchPaused = toDispatchPausedResponse(snap.DispatchPause)
 	resp.PlatformFaults = toPlatformFaultResponses(snap.PlatformFaults)
+	resp.HandoffParts = toHandoffPartResponses(snap.HandoffParts)
 	resp.Supervisor = toSupervisorResponse(snap.Supervisor)
 
 	return resp

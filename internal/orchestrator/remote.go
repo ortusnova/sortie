@@ -992,7 +992,8 @@ func (r *remoteRepository) Refresh(ctx context.Context, env environment.Environm
 // Export waits for the bundle the worker returns when the session ended,
 // checks that it holds only the issue branch on top of the seed, and
 // pushes it. The .sortie/pr.json the worker returned with it becomes the
-// workspace's pull request suggestion.
+// workspace's pull request suggestion, and the .sortie/handoff.json its
+// hand-off.
 func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment, ws environment.Workspace) (gitsync.ExportResult, error) {
 	a := r.attempt
 	branch := r.syncer.IssueBranch(ws.Key)
@@ -1010,6 +1011,11 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 	if res.PR != nil {
 		if err := workspacekit.WriteSortieFile(ws.HostPath, pullRequestSuggestionFile, res.PR); err != nil {
 			return none, fmt.Errorf("store the returned pull request suggestion: %w", err)
+		}
+	}
+	if res.Handoff != nil {
+		if err := workspacekit.WriteSortieFile(ws.HostPath, handoffPartsFile, res.Handoff); err != nil {
+			return none, fmt.Errorf("store the returned hand-off: %w", err)
 		}
 	}
 	if res.Bundle == "" {

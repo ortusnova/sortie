@@ -302,6 +302,29 @@ func TestResultCarriesTheBundleAndPRFile(t *testing.T) {
 	}
 }
 
+func TestResultCarriesTheHandoffFile(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{MaxBundleBytes: 64})
+	tok := f.mint("ONS-30", 1)["bundles"]
+
+	ct, body := multipartBody(t, map[string][]byte{"handoff": bytes.Repeat([]byte("h"), MaxHandoffFile+1)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized hand-off: %d, want 413", resp.StatusCode)
+	}
+	const handoff = `{"parts":[{"need":"n","check":"c"}]}`
+	ct, body = multipartBody(t, map[string][]byte{"bundle": []byte("the bundle"), "handoff": []byte(handoff)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("result: %d, want 204", resp.StatusCode)
+	}
+	res, err := a.Result(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Handoff) != handoff || res.PR != nil {
+		t.Fatalf("handoff %q, pr %q", res.Handoff, res.PR)
+	}
+}
+
 func TestResultWaitEndsWithTheAttempt(t *testing.T) {
 	f := newFixture(t)
 	a := f.open(1, Options{})

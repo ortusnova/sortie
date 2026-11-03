@@ -1671,6 +1671,11 @@ type State struct {
 	// of dispatch to that fault's ID. Only the event loop mutates this map.
 	FaultHolds map[string]string
 
+	// HandoffParts maps each recorded part of a story a session could not
+	// do, keyed by issue and part ID, to the part. The durable mirror is
+	// the handoff_parts table. Only the event loop mutates this map.
+	HandoffParts map[string]*HandoffPart
+
 	// sessionGrants is what the store holds of the sessions operators
 	// granted beyond agent.max_sessions. Owned by the event loop.
 	sessionGrants sessionGrantCache
@@ -1768,6 +1773,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
 		PlatformFaults:            make(map[string]*PlatformFault),
 		FaultHolds:                make(map[string]string),
+		HandoffParts:              make(map[string]*HandoffPart),
 		supervisor:                newSupervisorState(),
 	}
 }
@@ -2251,6 +2257,10 @@ type RuntimeSnapshotResult struct {
 	// empty when there is none.
 	PlatformFaults []SnapshotPlatformFault `json:"-"`
 
+	// HandoffParts is a copy of every open hand-off part, oldest first;
+	// an empty slice when there is none.
+	HandoffParts []SnapshotHandoffPart `json:"-"`
+
 	// SessionGrants is the sessions granted to each issue beyond
 	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
 	SessionGrants map[string]int `json:"-"`
@@ -2551,6 +2561,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
 	snap.DispatchPause = state.dispatchPause.snapshot()
 	snap.PlatformFaults = snapshotPlatformFaults(state)
+	snap.HandoffParts = snapshotHandoffParts(state)
 	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
 	snap.Supervisor = snapshotSupervisor(state)
 

@@ -843,6 +843,7 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			MergeCompletionReactionConfigured: o.mergeCompletionReactionConfigured,
 		})
 		o.recordOutcome(result, outcome)
+		o.takeHandoffParts(ctx, result)
 	}
 	o.updateGauges(time.Now())
 	o.notifyObservers()
@@ -1220,6 +1221,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		o.databaseHealth.record(time.Now(), err)
 	}
 
+	o.advanceHandoffParts(ctx, time.Now().UTC())
 	o.startDueFaultChecks(ctx, time.Now())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when

@@ -204,6 +204,7 @@ export interface Declaration {
   free: Free;
   used?: Free;
   unmanaged?: Unmanaged[];
+  capabilities?: string[];
 }
 
 export interface DispatchPausedResponse {
@@ -285,6 +286,24 @@ export interface Group {
   tokens_unmeasured_runs: number;
   cost_unpriced_runs: number;
   cost_partial_runs: number;
+}
+
+export interface HandoffPartResponse {
+  issue_id: string;
+  issue_identifier: string;
+  id: string;
+  kind: string;
+  need: string;
+  check: string;
+  capabilities: string[];
+  repository: string;
+  status: string;
+  job_attempt: number;
+  work_identifier: string;
+  platform_fault_id: string;
+  result: string;
+  recorded_at: string;
+  updated_at: string;
 }
 
 export interface HealthCheckResponse {
@@ -450,6 +469,7 @@ export interface IssueResponse {
 export interface Job {
   id: string;
   attempt: number;
+  kind?: string;
   priority: number | null;
   issue: Issue;
   requires: Requires;
@@ -1240,6 +1260,7 @@ export interface StateResponse {
   spend_ceiling?: SpendCeilingResponse;
   dispatch_paused: DispatchPausedResponse | null;
   platform_faults: PlatformFaultResponse[] | null;
+  handoff_parts: HandoffPartResponse[];
   supervisor: SupervisorResponse | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;

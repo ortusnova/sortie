@@ -115,6 +115,9 @@ func (o *Orchestrator) startDueFaultChecks(ctx context.Context, now time.Time) {
 func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string, checkErr error) (*PlatformFault, bool) {
 	now := time.Now()
 	f, resolved := applyFaultCheck(ctx, o.state, o.store, faultID, checkErr, now, o.logger)
+	if resolved {
+		o.handoffFaultResolved(ctx, f, now.UTC())
+	}
 	switch {
 	case resolved:
 		o.RefreshFunc()()

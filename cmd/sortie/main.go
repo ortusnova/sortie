@@ -460,6 +460,13 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		orchestrator.PopulatePlatformFaults(state, platformFaultRows, br.logger)
 	}
 
+	handoffPartRows, err := store.LoadHandoffParts(ctx)
+	if err != nil {
+		br.logger.Warn("failed to load hand-off parts, starting with none", slog.Any("error", err))
+	} else {
+		orchestrator.PopulateHandoffParts(state, handoffPartRows, br.logger)
+	}
+
 	stageHopRows, err := store.ListStageHops(ctx)
 	if err != nil {
 		br.logger.Warn("failed to load stage hop records, starting with none", slog.Any("error", err))
