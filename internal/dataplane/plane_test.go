@@ -331,6 +331,30 @@ func TestResultCarriesTheBundleAndPRFile(t *testing.T) {
 	}
 }
 
+// The worker returns the agent's status and a review's criteria verdict
+// beside the pull request suggestion; an oversized status is refused.
+func TestResultCarriesTheStatusAndCriteria(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{MaxBundleBytes: 64})
+	tok := f.mint("ONS-30", 1)["bundles"]
+
+	ct, body := multipartBody(t, map[string][]byte{"status": bytes.Repeat([]byte("s"), MaxStatusFile+1)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status: %d, want 413", resp.StatusCode)
+	}
+	ct, body = multipartBody(t, map[string][]byte{"bundle": []byte("b"), "status": []byte("blocked\nwhy\n"), "criteria": []byte(`{"criteria":[]}`)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("result: %d, want 204", resp.StatusCode)
+	}
+	res, err := a.Result(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Status) != "blocked\nwhy\n" || string(res.Criteria) != `{"criteria":[]}` || res.PR != nil {
+		t.Fatalf("status %q, criteria %q, pr %q", res.Status, res.Criteria, res.PR)
+	}
+}
+
 func TestResultWaitEndsWithTheAttempt(t *testing.T) {
 	f := newFixture(t)
 	a := f.open(1, Options{})

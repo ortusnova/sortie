@@ -198,6 +198,9 @@ var migration1012SQL string
 //go:embed sql/1013_run_history_worker.sql
 var migration1013SQL string
 
+//go:embed sql/1014_criteria_verdicts.sql
+var migration1014SQL string
+
 // migrations lists upstream's migrations, numbered from 1 in upstream's
 // sequence, then the fork's, numbered from 1001. Upstream merges add lower
 // numbers, so a database that already ran fork migrations applies new
@@ -268,4 +271,5 @@ var migrations = []Migration{
 	{Version: 1011, Description: "remote_runs: the runs workers hold, re-adopted at start", SQL: migration1011SQL},
 	{Version: 1012, Description: "supervisor_sessions: the supervisor's sessions and their spend", SQL: migration1012SQL},
 	{Version: 1013, Description: "worker column on run_history", SQL: migration1013SQL},
+	{Version: 1014, Description: "criteria_verdicts: the latest review verdict of each story", SQL: migration1014SQL},
 }
