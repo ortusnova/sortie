@@ -1159,6 +1159,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	ReconcileRunningIssues(o.state, ReconcileParams{
 		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
 		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
+		ClickProofs:                       planClickProofs(cfg, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,
 		Router:                            o.router,
 		ActiveStates:                      cfg.Tracker.ActiveStates,

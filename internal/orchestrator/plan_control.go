@@ -220,7 +220,9 @@ type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed
 // The workflow's rules decide which stories reach a criteria rule: a human
 // story whose chain ends in none is merged by a person in the forge, and a
 // workflow that routes every story through the check lets Sortie merge
-// either kind. A ui story is never merged by Sortie, after any run.
+// either kind. A ui story is let through as a criteria story is, and the
+// entry remembers it, so auto-merge also waits for its click-proofs (see
+// [planClickProofs]).
 func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
@@ -235,8 +237,15 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) Rev
 		if err != nil {
 			return false, "", err
 		}
+		data, _ := pending.KindData.(*AutoMergeReactionData)
 		if slices.ContainsFunc(issue.Labels, isUIReviewLabel) {
-			return false, "a ui story is merged by the operator, whose merge is its approval", nil
+			if data != nil {
+				data.story = storyUI
+			}
+			return true, "", nil
+		}
+		if data != nil {
+			data.story = storyOther
 		}
 		for _, l := range issue.Labels {
 			if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
@@ -258,10 +267,9 @@ type OperatorCommentsFunc func(ctx context.Context, pending *PendingReaction, da
 
 // planOperatorComments returns the operator-comment reader of plan control,
 // or nil when plan control is off or the forge cannot read conversation
-// comments. A ui story waits for the operator, who answers on its pull
-// request: every comment there that no bot wrote is review feedback and
-// starts a fix run on the branch. The story's labels are read once per
-// review entry.
+// comments. On the pull request of a ui story every comment that no bot
+// wrote, apart from a click-proofs record, is review feedback and starts a
+// fix run on the branch. The story's labels are read once per review entry.
 func planOperatorComments(cfg config.ServiceConfig, tracker domain.TrackerAdapter, reader domain.PullRequestCommentReader) OperatorCommentsFunc {
 	if !cfg.Tracker.PlanControl() || tracker == nil || reader == nil {
 		return nil
@@ -284,8 +292,114 @@ func planOperatorComments(cfg config.ServiceConfig, tracker domain.TrackerAdapte
 		if err != nil {
 			return nil, true, err
 		}
-		return comments, true, nil
+		feedback := make([]domain.ReviewComment, 0, len(comments))
+		for _, c := range comments {
+			if _, record := clickProofsRecord(c.Body); !record {
+				feedback = append(feedback, c)
+			}
+		}
+		return feedback, true, nil
 	}
+}
+
+// ClickProofsMarker opens the line of a pull request comment that records
+// the click-proofs of a ui story as passed on its preview. The line names
+// the head commit they ran against:
+//
+//	sortie:click-proofs passed <head sha>
+const ClickProofsMarker = "sortie:click-proofs passed"
+
+// minClickProofsSHA is the shortest commit prefix a record may name.
+const minClickProofsSHA = 7
+
+// ClickProofsFunc reports whether the pull request of an auto-merge entry
+// holds what its story needs beyond its criteria review and CI. A story
+// that is not a ui story needs nothing more. A ui story needs a record of
+// its click-proofs on the preview for headSHA, the commit about to merge.
+type ClickProofsFunc func(ctx context.Context, pending *PendingReaction, data *AutoMergeReactionData, headSHA string) (recorded bool, err error)
+
+// planClickProofs returns the click-proofs check of plan control, or nil
+// when plan control is off. It reads the conversation comments of a ui
+// story's pull request for a record naming its head commit; a record for
+// an earlier commit does not count, so a fix pushed after the click-proofs
+// needs them again. A forge that cannot read conversation comments never
+// shows a record, and a ui story there is not merged by Sortie.
+func planClickProofs(cfg config.ServiceConfig, reader domain.PullRequestCommentReader) ClickProofsFunc {
+	if !cfg.Tracker.PlanControl() {
+		return nil
+	}
+	return func(ctx context.Context, _ *PendingReaction, data *AutoMergeReactionData, headSHA string) (bool, error) {
+		if data.story != storyUI {
+			return true, nil
+		}
+		if reader == nil || headSHA == "" {
+			return false, nil
+		}
+		comments, err := reader.FetchPullRequestComments(ctx, data.PRNumber, data.Owner, data.Repo)
+		if err != nil {
+			return false, err
+		}
+		head := strings.ToLower(headSHA)
+		for _, c := range comments {
+			if sha, ok := clickProofsRecord(c.Body); ok && strings.HasPrefix(head, sha) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+}
+
+// clickProofsRecord reports whether body holds a click-proofs record line
+// and returns the lower-cased commit it names. Markdown code ticks and
+// quote marks around the line are ignored.
+func clickProofsRecord(body string) (string, bool) {
+	for line := range strings.Lines(body) {
+		fields := strings.Fields(strings.Trim(strings.TrimSpace(line), "`>* "))
+		if len(fields) < 3 || !strings.EqualFold(fields[0]+" "+fields[1], ClickProofsMarker) {
+			continue
+		}
+		sha := strings.ToLower(strings.Trim(fields[2], "`.,;:"))
+		if len(sha) >= minClickProofsSHA && isHex(sha) {
+			return sha, true
+		}
+	}
+	return "", false
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// askForClickProofs comments on a ui story, once per head commit, that its
+// pull request waits for the click-proofs on its preview. The comment is
+// written off the event loop.
+func askForClickProofs(state *State, params ReconcileParams, pending *PendingReaction, prNumber int, headSHA string, log *slog.Logger, ctx context.Context) {
+	if params.TrackerAdapter == nil || state.ClickProofsAsked[pending.IssueID] == headSHA {
+		return
+	}
+	state.ClickProofsAsked[pending.IssueID] = headSHA
+	tracker, issueID, body := params.TrackerAdapter, pending.IssueID, clickProofsRequest(prNumber, headSHA)
+	log.Info("ui story waits for its click-proofs", slog.Int("pr_number", prNumber), slog.String("head_sha", headSHA))
+	state.TrackerOpsWg.Go(func() {
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), planControlWriteBound)
+		defer cancel()
+		if err := tracker.CommentIssue(wctx, issueID, body); err != nil {
+			log.Warn("click-proofs request comment failed", slog.Any("error", err))
+		}
+	})
+}
+
+// clickProofsRequest is the tracker comment that asks for a ui story's
+// click-proofs once its pull request waits on nothing else.
+func clickProofsRequest(prNumber int, headSHA string) string {
+	return fmt.Sprintf("Pull request #%d passed its criteria review and CI and waits for the click-proofs on its preview before Sortie merges it. "+
+		"Run the click-proofs the acceptance criteria ask for on the preview, then record them with a comment on the pull request holding the line:\n\n    %s %s",
+		prNumber, ClickProofsMarker, headSHA)
 }
 
 // criteriaCheckFailed reports whether the run was a criteria check, under
@@ -499,9 +613,15 @@ func recordNoChange(ctx context.Context, store any, issueID string, v NoChangeVe
 	log.Info("no-change claim recorded", slog.String("kind", row.Kind), slog.String("ref", row.Ref))
 }
 
-// waitsForOperator reports whether entry is the review watch of a ui
-// story, which no window ages out.
-func waitsForOperator(entry *PendingReaction) bool {
-	data, ok := entry.KindData.(*ReviewReactionData)
-	return ok && data.story == storyUI
+// watchesUIStory reports whether entry is the review or auto-merge watch
+// of a ui story, which no window ages out: it ends when the pull request
+// merges or closes.
+func watchesUIStory(entry *PendingReaction) bool {
+	switch data := entry.KindData.(type) {
+	case *ReviewReactionData:
+		return data.story == storyUI
+	case *AutoMergeReactionData:
+		return data.story == storyUI
+	}
+	return false
 }

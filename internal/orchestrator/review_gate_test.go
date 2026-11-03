@@ -47,6 +47,8 @@ func TestPlanReviewGate(t *testing.T) {
 		{"human story after the criteria check", "check", []string{"sortie-review:human"}, true},
 		{"human story after the implementing run", "implement", []string{"sortie-review:human"}, false},
 		{"self-review is not the gate", "implement", []string{"sortie-review:criteria", "self-reviewed"}, false},
+		{"ui story after the criteria check", "check", []string{"sortie-review:ui"}, true},
+		{"ui story after the implementing run", "implement", []string{"sortie-review:ui"}, false},
 		{"no gate label", "check", nil, false},
 	}
 	for _, tt := range tests {

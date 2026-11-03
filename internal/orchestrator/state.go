@@ -928,6 +928,9 @@ type AutoMergeReactionData struct {
 	Repo     string
 	Branch   string
 	SHA      string
+
+	// story is what the entry's story is, set by the review gate.
+	story reviewStory
 }
 
 // AutoMergeReactionConfig holds validated auto-merge-specific
@@ -1358,6 +1361,10 @@ type State struct {
 	// forge requires a review their criteria gate cannot give.
 	CriteriaReviewWarned map[string]struct{}
 
+	// ClickProofsAsked holds, per ui story, the head commit whose
+	// click-proofs the tracker was last asked for.
+	ClickProofsAsked map[string]string
+
 	// WorkerWg tracks in-flight worker goroutines spawned by
 	// [DispatchIssue]. Callers dispatching outside the Run() loop can
 	// Wait() before cleanup.
@@ -1723,6 +1730,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		TokenBudgetIncomplete:     make(map[string]struct{}),
 		DispatchBlocks:            make(map[string]DispatchBlock),
 		CriteriaReviewWarned:      make(map[string]struct{}),
+		ClickProofsAsked:          make(map[string]string),
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
 	}
 }
@@ -2633,7 +2641,7 @@ func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
 			row.EscalatedAt = &escalatedAt
 			row.EscalationTrigger = string(entry.EscalationTrigger)
 		}
-		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !waitsForOperator(entry) {
+		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !watchesUIStory(entry) {
 			watchEndsAt := watchBasis(entry).Add(window)
 			row.WatchEndsAt = &watchEndsAt
 		}
