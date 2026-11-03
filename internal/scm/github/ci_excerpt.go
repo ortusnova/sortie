@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -58,9 +59,9 @@ type executedStep struct {
 	completed time.Time
 }
 
-// fetchJobSteps returns the step list of the Actions job jobID.
-func (p *GitHubCIProvider) fetchJobSteps(ctx context.Context, jobID int64) ([]githubJobStep, error) {
-	path := fmt.Sprintf("/repos/%s/%s/actions/jobs/%d", p.owner, p.repo, jobID)
+// fetchJobSteps returns the step list of the Actions job jobID in owner/repo.
+func (p *GitHubCIProvider) fetchJobSteps(ctx context.Context, owner, repo string, jobID int64) ([]githubJobStep, error) {
+	path := fmt.Sprintf("/repos/%s/%s/actions/jobs/%d", url.PathEscape(owner), url.PathEscape(repo), jobID)
 	body, _, err := p.client.Get(ctx, path, nil)
 	if err != nil {
 		return nil, err

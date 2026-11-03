@@ -1127,3 +1127,40 @@ func TestFetchCIStatus_UnrecognizedStatusWarning(t *testing.T) {
 		t.Errorf("log output = %q, want it to carry the count", out)
 	}
 }
+
+// TestFetchRepositoryCIStatus_ReadsTheNamedProject verifies that a
+// repository read resolves the commit, its statuses, the pipeline's jobs
+// and the failing job's trace in the project owner/repo names, not the
+// configured one: the fake server fails the test on any other request.
+func TestFetchRepositoryCIStatus_ReadsTheNamedProject(t *testing.T) {
+	t.Parallel()
+
+	s := newFakeServer(t)
+	withCommitResolution(t, s, loadFixture(t, "commit_resolved.json"))
+	withCommitStatuses(t, s, staticJSONHandler(loadFixture(t, "statuses_one_failed.json")))
+	withPipelineJobs(t, s, loadFixture(t, "pipeline_jobs.json"))
+	withJobTrace(t, s, 6002, loadFixture(t, "job_trace.txt"))
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	created, err := NewGitLabCIProvider(5, map[string]any{
+		"endpoint": srv.URL,
+		"api_key":  "test-token",
+		"project":  "elsewhere/default",
+	})
+	if err != nil {
+		t.Fatalf("NewGitLabCIProvider: %v", err)
+	}
+	owner, repo, _ := strings.Cut(testProject, "/")
+
+	got, err := created.(*GitLabCIProvider).FetchRepositoryCIStatus(context.Background(), owner, repo, "main")
+
+	if err != nil {
+		t.Fatalf("FetchRepositoryCIStatus: unexpected error: %v", err)
+	}
+	if got.Status != domain.CIStatusFailing {
+		t.Errorf("Status = %q, want %q", got.Status, domain.CIStatusFailing)
+	}
+	if got.LogExcerpt == "" {
+		t.Error("LogExcerpt is empty, want the named project's job trace")
+	}
+}
