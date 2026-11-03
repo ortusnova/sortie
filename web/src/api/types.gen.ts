@@ -1041,6 +1041,7 @@ export interface ShapeRepository {
   name: string;
   dispatch: boolean;
   default: boolean;
+  requires: Requires | null;
 }
 
 export interface ShapeReviewComments {

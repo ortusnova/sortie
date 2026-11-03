@@ -5070,12 +5070,23 @@
         },
         "name": {
           "type": "string"
+        },
+        "requires": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requires"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "name",
         "dispatch",
-        "default"
+        "default",
+        "requires"
       ],
       "type": "object"
     },

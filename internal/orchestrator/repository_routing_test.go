@@ -13,6 +13,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/worker"
 	"github.com/sortie-ai/sortie/internal/workspace"
 )
 
@@ -293,6 +294,43 @@ func TestWorkflowShape_ShowsTheRepositoriesEachSortieRuns(t *testing.T) {
 				t.Errorf("wire repositories = %s, want %d entries", raw, len(tt.want))
 			}
 		})
+	}
+}
+
+// Under the remote kind, config.repositories serves what a worker must
+// declare to take a job of each repository, the backend among the
+// capabilities, so a client can match a queued job to the workers before
+// Sortie offers it; under any other kind it serves null.
+func TestWorkflowShape_ServesWhatEachRepositoryRequires(t *testing.T) {
+	t.Parallel()
+
+	homelab := routedRepository("homelab", false)
+	homelab.Requires = &config.RemoteRequirements{Capabilities: []string{"kvm", "nested"}, CPU: 4, MemGiB: 16, DiskGiB: 80}
+	sortie := routedRepository("sortie", false)
+	env := config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{
+		Backend: "smolvm", Requires: config.RemoteRequirements{CPU: 2, MemGiB: 4},
+		Repositories: []config.SmolvmRepository{sortie, homelab}, DefaultRepository: "sortie",
+	}}
+	env.Remote.Repository = &env.Remote.Repositories[0]
+
+	got := shapeRepositories(env)
+	want := []ShapeRepository{
+		{Name: "sortie", Dispatch: true, Default: true, Requires: &worker.Requires{Capabilities: []string{"smolvm"}, CPU: 2, MemGiB: 4}},
+		{Name: "homelab", Dispatch: true, Requires: &worker.Requires{Capabilities: []string{"kvm", "nested", "smolvm"}, CPU: 4, MemGiB: 16, DiskGiB: 80}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("remote repositories = %+v, want %+v", got, want)
+	}
+	if homelab.Requires.Capabilities[len(homelab.Requires.Capabilities)-1] != "nested" {
+		t.Errorf("the configured capabilities were changed: %v", homelab.Requires.Capabilities)
+	}
+
+	raw, err := json.Marshal(shapeRepositories(routedEnvironment("sortie", routedRepository("sortie", false))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"name":"sortie","dispatch":true,"default":true,"requires":null}]`; string(raw) != want {
+		t.Errorf("smolvm repositories = %s, want %s", raw, want)
 	}
 }
 
