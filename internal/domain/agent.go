@@ -35,6 +35,12 @@ const (
 	// ToolKind, ToolArgument, and ToolDurationMS populated when the adapter
 	// can observe them.
 	EventToolResult AgentEventType = "tool_result"
+
+	// EventToolStarted indicates a tool call began, with ToolCallID set and
+	// ToolName, ToolKind, and ToolArgument populated when the adapter can
+	// observe them. The call is in progress until a tool_result with the same
+	// ToolCallID, or until the turn ends.
+	EventToolStarted AgentEventType = "tool_started"
 )
 
 // TokenUsage holds normalized token counts emitted by agent adapters.
@@ -155,6 +161,11 @@ type AgentEvent struct {
 
 	// ToolError reports whether a tool_result call returned an error.
 	ToolError bool
+
+	// ToolCallID is the runtime's identifier of the tool call, for
+	// tool_started events and the tool_result events that end them. Empty
+	// when the adapter reports no tool_started events.
+	ToolCallID string
 }
 
 // UsageWindowStatus is how near a usage window is to its limit, as the

@@ -284,7 +284,8 @@ Part A: Stall detection
 - For each running issue, compute `elapsed_ms` since:
   - `last_agent_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > agent.stall_timeout_ms`, terminate the worker unconditionally, then queue a retry when the retry slot is free or defer to the incumbent already occupying it, re-emitting the cancellation warning on every stalled tick either way (Section 7.5).
+- The stall timeout is `agent.stall_timeout_ms`, except while the run has a tool call open (from its `tool_started` event to the `tool_result` with the same call ID or the end of its turn, Section 10.3) and its worker shows the run alive: then it is `agent.tool_call_timeout_ms` when that is longer. Under `environment.kind: remote` the worker shows the run alive while the job's lease is current, renewed by the worker's heartbeats; under every other kind the worker is this process and always does. A worker that stops heartbeating takes `agent.stall_timeout_ms`, and its lease expires under the lease rule as before.
+- If `elapsed_ms` exceeds the stall timeout, terminate the worker unconditionally, then queue a retry when the retry slot is free or defer to the incumbent already occupying it, re-emitting the cancellation warning on every stalled tick either way (Section 7.5).
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh

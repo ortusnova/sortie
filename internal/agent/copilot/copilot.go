@@ -395,8 +395,13 @@ func (a *CopilotAdapter) StartSession(ctx context.Context, params domain.StartSe
 					toolData, dataErr := parseToolExecutionData(event.Data)
 					if dataErr == nil {
 						state.work.ObserveToolActivity()
-						state.inFlight.Begin(toolData.ToolCallID, toolData.toolCall())
-						agentcore.EmitNotification(emit, "")
+						call := toolData.toolCall()
+						state.inFlight.Begin(toolData.ToolCallID, call)
+						if toolData.ToolCallID != "" {
+							agentcore.EmitToolStarted(emit, now, toolData.ToolCallID, call)
+						} else {
+							agentcore.EmitNotification(emit, "")
+						}
 					}
 				}
 
@@ -414,6 +419,7 @@ func (a *CopilotAdapter) StartSession(ctx context.Context, params domain.StartSe
 							ToolArgument:   call.Argument,
 							ToolDurationMS: durationMS,
 							ToolError:      !toolData.Success,
+							ToolCallID:     toolData.ToolCallID,
 						})
 
 						// --no-ask-user closes the human-question path, so a

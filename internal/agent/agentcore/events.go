@@ -105,6 +105,23 @@ func EmitNotification(emit func(domain.AgentEvent), message string) {
 	})
 }
 
+// EmitToolStarted emits an EventToolStarted event for the tool call id,
+// observed at the given instant. An empty id emits nothing, since no
+// tool_result could end the call.
+func EmitToolStarted(emit func(domain.AgentEvent), at time.Time, id string, call ToolCall) {
+	if id == "" {
+		return
+	}
+	emit(domain.AgentEvent{
+		Type:         domain.EventToolStarted,
+		Timestamp:    at,
+		ToolName:     call.Name,
+		ToolKind:     call.Kind,
+		ToolArgument: call.Argument,
+		ToolCallID:   id,
+	})
+}
+
 // EmitUsageWindows emits an EventNotification event with an empty message
 // that carries the given usage windows, observed at the given instant.
 func EmitUsageWindows(emit func(domain.AgentEvent), at time.Time, windows []domain.UsageWindow) {
