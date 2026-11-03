@@ -199,6 +199,9 @@ Fields:
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+- `tool_call_timeout_ms` (integer)
+  - Default: `5400000` (90 minutes)
+  - The stall timeout while the agent has a tool call open and the run's worker shows the run alive (Section 8.5), when longer than `stall_timeout_ms`. `0` gives tool calls no longer bound; a negative value is rejected.
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.

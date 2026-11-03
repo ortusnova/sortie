@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/sortie-ai/sortie/internal/agent/agentcore"
@@ -61,7 +62,7 @@ func HandleAgentEvent(state *State, issueID string, event domain.AgentEvent, log
 		return
 	}
 
-	if event.Type == domain.EventToolResult {
+	if event.Type == domain.EventToolResult || event.Type == domain.EventToolStarted {
 		switch event.ToolKind {
 		case domain.ToolKindShell:
 			event.ToolArgument = unwrapShell(event.ToolArgument)
@@ -100,6 +101,8 @@ func HandleAgentEvent(state *State, issueID string, event domain.AgentEvent, log
 	if event.AgentPID != "" {
 		entry.AgentPID = event.AgentPID
 	}
+
+	trackToolCall(entry, event)
 
 	if event.Type == domain.EventSessionStarted {
 		// Overwrite the session ID when the event carries a non-empty
@@ -265,6 +268,42 @@ func HandleAgentEvent(state *State, issueID string, event domain.AgentEvent, log
 	}
 
 	retainEvent(entry, event)
+}
+
+// trackToolCall records the tool calls event begins and ends in the
+// entry's open tool calls. A turn's end ends every call still open, since
+// no call outlives the turn that made it.
+func trackToolCall(entry *RunningEntry, event domain.AgentEvent) {
+	switch {
+	case event.Type == domain.EventToolStarted && event.ToolCallID != "":
+		if entry.OpenToolCalls == nil {
+			entry.OpenToolCalls = make(map[string]time.Time)
+		}
+		began := event.Timestamp
+		if began.IsZero() {
+			began = entry.LastAgentTimestamp
+		}
+		entry.OpenToolCalls[event.ToolCallID] = began
+	case event.Type == domain.EventToolResult && event.ToolCallID != "":
+		delete(entry.OpenToolCalls, event.ToolCallID)
+	case isTurnTerminalEvent(event.Type):
+		entry.OpenToolCalls = nil
+	}
+	if len(entry.OpenToolCalls) == 0 {
+		entry.OpenToolCalls = nil
+	}
+}
+
+// inToolCallSince returns when the earliest tool call still open on entry
+// began, and false when none is open.
+func inToolCallSince(entry *RunningEntry) (time.Time, bool) {
+	var since time.Time
+	for _, began := range entry.OpenToolCalls {
+		if since.IsZero() || began.Before(since) {
+			since = began
+		}
+	}
+	return since, len(entry.OpenToolCalls) > 0
 }
 
 // toolText returns s as text safe to store and show: control characters

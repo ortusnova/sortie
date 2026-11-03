@@ -877,6 +877,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.state.RuleAgents = o.ruleAgents(startCfg)
 	o.state.HopCeiling = startCfg.Dispatch.HopCeiling()
 	o.state.StallTimeoutMS = startCfg.Agent.StallTimeoutMS
+	o.state.ToolCallTimeoutMS = startCfg.Agent.ToolCallTimeoutMS
+	o.state.WorkerLive = o.workerLive(startCfg)
 	o.prepareConfiguredModels(startCfg)
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
@@ -1202,6 +1204,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.MaxTokens = cfg.Agent.MaxTokens
 	o.state.MaxCostUSD = cfg.Agent.MaxCostUSD
 	o.state.StallTimeoutMS = cfg.Agent.StallTimeoutMS
+	o.state.ToolCallTimeoutMS = cfg.Agent.ToolCallTimeoutMS
+	o.state.WorkerLive = o.workerLive(cfg)
 	o.state.MaxSessions = cfg.Agent.MaxSessions
 	o.state.StageChains = cfg.Dispatch.Chains()
 	o.state.RuleAgents = o.ruleAgents(cfg)
@@ -1234,6 +1238,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		TerminalStates:                    cfg.Tracker.TerminalStates,
 		HandoffState:                      cfg.Tracker.HandoffState,
 		StallTimeoutMS:                    cfg.Agent.StallTimeoutMS,
+		ToolCallTimeoutMS:                 cfg.Agent.ToolCallTimeoutMS,
 		MaxRetryBackoffMS:                 cfg.Agent.MaxRetryBackoffMS,
 		Store:                             o.store,
 		OnRetryFire:                       o.onRetryFire,

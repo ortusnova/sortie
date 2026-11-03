@@ -81,6 +81,7 @@ var envOverrides = []envOverride{
 	{"SORTIE_AGENT_TURN_TIMEOUT_MS", "agent", "turn_timeout_ms", coerceEnvInt},
 	{"SORTIE_AGENT_READ_TIMEOUT_MS", "agent", "read_timeout_ms", coerceEnvInt},
 	{"SORTIE_AGENT_STALL_TIMEOUT_MS", "agent", "stall_timeout_ms", coerceEnvInt},
+	{"SORTIE_AGENT_TOOL_CALL_TIMEOUT_MS", "agent", "tool_call_timeout_ms", coerceEnvInt},
 	{"SORTIE_AGENT_MAX_CONCURRENT_AGENTS", "agent", "max_concurrent_agents", coerceEnvInt},
 	{"SORTIE_AGENT_MAX_TURNS", "agent", "max_turns", coerceEnvInt},
 	{"SORTIE_AGENT_MAX_RETRY_BACKOFF_MS", "agent", "max_retry_backoff_ms", coerceEnvInt},

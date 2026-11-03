@@ -148,6 +148,32 @@ func (r *remoteWorkers) leased(issueID string) bool {
 	return a.recorded && (!a.finished || a.detached)
 }
 
+// leaseCurrent reports whether a worker holds the job of the running
+// attempt of issueID under a lease that has not expired at now: the
+// worker's heartbeats renew it while the worker shows the job alive.
+func (r *remoteWorkers) leaseCurrent(issueID string, now time.Time) bool {
+	a := r.attempt(issueID)
+	if a == nil {
+		return false
+	}
+	for _, ls := range r.leaser.Leases() {
+		if ls.JobID == a.job.ID {
+			return now.Before(ls.Expires)
+		}
+	}
+	return false
+}
+
+// workerLive returns the State.WorkerLive of cfg: under the remote kind,
+// whether the run's job lease is current, and nil, every worker live,
+// under any other kind, whose worker is this process.
+func (o *Orchestrator) workerLive(cfg config.ServiceConfig) func(issueID string, now time.Time) bool {
+	if o.remote == nil || !isRemoteKind(cfg.Environment) {
+		return nil
+	}
+	return o.remote.leaseCurrent
+}
+
 // detach leaves the running attempt of issueID with its worker for the
 // next start; see [remoteAttempt.detach].
 func (r *remoteWorkers) detach(issueID string) bool {

@@ -542,13 +542,16 @@ func (w *fakeWorker) flow(name string) (string, string) {
 	return f.URL + "/jobs/" + url.PathEscape(w.offer.Job.ID) + "/attempts/" + fmt.Sprint(w.offer.Job.Attempt), f.Token
 }
 
+// declaration is what the worker states at check-in.
+func (w *fakeWorker) declaration() worker.Declaration {
+	return worker.Declaration{OS: "linux", Arch: "x86_64", KVM: true, Nested: !w.noNested, Backends: []string{"smolvm"},
+		RunSlots: 2, Free: worker.Free{CPU: 8, MemGiB: 32, DiskGiB: 100}}
+}
+
 // take checks in and polls until it holds a job.
 func (w *fakeWorker) take() {
 	w.t.Helper()
-	resp := w.post("/api/v1/workers/checkin", map[string]any{
-		"os": "linux", "arch": "x86_64", "kvm": true, "nested": !w.noNested, "backends": []string{"smolvm"},
-		"run_slots": 2, "running": 0, "free": map[string]any{"cpu": 8, "mem_gib": 32, "disk_gib": 100},
-	})
+	resp := w.post("/api/v1/workers/checkin", w.declaration())
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		w.t.Fatalf("checkin: %d", resp.StatusCode)

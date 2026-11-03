@@ -130,6 +130,10 @@ type restartHarness struct {
 	cfg      config.ServiceConfig
 	// prepare adjusts each process before it runs.
 	prepare func(*Orchestrator)
+	// worker is checked in before the first process runs; starts counts
+	// the processes started.
+	worker *restartWorker
+	starts int
 }
 
 const restartHeader = "X-Sortie-Worker-Identity"
@@ -240,6 +244,11 @@ func (h *restartHarness) start() *sortieProcess {
 	if h.prepare != nil {
 		h.prepare(p.o)
 	}
+	if h.starts++; h.starts == 1 && h.worker != nil {
+		// The first dispatch may come before the worker's own check-in,
+		// and a job no worker can take waits a whole poll interval.
+		p.o.Workers().CheckIn(h.worker.id, h.worker.declaration())
+	}
 	p.o.RestoreRemoteRuns(ctx)
 	mux := http.NewServeMux()
 	mux.Handle(worker.Prefix, worker.Handler(p.o.Workers(), restartHeader))
@@ -343,10 +352,11 @@ type restartWorker struct {
 }
 
 func newRestartWorker(h *restartHarness) *restartWorker {
-	return &restartWorker{
+	h.worker = &restartWorker{
 		fakeWorker: &fakeWorker{t: h.t, git: h.git, base: h.srv.URL, id: "taichi", header: restartHeader},
 		holding:    make(chan struct{}), beating: make(chan struct{}),
 	}
+	return h.worker
 }
 
 // heartbeat renews the lease, as the daemon does, until the job ends;

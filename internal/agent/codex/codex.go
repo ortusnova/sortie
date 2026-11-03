@@ -1043,13 +1043,18 @@ func (a *CodexAdapter) RunTurn(ctx context.Context, session domain.Session, para
 					continue
 				}
 				item := ip.Item
-				if call, isTool := ip.toolCall(); isTool {
+				call, isTool := ip.toolCall()
+				if isTool {
 					inFlight.Begin(item.ID, call)
 					spend.MarkModelReached()
 				} else if item.Type == "reasoning" {
 					spend.MarkModelReached()
 				}
-				agentcore.EmitNotification(emit, "")
+				if isTool && item.ID != "" {
+					agentcore.EmitToolStarted(emit, now, item.ID, call)
+				} else {
+					agentcore.EmitNotification(emit, "")
+				}
 
 			case "item/completed":
 				var ip itemParams
@@ -1067,6 +1072,7 @@ func (a *CodexAdapter) RunTurn(ctx context.Context, session domain.Session, para
 						ToolArgument:   call.Argument,
 						ToolDurationMS: durationMS,
 						ToolError:      item.Status == "failed" || item.Status == "declined",
+						ToolCallID:     item.ID,
 					})
 				}
 				if item.Type == "agentMessage" || item.Type == "reasoning" {
