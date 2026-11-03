@@ -506,7 +506,23 @@ One row per request the supervisor token makes to a control route, written by th
 
 Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked.
 
-**`supervisor_sessions`**: the supervisor's sessions and their spend (migration 1010)
+**`standing_holds`**: leases on issues that are not running (migration 1010)
+
+| Column       | Type             | Notes                                                                 |
+| ------------ | ---------------- | --------------------------------------------------------------------- |
+| `issue_id`   | TEXT PRIMARY KEY | Tracker-internal issue ID                                             |
+| `identifier` | TEXT NOT NULL    | The identifier the hold named                                         |
+| `holder`     | TEXT NOT NULL    | Who holds the issue, as the request said; may be empty                |
+| `reason`     | TEXT NOT NULL    | Why, as the request said; may be empty                                |
+| `evidence`   | TEXT NOT NULL    | What the holder is doing, as the latest hold or renewal said          |
+| `held_at`    | TEXT NOT NULL    | When the lease was placed, RFC 3339 with nanoseconds, in UTC          |
+| `renewed_at` | TEXT NOT NULL    | The latest hold or renewal, same format                               |
+| `held_until` | TEXT NOT NULL    | When the lease ends without a renewal, same format                    |
+| `expired_at` | TEXT NOT NULL    | When the lease expired, same format; `''` while it is live           |
+
+One row per held issue, written by each hold, renewal, and expiry, and deleted by a release. Startup loads the rows before the event loop starts, and the first poll tick expires a lease whose `held_until` passed while Sortie was down.
+
+**`supervisor_sessions`**: the supervisor's sessions and their spend (migration 1012)
 
 | Column           | Type                | Notes |
 | ---------------- | ------------------- | ----- |

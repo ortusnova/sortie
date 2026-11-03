@@ -629,6 +629,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	}
 	o.environments = newEnvironmentResolver(params.DBPath, workflowPath, logger)
 	o.remote = newRemoteWorkers(time.Now)
+	if runs, ok := params.Store.(remoteRunStore); ok {
+		o.remote.runs = runs
+	}
 	if o.preflightParams.EnvironmentFunc == nil {
 		o.preflightParams.EnvironmentFunc = o.environments.resolve
 	}
@@ -798,6 +801,9 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 	rates := o.workflowManager.Rates()
 	o.updateRouter(cfg)
 	for _, result := range exits {
+		if o.keepRemoteExit(ctx, result) {
+			continue
+		}
 		outcome := HandleWorkerExit(o.state, result, HandleWorkerExitParams{
 			Rates:                             rates,
 			Store:                             o.store,
@@ -874,6 +880,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.prepareConfiguredModels(startCfg)
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
+	o.adoptRemoteRuns(ctx)
 	o.superviseOnLoop(ctx, time.Now())
 
 	leaseSweep := time.NewTicker(leaseSweepInterval)
@@ -963,6 +970,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				},
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
+				},
+				WorkerWait: func(issue domain.Issue) *WorkerHold {
+					return o.workerWait(cfg, issue)
 				},
 			})
 			if heldReleased && !o.once.hasOutcome(issueID) {
@@ -1176,6 +1186,13 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	cfg := o.workflowManager.Config()
 	o.updateRouter(cfg)
 	o.state.Rates = o.workflowManager.Rates()
+	expireStandingHolds(o.state, time.Now().UTC(), standingHoldExpiry{
+		Store:  standingHoldStoreOf(o.store),
+		Router: o.router,
+		Wg:     &o.state.TrackerOpsWg,
+		Ctx:    ctx,
+		Log:    o.logger,
+	})
 
 	// Applied unconditionally, not gated on preflight success.
 	o.state.PollIntervalMS = cfg.Polling.IntervalMS
@@ -1358,6 +1375,11 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var heldByBlockers, blockersUnresolvedHeld, blockersNotReadHeld, blockersIncompleteHeld int
 	var readFailures int
 	for i, issue := range input {
+		if standing := o.state.StandingHolds[issue.ID]; standing != nil && passesEligibilityGates(issue, o.state, activeSet, terminalSet) {
+			held.hold(issue, standingHeldEntry(standing))
+			o.once.declined(issue, SkipStandingHold)
+			continue
+		}
 		if GlobalAvailableSlots(o.state.MaxConcurrentAgents, len(o.state.Running)) == 0 {
 			held.holdEligible(input[i:], o.state, activeSet, terminalSet, HeldEntry{
 				Reason: SkipAgentSlotsFull,
@@ -1425,6 +1447,11 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 				o.once.declined(issue, SkipUsageLimit)
 				continue
 			}
+		}
+		if wait := o.workerWait(cfg, issue); wait != nil {
+			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
+			o.once.deferFor(issue.ID, deferTick)
+			continue
 		}
 		adapter, adapterErr := o.agentAdapterByKind(resolution.AgentKind)
 		if adapterErr != nil {
@@ -1797,6 +1824,8 @@ func (o *Orchestrator) makeWorkerFn(resumeSessionID, sshHost, agentKind, templat
 			RunRemoteAttempt(ctx, o.remote, issue, attempt, deps, RemoteAttemptParams{
 				DefaultCommand: meta.DefaultCommand,
 				OnStreamBroken: o.reportStreamBroken,
+				Adopt:          remoteAdoptionFrom(ctx),
+				OnRecord:       o.recordRemoteEntrySoon,
 			})
 			return
 		}
@@ -2663,6 +2692,10 @@ func (o *Orchestrator) drainRunningWorkers() {
 		slog.Int("count", remaining),
 	)
 
+	// The parent ctx is already cancelled; SQLite writes need a live one.
+	drainCtx := context.Background()
+
+	o.detachRemoteRuns(drainCtx)
 	for _, entry := range o.state.Running {
 		entry.cancelRun(errCancelShutdown)
 	}
@@ -2676,12 +2709,12 @@ func (o *Orchestrator) drainRunningWorkers() {
 	deadline := time.NewTimer(waitFor)
 	defer deadline.Stop()
 
-	// The parent ctx is already cancelled; SQLite writes need a live one.
-	drainCtx := context.Background()
-
 	for len(o.state.Running) > 0 {
 		select {
 		case workerExit := <-o.workerExitCh:
+			if o.keepRemoteExit(drainCtx, workerExit) {
+				continue
+			}
 			applyQueued(o.agentEventCh, func(msg agentEventMsg) {
 				o.applyAgentEvent(drainCtx, msg, false)
 			})
@@ -2908,9 +2941,12 @@ func (o *Orchestrator) handleControl(ctx context.Context, req controlRequest) Co
 	var reply ControlReply
 	switch req.Kind {
 	case controlHold:
-		reply = applyHold(o.state, req.Identifier, req.Reason, req.Holder, now, o.logger)
+		reply = applyHold(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, req.Hold, now, o.logger)
 	case controlRelease:
-		reply = applyRelease(o.state, req.Identifier, now, o.metrics, o.logger)
+		reply = applyRelease(ctx, o.state, standingHoldStoreOf(o.store), req.Identifier, now, o.metrics, o.logger)
+		if reply.Outcome == ControlDone && !reply.Hold.Held && o.state.Running[reply.Hold.IssueID] == nil {
+			o.RefreshFunc()()
+		}
 	case controlEscalate:
 		reply = applyEscalate(o.state, req.Identifier, req.Escalation, now, escalationParams{
 			Router: o.router,
@@ -2920,6 +2956,9 @@ func (o *Orchestrator) handleControl(ctx context.Context, req controlRequest) Co
 		})
 	case controlBrokerReport:
 		reply = applyBrokerReport(o.state, req.Identifier, req.Broker, o.logger)
+		if issueID, _, ok := findIssue(o.state, req.Identifier); ok && reply.Outcome == ControlDone {
+			o.recordRemoteEntry(ctx, issueID)
+		}
 	case controlBrokerRead:
 		reply = readBroker(o.state, req.Identifier)
 	case controlAnswer:
@@ -2969,10 +3008,11 @@ func (o *Orchestrator) sendControl(req controlRequest) ControlReply {
 }
 
 // HoldFunc returns the function the HTTP server calls to hold the
-// running issue named by identifier. Safe to call from any goroutine.
-func (o *Orchestrator) HoldFunc() func(identifier, reason, holder string) ControlReply {
-	return func(identifier, reason, holder string) ControlReply {
-		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Reason: reason, Holder: holder})
+// running issue named by identifier, or to place or renew the lease on a
+// known issue that is not running. Safe to call from any goroutine.
+func (o *Orchestrator) HoldFunc() func(identifier string, req HoldRequest) ControlReply {
+	return func(identifier string, req HoldRequest) ControlReply {
+		return o.sendControl(controlRequest{Kind: controlHold, Identifier: identifier, Hold: req})
 	}
 }
 

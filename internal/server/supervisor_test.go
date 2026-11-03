@@ -153,12 +153,12 @@ func newSupervisorHarness(t *testing.T, sessionCap int) *supervisorHarness {
 			h.answers.Store(identifier, answer.Text)
 			return orchestrator.ControlReply{Outcome: orchestrator.ControlDone, Answer: orchestrator.ParkAnswer{Identifier: identifier}}
 		},
-		HoldFn: func(string, string, string) orchestrator.ControlReply {
-			reached("hold")
+		HoldFn: func(_ string, req orchestrator.HoldRequest) orchestrator.ControlReply {
+			h.sup.called("hold " + req.Holder + " " + req.Evidence)
 			return orchestrator.ControlReply{Outcome: orchestrator.ControlDone}
 		},
 		ReleaseFn: func(string) orchestrator.ControlReply {
-			reached("release")
+			h.sup.called("release_hold")
 			return orchestrator.ControlReply{Outcome: orchestrator.ControlDone}
 		},
 		EscalateFn: func(string, orchestrator.EscalationRequest) orchestrator.ControlReply {
@@ -265,8 +265,6 @@ func TestSupervisor_EveryOtherOperatorRouteIsForbidden(t *testing.T) {
 		{http.MethodGet, "/api/v1/plan/capabilities"},
 		{http.MethodGet, "/api/v1/plan/projects/ONS"},
 		{http.MethodPut, "/api/v1/plan/projects/ONS"},
-		{http.MethodPost, "/api/v1/ONS-7/hold"},
-		{http.MethodPost, "/api/v1/ONS-7/release"},
 		{http.MethodPost, "/api/v1/ONS-7/escalate"},
 		{http.MethodPost, "/api/v1/ONS-7/broker"},
 		{http.MethodGet, "/api/v1/ONS-7/broker"},
@@ -358,6 +356,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice"}`, "file_issue", "file_issue Flaky seed"},
 		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof"},
 		{"/api/v1/supervisor/questions", `{"action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
+		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
+		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},
 	} {
 		without := len(h.sup.callsMade())
 		if status, body := h.do(t, http.MethodPost, tt.path, testSupervisorToken, tt.body); status != http.StatusBadRequest ||
@@ -388,8 +388,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].By != "supervisor" || grants[0].Cap != 4 {
 		t.Errorf("grants = %+v, want one by the supervisor capped at 4", grants)
 	}
-	if n := len(h.supervisorActions(t)); n != 20 {
-		t.Errorf("records = %d, want 20: a rejection and an action per route", n)
+	if n := len(h.supervisorActions(t)); n != 24 {
+		t.Errorf("records = %d, want 24: a rejection and an action per route", n)
 	}
 
 	// The control token reaches the same routes, needs no evidence and
@@ -400,8 +400,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/merge", tokenLive1, `{}`); status != http.StatusForbidden {
 		t.Errorf("merge with a session token = %d, want 403", status)
 	}
-	if n := len(h.supervisorActions(t)); n != 20 {
-		t.Errorf("records after operator calls = %d, want still 20", n)
+	if n := len(h.supervisorActions(t)); n != 24 {
+		t.Errorf("records after operator calls = %d, want still 24", n)
 	}
 }
 

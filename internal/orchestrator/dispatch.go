@@ -288,9 +288,12 @@ const (
 	// returns them and the candidate-hold counter never receives them.
 	SkipAgentSlotsFull      SkipReason = "agent_slots_full"
 	SkipSSHHostsFull        SkipReason = "ssh_hosts_full"
+	SkipNoWorker            SkipReason = "no_worker"
 	SkipStageHopUnconfirmed SkipReason = "stage_hop_unconfirmed"
 	SkipUsageLimit          SkipReason = "usage_limit"
 	SkipParkCommentsUnread  SkipReason = "park_comments_unread"
+	SkipStandingHold        SkipReason = "standing_hold"
+	SkipStandingHoldExpired SkipReason = "standing_hold_expired"
 )
 
 // HoldReasons returns every reason a [HeldEntry] can carry, in the order of
@@ -299,6 +302,7 @@ func HoldReasons() []SkipReason {
 	return []SkipReason{
 		SkipAgentSlotsFull,
 		SkipSSHHostsFull,
+		SkipNoWorker,
 		SkipBlockersNotRead,
 		SkipBlockersUnresolved,
 		SkipBlockersIncomplete,
@@ -309,6 +313,8 @@ func HoldReasons() []SkipReason {
 		SkipStageHopUnconfirmed,
 		SkipUsageLimit,
 		SkipParkCommentsUnread,
+		SkipStandingHold,
+		SkipStandingHoldExpired,
 	}
 }
 

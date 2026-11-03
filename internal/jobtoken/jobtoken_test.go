@@ -213,3 +213,45 @@ func TestProxiesAskWhatATokenGrants(t *testing.T) {
 		t.Fatalf("ended token status %d", code)
 	}
 }
+
+// A restarted process given an attempt's digests admits the tokens the
+// worker already holds, for that attempt only, and nothing it never
+// minted.
+func TestRestoredDigestsAdmitTheWorkersTokens(t *testing.T) {
+	t.Parallel()
+	before := NewIssuer()
+	toks, err := before.Mint("ONS-30", 2, []Flow{flowGit, flowLLM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, digests := before.Digests("ONS-30")
+	if attempt != 2 || len(digests) != 2 {
+		t.Fatalf("Digests = %d %v, want attempt 2 and two flows", attempt, digests)
+	}
+	for _, d := range digests {
+		if strings.Contains(d, toks[flowGit].Reveal()) || strings.Contains(d, toks[flowLLM].Reveal()) {
+			t.Fatalf("a digest holds a token in clear: %q", d)
+		}
+	}
+
+	after := NewIssuer()
+	if err := after.Restore("ONS-30", attempt, digests); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	for f, tok := range toks {
+		g, err := after.Check(tok.Reveal(), "ONS-30", f)
+		if err != nil || g.Attempt != 2 || g.Flow != f {
+			t.Fatalf("Check(%s) after Restore = %+v, %v", f, g, err)
+		}
+	}
+	if _, err := after.Lookup("never-minted"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Lookup of an unknown token = %v, want ErrInvalid", err)
+	}
+	after.OnLeaseEnd("ONS-30")
+	if _, err := after.Lookup(toks[flowGit].Reveal()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Lookup after the lease ended = %v, want ErrInvalid", err)
+	}
+	if err := after.Restore("ONS-30", 1, map[Flow]string{flowGit: "not-hex"}); err == nil {
+		t.Fatal("Restore accepted a malformed digest")
+	}
+}

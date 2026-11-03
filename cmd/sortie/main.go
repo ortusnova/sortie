@@ -446,6 +446,13 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		orchestrator.PopulateParked(state, parkedRows, br.logger)
 	}
 
+	standingHoldRows, err := store.ListStandingHolds(ctx)
+	if err != nil {
+		br.logger.Warn("failed to load standing holds, starting with none", slog.Any("error", err))
+	} else {
+		orchestrator.PopulateStandingHolds(state, standingHoldRows, br.logger)
+	}
+
 	platformFaultRows, err := store.LoadOpenPlatformFaults(ctx)
 	if err != nil {
 		br.logger.Warn("failed to load platform faults, starting with none", slog.Any("error", err))
@@ -1045,6 +1052,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		Once:                              br.once,
 		SupervisorToken:                   br.supervisorToken,
 	})
+	o.RestoreRemoteRuns(ctx)
 
 	var srv *server.Server
 	if serverEnabled {

@@ -17,6 +17,7 @@ const (
 	AttentionKindWorkflowReloadFailed = "workflow_reload_failed"
 	AttentionKindPreflightFailed      = "preflight_failed"
 	AttentionKindSpendCeilingReached  = "spend_ceiling_reached"
+	AttentionKindHoldExpired          = "hold_expired"
 )
 
 // AttentionCause is one thing that needs a person, with the identity its
@@ -33,13 +34,24 @@ type AttentionCause struct {
 	Workflow  *SnapshotWorkflowHealth
 	Preflight *SnapshotHealthCheck
 	Spend     *SpendCeilingStatus
+	Hold      *SnapshotStandingHold
 }
 
 // AttentionCauses returns every cause in snap and health that needs a person,
-// in no defined order. A nil health yields no process-wide cause.
+// in no defined order. A nil health yields no process-wide cause. A park
+// under a live standing hold needs no person: its holder takes care of it.
 func AttentionCauses(snap RuntimeSnapshotResult, health *SnapshotHealth) []AttentionCause {
 	causes := make([]AttentionCause, 0, len(snap.Parked)+len(snap.BudgetExhausted)+len(snap.PendingReactions)+2)
+	leased := make(map[string]bool, len(snap.Holds))
+	for _, hold := range snap.Holds {
+		if hold.ExpiredAt.IsZero() {
+			leased[hold.IssueID] = true
+		}
+	}
 	for _, row := range snap.Parked {
+		if leased[row.IssueID] {
+			continue
+		}
 		causes = append(causes, parkedCause(row))
 	}
 	for _, row := range snap.BudgetExhausted {
@@ -48,6 +60,11 @@ func AttentionCauses(snap RuntimeSnapshotResult, health *SnapshotHealth) []Atten
 	for _, row := range snap.PendingReactions {
 		if row.EscalatedAt != nil {
 			causes = append(causes, escalationCause(row))
+		}
+	}
+	for _, hold := range snap.Holds {
+		if !hold.ExpiredAt.IsZero() {
+			causes = append(causes, holdExpiredCause(hold))
 		}
 	}
 	for _, status := range snap.SpendCeilings {
@@ -99,6 +116,16 @@ func budgetCause(row SnapshotBudgetEntry) AttentionCause {
 		Kind:   AttentionKindBudgetHeld,
 		Since:  &since,
 		Budget: &row,
+	}
+}
+
+func holdExpiredCause(hold SnapshotStandingHold) AttentionCause {
+	since := hold.ExpiredAt.UTC()
+	return AttentionCause{
+		ID:    attentionID(AttentionKindHoldExpired, hold.IssueID, since.Format(time.RFC3339Nano)),
+		Kind:  AttentionKindHoldExpired,
+		Since: &since,
+		Hold:  &hold,
 	}
 }
 

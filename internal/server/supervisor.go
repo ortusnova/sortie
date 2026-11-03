@@ -70,6 +70,8 @@ const (
 	supervisorActionMerge       = "merge"
 	supervisorActionFileIssue   = "file_issue"
 	supervisorActionLiveProof   = "live_proof"
+	supervisorActionHold        = "hold"
+	supervisorActionReleaseHold = "release_hold"
 	supervisorActionAsk         = "ask_person"
 )
 
@@ -145,7 +147,7 @@ func (s *Server) recordSupervised(action string, next http.HandlerFunc) http.Han
 func (s *Server) refuseSupervisor(w http.ResponseWriter, r *http.Request) {
 	evidence, _ := readEvidence(r)
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, or ask a person")
+	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, or ask a person")
 	action := r.Method + " " + r.URL.Path
 	if r.Pattern != "" {
 		action = r.Pattern

@@ -57,6 +57,10 @@ type HoldState struct {
 	Holder     string
 	HeldSince  time.Time
 	HeldTotal  time.Duration
+
+	// Lease is the standing hold, a copy, for a hold on an issue that is
+	// not running; nil for a running run's hold and after a release.
+	Lease *StandingHold
 }
 
 // ControlReply is the event loop's answer to a control request.
@@ -85,8 +89,7 @@ const (
 type controlRequest struct {
 	Kind       controlKind
 	Identifier string
-	Reason     string
-	Holder     string
+	Hold       HoldRequest
 	Escalation EscalationRequest
 	Plan       planTarget
 	Broker     BrokerAddress
@@ -100,7 +103,9 @@ const controlReplyBound = 5 * time.Second
 
 // findIssue resolves identifier to the running entry serving it, and
 // reports whether the identifier names any issue the runtime state
-// knows: running, waiting to retry, or held out by a budget ceiling.
+// knows: running, waiting to retry, held out by a budget ceiling, parked,
+// released from a park, held back by the latest dispatch pass, or held by
+// a standing hold.
 func findIssue(state *State, identifier string) (issueID string, entry *RunningEntry, known bool) {
 	for id, e := range state.Running {
 		if e.Identifier == identifier {
@@ -114,6 +119,23 @@ func findIssue(state *State, identifier string) (issueID string, entry *RunningE
 	}
 	for id, b := range state.BudgetExhausted {
 		if b.Identifier == identifier {
+			return id, nil, true
+		}
+	}
+	for _, parks := range []map[string]*ParkedEntry{state.Parked, state.ParkReleases} {
+		for id, p := range parks {
+			if p.Identifier == identifier {
+				return id, nil, true
+			}
+		}
+	}
+	for id, h := range state.Held {
+		if h.Identifier == identifier {
+			return id, nil, true
+		}
+	}
+	for id, h := range state.StandingHolds {
+		if h.Identifier == identifier {
 			return id, nil, true
 		}
 	}
@@ -137,15 +159,18 @@ func holdStateOf(issueID string, entry *RunningEntry, now time.Time) HoldState {
 	}
 }
 
-// applyHold holds the running entry for identifier at now. A hold already
-// in effect keeps its start, reason, and holder.
-func applyHold(state *State, identifier, reason, holder string, now time.Time, log *slog.Logger) ControlReply {
+// applyHold holds the running entry for identifier at now, or places a
+// standing hold on a known issue that is not running. A hold already in
+// effect keeps its start, reason, and holder. store persists a standing
+// hold; nil keeps it in memory only.
+func applyHold(ctx context.Context, state *State, store StandingHoldStore, identifier string, req HoldRequest, now time.Time, log *slog.Logger) ControlReply {
+	reason, holder := req.Reason, req.Holder
 	issueID, entry, known := findIssue(state, identifier)
 	switch {
 	case !known:
 		return ControlReply{Outcome: ControlUnknownIssue, Message: fmt.Sprintf("issue %q is not known", identifier)}
 	case entry == nil:
-		return ControlReply{Outcome: ControlNotRunning, Message: fmt.Sprintf("issue %q has no running worker", identifier)}
+		return placeStandingHold(ctx, state, store, issueID, identifier, req, now, log)
 	}
 	if entry.HeldSince.IsZero() {
 		entry.HeldSince = now
@@ -160,13 +185,16 @@ func applyHold(state *State, identifier, reason, holder string, now time.Time, l
 	return ControlReply{Outcome: ControlDone, Hold: holdStateOf(issueID, entry, now)}
 }
 
-// applyRelease ends the hold of the running entry for identifier at now.
-// Releasing a run that is not held changes nothing.
-func applyRelease(state *State, identifier string, now time.Time, metrics domain.Metrics, log *slog.Logger) ControlReply {
+// applyRelease ends the hold of the running entry for identifier at now,
+// or removes the standing hold of an issue that is not running. Releasing
+// a run that is not held changes nothing.
+func applyRelease(ctx context.Context, state *State, store StandingHoldStore, identifier string, now time.Time, metrics domain.Metrics, log *slog.Logger) ControlReply {
 	issueID, entry, known := findIssue(state, identifier)
 	switch {
 	case !known:
 		return ControlReply{Outcome: ControlUnknownIssue, Message: fmt.Sprintf("issue %q is not known", identifier)}
+	case entry == nil && state.StandingHolds[issueID] != nil:
+		return removeStandingHold(ctx, state, store, issueID, now, log)
 	case entry == nil:
 		return ControlReply{Outcome: ControlNotRunning, Message: fmt.Sprintf("issue %q has no running worker", identifier)}
 	}

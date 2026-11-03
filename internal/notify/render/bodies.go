@@ -1,6 +1,7 @@
 package render
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 	"strings"
@@ -311,4 +312,21 @@ func sessionEscalatedBody(f domain.SessionEscalatedFacts) string {
 		body += "\nSession: " + f.URL
 	}
 	return body
+}
+
+// holdExpiredBody returns the text of a hold.expired event: whose hold ran
+// out, when, why it was placed, and the last evidence it carried.
+func holdExpiredBody(f domain.HoldExpiredFacts) string {
+	by := cmp.Or(f.By, "its holder")
+	lines := []string{"The hold by " + by + " expired at " + f.Until.UTC().Format(time.RFC3339) + " without a renewal. The issue waits for a person."}
+	if f.Reason != "" {
+		lines = append(lines, "Reason: "+f.Reason)
+	}
+	if f.Evidence != "" {
+		lines = append(lines, "Last evidence: "+f.Evidence)
+	}
+	if !f.RenewedAt.IsZero() {
+		lines = append(lines, "Last renewed: "+f.RenewedAt.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(lines, "\n")
 }

@@ -485,6 +485,15 @@ type RetryEntry struct {
 	// paused. Runtime-only: never persisted, never on ScheduleRetryParams.
 	pausedSinceMS int64
 
+	// WorkerWait is why no worker could take the retry's remote job when
+	// HandleRetryTimer last re-armed it for that; nil otherwise.
+	// Runtime-only.
+	WorkerWait *WorkerHold
+
+	// WorkerWaitSince is when the retry's wait for a worker began; zero
+	// while WorkerWait is nil. Runtime-only.
+	WorkerWaitSince time.Time
+
 	// holdRearmed is true when HandleRetryTimer re-armed this entry because a
 	// spend ceiling or a usage-limit hold held it, so a later slot or host
 	// shortage keeps Attempt. Runtime-only.
@@ -1363,6 +1372,11 @@ type State struct {
 	// them before the tracker confirms the move.
 	DispatchBlocks map[string]DispatchBlock
 
+	// StandingHolds maps issue ID to the hold someone placed on an issue
+	// that was not running. It keeps the issue out of dispatch, retry and
+	// continuation until a release removes it, and survives a restart.
+	StandingHolds map[string]*StandingHold
+
 	// CriteriaReviewWarned holds the plan stories already warned that the
 	// forge requires a review their criteria gate cannot give.
 	CriteriaReviewWarned map[string]struct{}
@@ -1735,6 +1749,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		BudgetHoldNoticed:         make(map[string]string),
 		Parked:                    make(map[string]*ParkedEntry),
 		ParkReleases:              make(map[string]*ParkedEntry),
+		StandingHolds:             make(map[string]*StandingHold),
 		AttentionAcknowledgements: make(map[string]time.Time),
 		UsageLimitHolds:           make(map[UsageLimitHoldKey]UsageLimitHold),
 		StageHops:                 make(map[string]*StageHopEntry),
@@ -1827,18 +1842,22 @@ type SnapshotSlotHold struct {
 
 // SnapshotHold is a read-only view of the hold the latest dispatch pass gave
 // one candidate. Blockers is nil unless Reason is [SkipBlockedBy], Slot is nil
-// unless it is [SkipAgentSlotsFull], ResetsAt is zero unless it is a spend
-// reason or [SkipUsageLimit], and AgentKind, ModelOnly, and Model are set for
-// [SkipUsageLimit] only.
+// unless it is [SkipAgentSlotsFull], Worker is nil unless it is
+// [SkipNoWorker], ResetsAt is zero unless it is a spend reason or
+// [SkipUsageLimit], AgentKind, ModelOnly, and Model are set for
+// [SkipUsageLimit] only, and Holder and Note for [SkipStandingHold] only.
 type SnapshotHold struct {
 	Reason    SkipReason        `json:"reason"`
 	Since     time.Time         `json:"held_since"`
 	Blockers  []SnapshotBlocker `json:"blockers"`
 	Slot      *SnapshotSlotHold `json:"slot"`
+	Worker    *WorkerHold       `json:"worker,omitempty"`
 	ResetsAt  time.Time         `json:"resets_at"`
 	AgentKind string            `json:"agent_kind,omitempty"`
 	ModelOnly bool              `json:"model_only,omitempty"`
 	Model     string            `json:"model,omitempty"`
+	Holder    string            `json:"holder,omitempty"`
+	Note      string            `json:"note,omitempty"`
 }
 
 // SnapshotHeldEntry is a read-only view of one held candidate. IssueTitle,
@@ -2003,6 +2022,11 @@ type SnapshotRetryEntry struct {
 	StagePosition     *SnapshotStagePosition `json:"stage_position"`
 	Paused            bool                   `json:"paused"`
 	Environment       *SnapshotEnvironment   `json:"environment,omitempty"`
+
+	// WorkerWait is why no worker could take the retry's remote job when
+	// it was last re-armed for that, since WorkerWaitSince; nil otherwise.
+	WorkerWait      *WorkerHold `json:"worker_wait,omitempty"`
+	WorkerWaitSince time.Time   `json:"worker_wait_since,omitzero"`
 }
 
 // SnapshotParkedEntry is a read-only view of one parked issue, produced by
@@ -2185,6 +2209,9 @@ type RuntimeSnapshotResult struct {
 	BudgetExhausted      []SnapshotBudgetEntry           `json:"budget_exhausted"`
 	ParkedCount          int                             `json:"parked_count"`
 	Parked               []SnapshotParkedEntry           `json:"parked"`
+
+	// Holds lists every standing hold, live or expired. Never nil.
+	Holds []SnapshotStandingHold `json:"holds"`
 
 	// PendingReactions is never nil.
 	PendingReactions []SnapshotPendingReaction `json:"pending_reactions"`
@@ -2499,6 +2526,8 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			StagePosition:     stagePosition(state, entry.IssueID, entry.RuleName, entry.StageLineage.PreviousRule),
 			Paused:            entry.pausedSinceMS != 0,
 			Environment:       snapshotEnvironment(state, instance, entry.Identifier),
+			WorkerWait:        cloneWorkerHold(entry.WorkerWait),
+			WorkerWaitSince:   entry.WorkerWaitSince,
 		})
 	}
 
@@ -2594,6 +2623,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 		return cmp.Or(cmp.Compare(a.Identifier, b.Identifier), cmp.Compare(a.IssueID, b.IssueID))
 	})
 	snap.Parked = parked
+	snap.Holds = snapshotStandingHolds(state)
 
 	snap.PendingReactions = snapshotPendingReactions(state)
 	snap.BetweenStages = snapshotBetweenStages(state)

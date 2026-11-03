@@ -266,6 +266,11 @@ var table = map[string]parts{
 		long:  "Waiting on a pull request reaction for PR #{{.PR}}; " + nextCheck + ".",
 	},
 
+	"attn_hold_expired": {
+		reason: "{{if .By}}{{.By}}'s{{else}}The{{end}} hold expired",
+		why:    "The hold{{if .By}} by {{.By}}{{end}}{{if .Reason}} ({{.Reason}}){{end}} expired at {{.Until}} without a renewal, so nobody is known to be taking care of the issue{{if .Evidence}}. Last evidence: {{.Evidence}}{{end}}.",
+		clears: "Clears when someone releases the hold, or the holder places a new hold with new evidence.",
+	},
 	"attn_parked_agent_blocked": {
 		reason: "Parked: the agent needs a person",
 		why:    "The agent stopped because it cannot go on without a person, so Sortie parked the issue under the label `{{.Label}}`" + parkedSeen + ".",
@@ -421,6 +426,11 @@ var table = map[string]parts{
 		long:   "Every SSH host runs as many sessions as its per-host limit allows. Sortie dispatches the issue once a session on one of them ends.",
 		clears: "Released when a session on an SSH host ends.",
 	},
+	"hold_no_worker": {
+		short:  "No worker can take its job{{if .Waiting}}: {{.Waiting}}{{end}}",
+		long:   "No checked-in worker can take the issue's remote job now{{if .Waiting}} ({{.Waiting}}){{end}}, so Sortie holds the issue without an agent slot. It dispatches the issue once a worker that can run the job checks in or frees what the job needs.",
+		clears: "Released when a worker that can run its job checks in or frees what the job needs.",
+	},
 	"hold_spend_daily": {
 		short:  "Daily spend ceiling reached" + resetsIn,
 		long:   "The daily spend ceiling is reached, so Sortie starts no agent session for any issue until the UTC day ends.",
@@ -450,6 +460,16 @@ var table = map[string]parts{
 		short:  "Waiting to read the comments since the park",
 		long:   "Sortie gives the next run the comments posted since the issue was parked, and the latest read of them failed. A later poll reads them again.",
 		clears: "Released when a later poll reads the issue's comments.",
+	},
+	"hold_standing": {
+		short:  "Held{{if .Holder}} by {{.Holder}}{{end}}{{if .Note}}: {{.Note}}{{end}}",
+		long:   "{{if .Holder}}{{.Holder}} holds{{else}}Someone holds{{end}} the issue{{if .Note}}: {{.Note}}{{end}}. Sortie starts no run, retry or continuation for it while the hold lasts; the holder renews it with new evidence before it ends.",
+		clears: "Released when {{or .Holder \"the holder\"}} releases the hold. A hold not renewed in time expires and waits for a person.",
+	},
+	"hold_standing_expired": {
+		short:  "{{if .Holder}}{{.Holder}}'s{{else}}The{{end}} hold expired{{if .Note}}: {{.Note}}{{end}}",
+		long:   "The hold{{if .Holder}} by {{.Holder}}{{end}}{{if .Note}} ({{.Note}}){{end}} expired without a renewal. Sortie keeps the issue out of dispatch until a person acts.",
+		clears: "Released when someone releases the hold, or the holder places a new hold with new evidence.",
 	},
 
 	"ended_handed": {

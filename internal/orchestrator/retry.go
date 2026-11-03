@@ -158,6 +158,11 @@ type HandleRetryTimerParams struct {
 	// HostPool is the SSH host pool. May be nil (local mode).
 	HostPool *HostPool
 
+	// WorkerWait returns why no worker can take the re-fetched issue's
+	// remote job now, and nil when one can. A retry it holds keeps its
+	// attempt and takes no slot. Nil holds none.
+	WorkerWait func(domain.Issue) *WorkerHold
+
 	// WorkflowFile is the base filename of the active WORKFLOW.md file.
 	WorkflowFile string
 
@@ -754,6 +759,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		return
 	}
 
+	if standing := state.StandingHolds[issueID]; standing != nil && isActive {
+		log.Info("issue held, releasing claim",
+			slog.String("issue_state", issue.State),
+			slog.String("holder", standing.Holder),
+		)
+		delete(state.Claimed, issueID)
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry from store",
+				slog.Any("error", err),
+			)
+		}
+		return
+	}
+
 	if _, blocked := state.DispatchBlocks[issueID]; blocked && isActive {
 		log.Info("issue pulled back or cancelled by the plan, releasing claim",
 			slog.String("issue_state", issue.State),
@@ -866,6 +885,28 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			)
 
 			reschedule(nextAttempt, delayMS, "no available SSH hosts")
+			return
+		}
+	}
+
+	if params.WorkerWait != nil {
+		if wait := params.WorkerWait(issue); wait != nil {
+			if params.HostPool != nil && host != "" {
+				params.HostPool.ReleaseHost(issueID)
+			}
+			rearmHeld(time.Now().Add(time.Duration(params.PollIntervalMS) * time.Millisecond))
+			if entry, ok := state.RetryAttempts[issueID]; ok {
+				entry.noStateObserved = popped.noStateObserved
+				entry.WorkerWait, entry.WorkerWaitSince = wait, popped.WorkerWaitSince
+				if popped.WorkerWait == nil {
+					entry.WorkerWaitSince = time.Now().UTC()
+				}
+			}
+			log.Debug("no worker can take the retry's remote job, rechecking",
+				slog.Int("attempt", popped.Attempt),
+				slog.String("waiting", strings.Join(wait.Waiting, "; ")),
+				slog.Int64("delay_ms", int64(params.PollIntervalMS)),
+			)
 			return
 		}
 	}
