@@ -148,6 +148,12 @@ type RunningEntry struct {
 	WorkerQueued    bool
 	WorkerGrantedAt time.Time
 
+	// AdoptedAt is when this process adopted a run a previous one left
+	// with its worker ([adoptIssue]). The run's events while no process
+	// ran are not seen, so stall detection measures silence from no
+	// earlier than this instant. Runtime-only.
+	AdoptedAt time.Time
+
 	// TurnClock bounds the run's turns; a hold pauses it. Shared with the
 	// worker goroutine, and safe for concurrent use.
 	TurnClock *turnClock
@@ -2375,7 +2381,7 @@ func SnapshotIssueUsageOf(usage *persistence.IssueTokenUsage) *SnapshotIssueUsag
 
 // stallReference returns the instant the stall timeout of entry is measured
 // from: its last agent event, else the start of the run, or the end of its
-// last hold when that is later. The stall check and
+// last hold, the grant of its worker or its adoption when that is later. The stall check and
 // the snapshot's stall instants share it so they cannot disagree.
 func stallReference(entry *RunningEntry) time.Time {
 	ref := entry.StartedAt
@@ -2387,6 +2393,9 @@ func stallReference(entry *RunningEntry) time.Time {
 	}
 	if entry.WorkerGrantedAt.After(ref) {
 		ref = entry.WorkerGrantedAt
+	}
+	if entry.AdoptedAt.After(ref) {
+		ref = entry.AdoptedAt
 	}
 	return ref
 }

@@ -421,6 +421,7 @@ func adoptIssue(ctx context.Context, state *State, a *remoteAdoption, workerFn W
 		TurnClock:         clock,
 		RetryAttempt:      e.RetryAttempt,
 		StartedAt:         e.StartedAt,
+		AdoptedAt:         time.Now(),
 		CancelFunc:        func() { cancelRunCause(nil) },
 		CancelCauseFunc:   cancelRunCause,
 		CeilingCancelFunc: func() { cancelWorkerCause(errCeilingStop) },
