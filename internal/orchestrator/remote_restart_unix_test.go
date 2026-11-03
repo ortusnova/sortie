@@ -5,6 +5,8 @@ package orchestrator
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,6 +368,15 @@ type restartWorker struct {
 	holdingOnce sync.Once
 	// dieOnBreak makes the worker go away when the stream breaks.
 	dieOnBreak bool
+	// selfBreak makes the worker break the stream itself when its agent
+	// first holds a prompt, as a worker daemon that restarts does.
+	selfBreak bool
+	stream    net.Conn
+	// resumeOnBreak makes the worker resume the attempt after a break,
+	// as a restarted worker daemon does: it takes the attempt's new
+	// tokens, and endedStdio keeps the stdio token that ended.
+	resumeOnBreak bool
+	endedStdio    string
 
 	beating chan struct{}
 	// released is closed when Sortie answers that the job is gone, on a
@@ -439,11 +450,36 @@ func (w *restartWorker) run() {
 		if w.dieOnBreak {
 			return
 		}
+		if w.resumeOnBreak {
+			w.resume()
+		}
 	}
 	if w.isReleased() {
 		return
 	}
 	w.giveBack()
+}
+
+// resume takes the attempt's offer again, with new tokens, retrying
+// while Sortie answers that it is not ready.
+func (w *restartWorker) resume() {
+	w.t.Helper()
+	_, old := w.flow("stdio")
+	path := fmt.Sprintf("/api/v1/workers/jobs/%s/attempts/%d/resume", w.offer.Job.ID, w.offer.Job.Attempt)
+	waittest.Until(w.t, func() error {
+		resp := w.post(path, nil)
+		defer resp.Body.Close() //nolint:errcheck // test
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("resume: %d", resp.StatusCode)
+		}
+		var o worker.Offer
+		if err := json.NewDecoder(resp.Body).Decode(&o); err != nil {
+			return err
+		}
+		w.offer.Flows = o.Flows
+		return nil
+	})
+	w.endedStdio = old
 }
 
 // dial opens the stdio stream, retrying until the attempt is served. It
@@ -494,6 +530,9 @@ func (w *restartWorker) session() bool {
 		return false
 	}
 	defer conn.Close() //nolint:errcheck // test
+	w.mu.Lock()
+	w.stream = conn
+	w.mu.Unlock()
 	w.mu.Lock()
 	w.starts++
 	start := w.starts
@@ -551,7 +590,14 @@ func (w *restartWorker) agent(start int, in io.Reader, out io.Writer, broken <-c
 			if err := enc.Encode(fakeAgentLine{Message: "working"}); err != nil {
 				return err
 			}
-			w.holdingOnce.Do(func() { close(w.holding) })
+			w.holdingOnce.Do(func() {
+				close(w.holding)
+				if w.selfBreak {
+					w.mu.Lock()
+					_ = w.stream.Close()
+					w.mu.Unlock()
+				}
+			})
 			<-broken
 			return errStreamBroken
 		}
@@ -824,6 +870,124 @@ func TestAnAdoptedRunEndedBeforeItsStreamReleasesTheWorker(t *testing.T) {
 	}
 }
 
+// run-supervision: A worker restart keeps the run. The worker daemon
+// restarts while ONS-30's agent is mid-turn: its stdio stream breaks from
+// the worker's side while its heartbeats keep the lease. Sortie keeps the
+// run instead of ending it as stalled, the worker dials the stream again,
+// Sortie resumes the session and runs the interrupted turn again, and the
+// run hands off once, as one session.
+func TestAWorkerRestartKeepsTheRun(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(start int, _ string) bool { return start == 1 }
+	w.selfBreak = true
+	w.resumeOnBreak = true
+	p := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(p, nil)
+	dispatchID := h.dispatchID(p)
+	h.handedOff(p)
+	waittest.Receive(t, worked, "the worker's report")
+
+	offers, starts, prompts := w.seen()
+	if offers != 1 || starts != 2 {
+		t.Fatalf("offers %d, agent starts %d, want the one job and the agent started again once", offers, starts)
+	}
+	if len(prompts[1]) != 1 || prompts[1][0] != prompts[0][0] {
+		t.Errorf("prompts %q, want the interrupted turn run again", prompts)
+	}
+	if got := p.adapter.resumed(); len(got) != 2 || got[1] != "line-session" {
+		t.Errorf("sessions resumed %q, want the second start to resume line-session", got)
+	}
+	h.oneSessionHandedOff(p, dispatchID, 1)
+	if w.endedStdio == "" {
+		t.Fatal("the worker did not resume the attempt")
+	}
+	_, now := w.flow("stdio")
+	if now == w.endedStdio {
+		t.Error("the resume handed the same stdio token")
+	}
+}
+
+// A restart of Sortie after a worker resumed restores the resumed
+// tokens: the worker's stream, dialed with them, is served.
+func TestARestartAfterAResumeAdmitsTheNewTokens(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(start int, _ string) bool { return start <= 2 }
+	w.selfBreak = true
+	w.resumeOnBreak = true
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Until(t, func() error {
+		if _, starts, prompts := w.seen(); starts != 2 || len(prompts[1]) == 0 {
+			return fmt.Errorf("agent starts %d, want the second holding its turn", starts)
+		}
+		return nil
+	})
+	h.recorded(first, func(r persistence.RemoteRun) error {
+		_, stdio := w.flow("stdio")
+		var rec remoteRunRecord
+		if err := json.Unmarshal([]byte(r.Record), &rec); err != nil {
+			return err
+		}
+		if rec.Tokens["stdio"] != hexDigest(stdio) {
+			return errors.New("the record does not hold the resumed stdio token")
+		}
+		return nil
+	})
+	dispatchID := h.dispatchID(first)
+	h.stopAndGo(first)
+	second := h.start()
+	h.handedOff(second)
+	waittest.Receive(t, worked, "the worker's report")
+	if _, starts, _ := w.seen(); starts != 3 {
+		t.Errorf("agent starts %d, want three: the first, after the resume, after the restart", starts)
+	}
+	h.oneSessionHandedOff(second, dispatchID, 1)
+}
+
+// A worker that breaks its stream and never comes back lets the lease
+// expire: the kept run then fails as for any lost lease and is retried
+// once, as a new job attempt.
+func TestAWorkerGoneAfterItsBreakRetriesOnce(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	h.cfg.Environment.Remote.LeaseTTLMS = 1500
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	w.selfBreak = true
+	w.dieOnBreak = true
+	p := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, worked, "the worker gone after its break")
+	waittest.Until(t, func() error {
+		snap, err := p.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 0 || len(snap.Retrying) != 1 || snap.Retrying[0].Identifier != "ONS-30" {
+			return fmt.Errorf("running %d, retrying %+v, want ONS-30's one retry", len(snap.Running), snap.Retrying)
+		}
+		return nil
+	})
+	if rows := h.history(p); len(rows) != 1 || rows[0].Status == "succeeded" {
+		t.Fatalf("run history %+v, want the one failed run", rows)
+	}
+}
+
 // dispatchID returns the dispatch of ONS-30's running run.
 func (h *restartHarness) dispatchID(p *sortieProcess) string {
 	h.t.Helper()
@@ -1018,4 +1182,10 @@ func TestRestartStallsAnAdoptedRunSilentForTheTimeout(t *testing.T) {
 	if ended.Before(adopted.Add(timeout).Truncate(time.Second)) {
 		t.Errorf("stopped at %v, before the stall timeout after the adoption at %v", ended, adopted)
 	}
+}
+
+// hexDigest is the digest a run's record keeps of a job token.
+func hexDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
