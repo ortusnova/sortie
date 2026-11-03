@@ -38,6 +38,15 @@ func (s *headChangeStore) UpsertReactionFingerprint(context.Context, string, str
 func (s *headChangeStore) GetReactionFingerprint(context.Context, string, string) (string, bool, error) {
 	return "", false, nil
 }
+
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *headChangeStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
 func (s *headChangeStore) MarkReactionDispatched(context.Context, string, string) error { return nil }
 func (s *headChangeStore) DeleteReactionFingerprint(context.Context, string, string) error {
 	return nil

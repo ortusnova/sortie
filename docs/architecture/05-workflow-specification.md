@@ -430,7 +430,7 @@ The kind reads no `debounce_ms` field: bot comments arrive in bulk on push and d
 
 **Reaction kind: `merge_conflicts`**
 
-Merge-conflict detection and resolution. When configured, the orchestrator polls mergeability on Sortie-created open PRs each reconcile cycle. Mergeability is evaluated on every due tick, and while a PR remains conflicted the orchestrator dispatches one rebase-and-resolve continuation turn per distinct conflicting head commit, subject to the retry budget; re-observing the same head dispatches nothing further. A return to no-conflict is not required between attempts. See Section 11E for the full contract. (Runtime kind value: `merge-conflict`.)
+Merge-conflict detection and resolution. When configured, the orchestrator polls mergeability on Sortie-created open PRs each reconcile cycle. Mergeability is evaluated on every due tick, and while a PR remains conflicted the orchestrator dispatches one rebase-and-resolve continuation turn per distinct conflicting head commit, subject to the retry budget; re-observing the same head dispatches nothing further while a run of the issue is in flight, and another run, at most 3 per head, once the earlier runs ended and left the head conflicting. A return to no-conflict is not required between attempts. See Section 11E for the full contract. (Runtime kind value: `merge-conflict`.)
 
 `max_retries` defaults to `1` for this kind rather than the common default of `2`, because merge-conflict resolution by a coding agent is less likely to succeed on a second attempt.
 

@@ -153,6 +153,15 @@ func (s *labelReviewFingerprintStore) GetReactionFingerprint(_ context.Context, 
 	return s.marks[issueID+":"+kind], false, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *labelReviewFingerprintStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *labelReviewFingerprintStore) SaveRetryEntry(_ context.Context, _ persistence.RetryEntry) error {
 	return nil
 }

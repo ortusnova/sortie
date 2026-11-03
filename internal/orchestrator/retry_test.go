@@ -146,6 +146,15 @@ func (m *mockRetryStore) GetReactionFingerprint(_ context.Context, _, _ string) 
 	return "", false, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (m *mockRetryStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := m.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (m *mockRetryStore) MarkReactionDispatched(_ context.Context, issueID, kind string) error {
 	m.markDispatchedCalls++
 	m.markDispatchedIssueID = issueID
