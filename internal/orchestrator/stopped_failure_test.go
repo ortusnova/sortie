@@ -291,6 +291,51 @@ func TestScenario_AMissingTokenScopeMarkedDoneChecksAtOnce(t *testing.T) {
 	}
 }
 
+// Marking the person action done while a scheduled check that did not know
+// it runs makes Sortie check again at once when that check fails, not one
+// interval later.
+func TestScenario_AMissingTokenScopeMarkedDoneDuringACheckChecksAgainAtOnce(t *testing.T) {
+	t.Parallel()
+
+	story := candidate("id-49", "ONS-49")
+	h, _ := faultHarness(t, story)
+	stopRun(h, story, refusedPushOf("ONS-49"))
+	stopRun(h, story, refusedPushOf("ONS-49"))
+	var fault *PlatformFault
+	for _, f := range h.state.PlatformFaults {
+		fault = f
+	}
+	if fault == nil {
+		t.Fatal("no platform fault recorded")
+	}
+	fault.NextCheckAt = time.Time{}
+
+	started := make(chan PlatformFaultCheck, 4)
+	release := make(chan struct{})
+	h.o.faultChecker = func(_ context.Context, check PlatformFaultCheck) error {
+		started <- check
+		if !check.ActionDone {
+			<-release
+			return errAwaitingPersonAction
+		}
+		return nil
+	}
+
+	h.run()
+	if first := waittest.Receive(t, started, "the scheduled check"); first.ActionDone {
+		t.Fatalf("scheduled check = %+v, want it run before the action was marked done", first)
+	}
+	if got := h.o.PlatformFaultDoneFunc()(waittest.Context(t), fault.ID, "taichi"); got.Status != PlatformFaultDoneBusy {
+		t.Fatalf("marking the action done during a check = %+v, want busy", got)
+	}
+	close(release)
+	if again := waittest.Receive(t, started, "the check after the action was marked done"); !again.ActionDone {
+		t.Fatalf("second check = %+v, want it to know the action is done", again)
+	}
+	h.waitForSessions(1)
+	h.stop()
+}
+
 // A platform fault restored at startup is checked on the first tick, and
 // a passing check releases the story it holds to run.
 func TestRun_RestoredPlatformFaultIsCheckedAndReleased(t *testing.T) {

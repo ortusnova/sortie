@@ -108,12 +108,18 @@ func (o *Orchestrator) startDueFaultChecks(ctx context.Context, now time.Time) {
 }
 
 // applyFaultCheckOnLoop applies a check result and, when it released
-// stories, asks for a tick so they dispatch at once. It returns the fault
-// and whether the check resolved it. Must run on the event loop.
+// stories, asks for a tick so they dispatch at once. A failed check whose
+// fault had its action marked done while it ran starts the next check at
+// once. It returns the fault and whether the check resolved it. Must run
+// on the event loop.
 func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string, checkErr error) (*PlatformFault, bool) {
-	f, resolved := applyFaultCheck(ctx, o.state, o.store, faultID, checkErr, time.Now(), o.logger)
-	if resolved {
+	now := time.Now()
+	f, resolved := applyFaultCheck(ctx, o.state, o.store, faultID, checkErr, now, o.logger)
+	switch {
+	case resolved:
 		o.RefreshFunc()()
+	case f != nil && !now.Before(f.NextCheckAt):
+		o.startDueFaultChecks(ctx, now)
 	}
 	o.notifyObservers()
 	return f, resolved

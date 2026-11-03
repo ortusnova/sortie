@@ -52,6 +52,11 @@ type PlatformFault struct {
 
 	// checking is set while a check of the fault runs.
 	checking bool
+
+	// recheck is set when a person marked the action done while a check
+	// that did not know it ran: a failing result of that check makes the
+	// next check due at once.
+	recheck bool
 }
 
 // PlatformFaultHold is one story a platform fault holds.
@@ -299,6 +304,7 @@ func markPlatformFaultActionDone(ctx context.Context, state *State, store platfo
 	f.ActionDoneAt, f.ActionDoneBy = now.UTC(), by
 	savePlatformFault(ctx, store, f, time.Time{}, log)
 	if f.checking {
+		f.recheck = true
 		return PlatformFaultCheck{}, f, false
 	}
 	f.checking = true
@@ -309,7 +315,8 @@ func markPlatformFaultActionDone(ctx context.Context, state *State, store platfo
 // check resolves the fault: it leaves the state, its holds are dropped so
 // the stories it held dispatch again with the budgets they have, and it
 // is persisted as resolved. A failing check keeps every hold and makes
-// the next check due one [PlatformFaultCheckInterval] after now. It
+// the next check due one [PlatformFaultCheckInterval] after now, or at
+// now when the action was marked done while the check ran. It
 // returns the fault and whether the check resolved it; nil when no open
 // fault has the ID.
 func applyFaultCheck(ctx context.Context, state *State, store platformFaultStore, faultID string, checkErr error, now time.Time, log *slog.Logger) (*PlatformFault, bool) {
@@ -323,6 +330,10 @@ func applyFaultCheck(ctx context.Context, state *State, store platformFaultStore
 	if checkErr != nil {
 		f.LastCheckError = redact.Mask(checkErr.Error())
 		f.NextCheckAt = now.Add(PlatformFaultCheckInterval)
+		if f.recheck {
+			f.NextCheckAt = now
+		}
+		f.recheck = false
 		savePlatformFault(ctx, store, f, time.Time{}, log)
 		log.Info("platform fault check failed, stories stay held",
 			slog.Int("held", len(f.Holds)),
