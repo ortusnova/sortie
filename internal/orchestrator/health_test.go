@@ -195,6 +195,10 @@ func TestObserveReadClassification(t *testing.T) {
 		_, err := ci.FetchCIStatus(ctx, "main")
 		return err
 	}
+	fetchRepositoryCIStatus := func(ctx context.Context, _ domain.SCMAdapter, ci domain.CIStatusProvider) error {
+		_, err := domain.FetchPullRequestCIStatus(ctx, ci, "owner", "repo", "main")
+		return err
+	}
 	deleteBranch := func(ctx context.Context, scm domain.SCMAdapter, _ domain.CIStatusProvider) error {
 		return scm.DeleteBranch(ctx, "owner", "repo", "feature")
 	}
@@ -214,6 +218,7 @@ func TestObserveReadClassification(t *testing.T) {
 		{name: "not found from a read fails", call: getMergeability, err: &domain.SCMError{Kind: domain.ErrSCMNotFound, Message: "no such pull request"}, wantOutcome: "fail"},
 		{name: "transport error from a read fails", call: fetchReviews, err: &domain.SCMError{Kind: domain.ErrSCMTransport, Message: "connection refused"}, wantOutcome: "fail"},
 		{name: "CI not found fails", call: fetchCIStatus, err: &domain.CIError{Kind: domain.ErrCINotFound, Message: "no such ref"}, wantOutcome: "fail"},
+		{name: "CI not found in another repository fails", call: fetchRepositoryCIStatus, err: &domain.CIError{Kind: domain.ErrCINotFound, Message: "no such ref"}, wantOutcome: "fail"},
 		{name: "cancellation with a live context fails", call: fetchReviews, err: context.Canceled, wantOutcome: "fail"},
 		{name: "read canceled by shutdown is not recorded", call: getMergeability, err: context.Canceled, canceledCtx: true, wantOutcome: "untouched"},
 		{name: "refused branch delete is not recorded", call: deleteBranch, err: &domain.SCMError{Kind: domain.ErrSCMPayload, Message: "reference does not exist"}, wantOutcome: "untouched"},

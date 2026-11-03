@@ -22,7 +22,7 @@ func init() {
 }
 
 // Compile-time interface satisfaction check.
-var _ domain.CIStatusProvider = (*GiteaCIProvider)(nil)
+var _ domain.RepositoryCIStatusProvider = (*GiteaCIProvider)(nil)
 
 // scmMaxPages caps the number of pages fetched for a single combined-status
 // walk, whether the reader is the CI provider or the source-control merge
@@ -135,8 +135,15 @@ func NewGiteaCIProvider(maxLogLines int, adapterConfig map[string]any) (domain.C
 // context cancellation or deadline error is returned without conversion to one,
 // so a caller can still match it with [errors.Is].
 func (p *GiteaCIProvider) FetchCIStatus(ctx context.Context, ref string) (domain.CIResult, error) {
+	return p.FetchRepositoryCIStatus(ctx, p.owner, p.repo, ref)
+}
+
+// FetchRepositoryCIStatus returns the aggregate CI status for ref in the
+// repository owner/repo, as [GiteaCIProvider.FetchCIStatus] does for the
+// configured one, with the same token.
+func (p *GiteaCIProvider) FetchRepositoryCIStatus(ctx context.Context, owner, repo, ref string) (domain.CIResult, error) {
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s/status",
-		url.PathEscape(p.owner), url.PathEscape(p.repo), url.PathEscape(ref))
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
 
 	paginator := httpkit.NewPagePaginator(p.client, path, nil, decodeGiteaCombinedStatusForCI, httpkit.PageOptions{
 		PageParam: "page",

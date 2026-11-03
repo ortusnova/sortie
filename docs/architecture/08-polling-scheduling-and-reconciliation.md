@@ -291,7 +291,7 @@ Part C: CI status reconciliation (when `reactions.ci_failure.provider` is config
   - If the pull request is merged, or closed without merging: drop the entry and its attempt counter and log; the watch ends. The merged check runs first, so a provider whose closed state subsumes merging still ends the watch through the merged branch.
   - If the resolved head is empty: re-enqueue with backoff, recording no head and spending no attempt.
   - Deduplicate against the resolved head: a stored fingerprint equal to the current head and already marked dispatched drops the entry for this pass, except an entry with a standing escalation, which proceeds to the status read; a stored fingerprint that differs opens a new epoch (§11A.5).
-  - Call `CIStatusProvider.FetchCIStatus` with the resolved head.
+  - Read the CI status of the resolved head in the pull request's own repository (§11A.1), not the provider's configured one.
   - If the call fails: log a warning, re-enqueue with an exponential backoff delay derived from the poll interval and the pending attempt count, and continue to the next entry.
   - If status is `passing`: clear reaction attempts for the issue and kind, end a standing escalation, and keep watching; the entry re-enqueues rather than retiring, so a later commit's failure is still observed.
   - If status is `pending`: re-enqueue with the same exponential backoff as the fetch-error path.

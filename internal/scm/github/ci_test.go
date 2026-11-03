@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -684,5 +685,55 @@ func TestFetchCIStatus_MixedFirstAndThirdPartyFailing(t *testing.T) {
 	}
 	if n := actionsLogCalled.Load(); n != 1 {
 		t.Errorf("github-actions log endpoint called %d times, want 1", n)
+	}
+}
+
+// TestFetchRepositoryCIStatus_ReadsTheNamedRepository verifies that every
+// request of a repository read, the check runs and the failing job's steps
+// and log, goes to the named repository rather than the configured one.
+func TestFetchRepositoryCIStatus_ReadsTheNamedRepository(t *testing.T) {
+	t.Parallel()
+
+	checkRunsFixture := loadFixture(t, "check_runs_failing.json")
+	var (
+		mu    sync.Mutex
+		paths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/repos/other/project/commits/sha-1/check-runs":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(checkRunsFixture) //nolint:errcheck // test helper
+		case "/repos/other/project/actions/jobs/2001":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"steps":[]}`)) //nolint:errcheck // test helper
+		case "/repos/other/project/actions/jobs/2001/logs":
+			w.Write([]byte("the failing log line\n")) //nolint:errcheck // test helper
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	provider := newTestCIProvider(t, srv.URL, 10)
+	result, err := provider.FetchRepositoryCIStatus(context.Background(), "other", "project", "sha-1")
+	if err != nil {
+		t.Fatalf("FetchRepositoryCIStatus: %v (requested %v)", err, paths)
+	}
+	if result.Status != domain.CIStatusFailing {
+		t.Errorf("Status = %q, want %q", result.Status, domain.CIStatusFailing)
+	}
+	if !strings.Contains(result.LogExcerpt, "the failing log line") {
+		t.Errorf("LogExcerpt = %q, want the named repository's job log", result.LogExcerpt)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, p := range paths {
+		if !strings.HasPrefix(p, "/repos/other/project/") {
+			t.Errorf("request %q left the named repository", p)
+		}
 	}
 }

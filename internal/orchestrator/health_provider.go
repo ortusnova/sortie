@@ -40,8 +40,9 @@ func observeSCM(inner domain.SCMAdapter, rec *healthRecord) domain.SCMAdapter {
 	return base
 }
 
-// observeCI wraps inner so every status read it serves updates rec.
-func observeCI(inner domain.CIStatusProvider, rec *healthRecord) domain.CIStatusProvider {
+// observeCI wraps inner so every status read it serves updates rec. The
+// wrapper reads another repository through inner when inner can.
+func observeCI(inner domain.CIStatusProvider, rec *healthRecord) domain.RepositoryCIStatusProvider {
 	return observedCI{inner: inner, rec: rec}
 }
 
@@ -116,6 +117,12 @@ type observedCI struct {
 
 func (p observedCI) FetchCIStatus(ctx context.Context, ref string) (domain.CIResult, error) {
 	result, err := p.inner.FetchCIStatus(ctx, ref)
+	observeRead(ctx, p.rec, err)
+	return result, err
+}
+
+func (p observedCI) FetchRepositoryCIStatus(ctx context.Context, owner, repo, ref string) (domain.CIResult, error) {
+	result, err := domain.FetchPullRequestCIStatus(ctx, p.inner, owner, repo, ref)
 	observeRead(ctx, p.rec, err)
 	return result, err
 }

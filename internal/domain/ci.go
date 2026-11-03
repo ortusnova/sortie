@@ -176,6 +176,30 @@ type CIStatusProvider interface {
 	FetchCIStatus(ctx context.Context, ref string) (CIResult, error)
 }
 
+// RepositoryCIStatusProvider is a [CIStatusProvider] that also reads the CI
+// of a repository other than the one it was configured with, under the same
+// credentials. A workflow that dispatches several repositories reads each
+// pull request's CI through it from the repository the pull request is in.
+type RepositoryCIStatusProvider interface {
+	CIStatusProvider
+
+	// FetchRepositoryCIStatus returns the aggregate CI pipeline status for
+	// ref in the repository owner/repo, as [CIStatusProvider.FetchCIStatus]
+	// does for the configured one. owner and repo are those the provider's
+	// [SCMAdapter] reads the pull request with.
+	FetchRepositoryCIStatus(ctx context.Context, owner, repo, ref string) (CIResult, error)
+}
+
+// FetchPullRequestCIStatus returns the CI status of ref in the repository
+// owner/repo of a pull request. It reads the configured repository when
+// repo is empty or provider cannot read another one.
+func FetchPullRequestCIStatus(ctx context.Context, provider CIStatusProvider, owner, repo, ref string) (CIResult, error) {
+	if scoped, ok := provider.(RepositoryCIStatusProvider); ok && repo != "" {
+		return scoped.FetchRepositoryCIStatus(ctx, owner, repo, ref)
+	}
+	return provider.FetchCIStatus(ctx, ref)
+}
+
 // CIErrorKind enumerates the normalized error categories that CI
 // status provider adapters map their native errors to. The
 // orchestrator uses these categories for logging and observability;
