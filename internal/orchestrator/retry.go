@@ -161,6 +161,12 @@ type HandleRetryTimerParams struct {
 	// one now left to another workflow, has its claim released.
 	Dispatches func(domain.Issue) bool
 
+	// CompleteMerged moves the re-fetched issue to the done state when its
+	// pull request already merged, and returns it with its new state. It
+	// returns false when the move failed; the retry is then rescheduled.
+	// Nil leaves every issue as fetched.
+	CompleteMerged func(domain.Issue) (domain.Issue, bool)
+
 	// ResolveAttemptSettings resolves the retry attempt's settings from the
 	// configuration in force now; sshHost is empty for a local launch.
 	// Required. An attempt whose settings carry refusals is rescheduled.
@@ -628,6 +634,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			)
 		}
 		return
+	}
+
+	if params.CompleteMerged != nil {
+		completed, moved := params.CompleteMerged(issue)
+		if !moved {
+			attempt, delayMS := putBackSchedule(popped, popped.Attempt, params.MaxRetryBackoffMS)
+			log.Warn("merged issue not yet moved to the done state, rescheduling retry",
+				slog.Int("attempt", attempt),
+				slog.Int64("delay_ms", delayMS),
+			)
+			reschedule(attempt, delayMS, "merged issue not yet moved to the done state")
+			return
+		}
+		issue = completed
 	}
 
 	activeSet := stateSet(params.ActiveStates)

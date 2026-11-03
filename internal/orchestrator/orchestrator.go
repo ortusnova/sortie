@@ -912,6 +912,13 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				Dispatches: func(issue domain.Issue) bool {
 					return dispatchesIssue(cfg.Environment, cfg.Workspace.Root, issue)
 				},
+				CompleteMerged: func(issue domain.Issue) (domain.Issue, bool) {
+					completed := o.completeMerged(ctx, cfg, []domain.Issue{issue})
+					if len(completed) == 0 {
+						return issue, false
+					}
+					return completed[0], true
+				},
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
 				},
@@ -1271,6 +1278,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	var dispatchable []domain.Issue
 	dispatchable, o.leftAlone = dispatchableIssues(cfg.Environment, cfg.Workspace.Root, issues, o.leftAlone, o.logger)
 	sorted := SortForDispatch(dispatchable)
+	sorted = o.completeMerged(ctx, cfg, sorted)
 	clearDispatchBlocks(o.state, sorted, time.Now(), o.logger)
 	o.once.setCandidates(sorted)
 	input := pausedDispatchInput(o.state, o.once.dispatchInput(sorted))
