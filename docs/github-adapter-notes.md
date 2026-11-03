@@ -128,6 +128,12 @@ The SCM adapter also implements the optional `domain.PullRequestOpener`. Its one
 
 **The scope error names the scope.** A 403 that is not a rate limit, or a 404 on create after the list succeeded, means the token can read the repository but not open pull requests in it. Both map to `ErrSCMAuth` with a message naming what the token needs: the classic `repo` scope, or the fine-grained permission "Pull requests: write". A rate-limited 403 stays an API error, so it is retried rather than reported as a configuration fault.
 
+## Conversation comments on a pull request
+
+The SCM adapter also implements the optional `domain.PullRequestCommentReader`. Its one method, `FetchPullRequestComments`, reads `GET /repos/{owner}/{repo}/issues/{number}/comments`: on GitHub a pull request's conversation comments are issue comments, apart from the review comments of `pulls/{number}/comments`. Under plan control the review watch reads it only for a story labelled `sortie-review:ui`, whose operator answers there.
+
+**The two ID spaces are kept apart.** Issue comments and review comments are numbered separately, so the adapter returns each issue comment's ID as `issuecomment-<id>`, GitHub's own anchor for it, and a fingerprint over both kinds cannot confuse two comments. An author whose `user.type` is `Bot` and an empty body are left out; the pages are read with the review reads' cap of 20.
+
 ## The scope preflight can only verify one token kind
 
 The auto-merge scope preflight reads the scopes header GitHub returns on a rate-limit read. Classic personal access tokens populate that header. Fine-grained tokens and GitHub App installation tokens do not, and there is no substitute surface for them.

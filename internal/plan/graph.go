@@ -24,6 +24,10 @@ const SupportedVersion = 2
 const (
 	ReviewHuman    = "human"
 	ReviewCriteria = "criteria"
+	// ReviewUI marks a story that is built before it is approved: once it
+	// covers a requirement a sync releases it without an approval, and the
+	// operator's merge of its pull request is its approval.
+	ReviewUI = "ui"
 )
 
 // Node kinds and approval states of the graph format.
@@ -85,6 +89,25 @@ type Approver struct {
 
 // Released reports whether the node asks to be released.
 func (n Node) Released() bool { return n.Release != nil && *n.Release }
+
+// builtUnapproved reports whether the node is a ui story that covers a
+// requirement. Such a story syncs and is released without an approval.
+func (n Node) builtUnapproved() bool {
+	return n.Kind == KindStory && n.Review == ReviewUI && len(n.Covers) > 0
+}
+
+// synced reports whether a sync writes the node's issue: it is approved,
+// or it is a ui story built before its approval.
+func (n Node) synced() bool { return n.Approval == ApprovalApproved || n.builtUnapproved() }
+
+// releases reports whether a sync under plan control releases the story.
+// A ui story is released once it covers a requirement, and only then.
+func (n Node) releases() bool {
+	if n.Review == ReviewUI {
+		return n.builtUnapproved()
+	}
+	return n.Released()
+}
 
 // ParentEdge parents a story to its epic.
 type ParentEdge struct {
@@ -180,8 +203,11 @@ func (g Graph) checkVersion2(where string, n Node) []string {
 	if n.Kind != KindStory {
 		problems = append(problems, where+": release, review, approved_by, approved_at, and repository are for stories only")
 	}
-	if n.Review != "" && n.Review != ReviewHuman && n.Review != ReviewCriteria {
-		problems = append(problems, fmt.Sprintf("%s: review %q is not human or criteria", where, n.Review))
+	if n.Review != "" && n.Review != ReviewHuman && n.Review != ReviewCriteria && n.Review != ReviewUI {
+		problems = append(problems, fmt.Sprintf("%s: review %q is not human, criteria, or ui", where, n.Review))
+	}
+	if n.Review == ReviewUI && (n.ApprovedBy != nil || n.ApprovedAt != "") {
+		problems = append(problems, where+": a ui story carries no approved_by or approved_at; the merge of its pull request is its approval")
 	}
 	if n.Repository != "" && !changeNamePattern.MatchString(n.Repository) {
 		problems = append(problems, fmt.Sprintf("%s: repository %q must match [a-z0-9]+(-[a-z0-9]+)*", where, n.Repository))
@@ -194,8 +220,8 @@ func (g Graph) checkVersion2(where string, n Node) []string {
 			problems = append(problems, where+": approved_at is not an RFC 3339 time")
 		}
 	}
-	if n.Released() && n.Approval != ApprovalApproved {
-		problems = append(problems, where+": only an approved story can be released")
+	if n.Released() && n.Approval != ApprovalApproved && !n.builtUnapproved() {
+		problems = append(problems, where+": only an approved story, or a ui story that covers a requirement, can be released")
 	}
 	return problems
 }

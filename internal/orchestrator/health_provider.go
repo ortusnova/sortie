@@ -119,3 +119,24 @@ func (p observedCI) FetchCIStatus(ctx context.Context, ref string) (domain.CIRes
 	observeRead(ctx, p.rec, err)
 	return result, err
 }
+
+// observeCommentReader returns the conversation-comment reader of inner,
+// wrapped so its reads update rec, or nil when inner has none.
+func observeCommentReader(inner domain.SCMAdapter, rec *healthRecord) domain.PullRequestCommentReader {
+	reader, ok := inner.(domain.PullRequestCommentReader)
+	if !ok {
+		return nil
+	}
+	return observedCommentReader{inner: reader, rec: rec}
+}
+
+type observedCommentReader struct {
+	inner domain.PullRequestCommentReader
+	rec   *healthRecord
+}
+
+func (a observedCommentReader) FetchPullRequestComments(ctx context.Context, prNumber int, owner, repo string) ([]domain.ReviewComment, error) {
+	comments, err := a.inner.FetchPullRequestComments(ctx, prNumber, owner, repo)
+	observeRead(ctx, a.rec, err)
+	return comments, err
+}

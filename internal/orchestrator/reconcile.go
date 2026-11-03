@@ -58,6 +58,12 @@ type ReconcileParams struct {
 	// auto-merge merge as without plan control.
 	ReviewGate ReviewGateFunc
 
+	// OperatorComments, when non-nil, reads the operator's conversation
+	// comments on the pull request of a review entry whose story takes
+	// them as review feedback. Plan control sets it for a forge that can
+	// read them.
+	OperatorComments OperatorCommentsFunc
+
 	// TrackerAdapter fetches current issue states for running issues.
 	TrackerAdapter domain.TrackerAdapter
 

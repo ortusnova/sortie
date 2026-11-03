@@ -288,6 +288,22 @@ type PullRequest struct {
 	Created bool
 }
 
+// PullRequestCommentReader is an optional capability of an [SCMAdapter]:
+// an adapter that implements it reads the conversation comments of a pull
+// request, the ones left on the pull request itself rather than in a
+// review. Implementations must be safe for concurrent use.
+type PullRequestCommentReader interface {
+	// FetchPullRequestComments returns the conversation comments of the
+	// given PR, oldest first. An implementation excludes an author only
+	// when its platform reports that author as an automated bot account.
+	// Each comment's ID is distinct from the IDs of the adapter's review
+	// comments, FilePath is empty, and the lines are zero.
+	//
+	// Returns an empty non-nil slice when the PR has no such comments.
+	// Returns a [*SCMError] on failure.
+	FetchPullRequestComments(ctx context.Context, prNumber int, owner, repo string) ([]ReviewComment, error)
+}
+
 // PullRequestOpener is an optional capability of an [SCMAdapter]: an
 // adapter that implements it can open a pull request for a branch.
 // Implementations must be safe for concurrent use.

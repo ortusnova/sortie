@@ -179,3 +179,18 @@ Review comment reconciliation only processes PRs created by Sortie:
 
 Future reaction kinds whose lifecycle outlives active tracker states MUST define restart recovery and kind-specific `.sortie/scm.json` metadata validation before they can be polled after handoff.
 
+
+### 11B.10 Operator comments on a ui story
+
+Under plan control, a story labelled `sortie-review:ui` is merged by the operator, never by Sortie, and the operator answers on its pull request's conversation rather than in a review. An SCM adapter MAY implement the optional `PullRequestCommentReader` capability:
+
+```go
+type PullRequestCommentReader interface {
+    FetchPullRequestComments(ctx context.Context, prNumber int, owner, repo string) ([]ReviewComment, error)
+}
+```
+
+- It returns the pull request's conversation comments, oldest first, as `ReviewComment` values with an empty `file_path` and zero lines, leaving out authors the platform reports as bot accounts. Each `id` is distinct from the adapter's review-comment IDs; the GitHub adapter prefixes `issuecomment-`. It returns a non-nil, possibly empty, slice or a `*SCMError`.
+- The GitHub adapter implements it. An adapter without it leaves a ui story with changes-requested reviews as its only feedback.
+
+On each review pass, when plan control is on and the adapter implements the capability, the orchestrator reads the story's labels once per review entry. For a ui story it appends the conversation comments to the set `FetchPendingReviews` returned, before the bot allowlist (step g), so they take the same fingerprint, handed-off check, debounce, budget, triage, escalation and dispatch: a new operator comment schedules a review-fix dispatch on the branch. A failed label or conversation read backs off as a failed review fetch does. A ui story's watch is not dropped by `watch_window_ms`: each pass reads the pull request, and the watch ends when it merges, closes, or is missing, and a pass that finds no actionable comment records the check as awaiting approval, since the operator's merge is the story's approval.

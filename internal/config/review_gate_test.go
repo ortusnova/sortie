@@ -97,3 +97,27 @@ func TestReviewGate_ChainWithoutTheGate(t *testing.T) {
 		t.Errorf("error = %s: %s", ce.Field, ce.Message)
 	}
 }
+
+// A rule that takes ui stories must lead to a criteria check too: a ui
+// story's criteria review passes before the operator looks at it.
+func TestReviewGate_UIStoriesNeedTheCheck(t *testing.T) {
+	t.Parallel()
+	rules := criteriaRules()
+	rules[0].(map[string]any)["match"] = map[string]any{"labels": []any{"sortie-review:ui"}}
+	d, err := buildRules(t, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePlanReviewGates(d, true); err != nil {
+		t.Errorf("ui chain ending in the check: %v, want nil", err)
+	}
+	delete(rules[0].(map[string]any), "next")
+	d, err = buildRules(t, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ce := requireConfigError(t, ValidatePlanReviewGates(d, true))
+	if ce.Field != "dispatch.rules[0]" || !strings.Contains(ce.Message, "sortie-review:ui") || !strings.Contains(ce.Message, "ends in no gate") {
+		t.Errorf("error = %s: %s", ce.Field, ce.Message)
+	}
+}
