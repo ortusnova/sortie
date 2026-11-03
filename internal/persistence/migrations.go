@@ -203,7 +203,9 @@ var migration1013SQL string
 // numbers, so a database that already ran fork migrations applies new
 // upstream migrations after them. Fork migrations must therefore only add fork-owned tables and
 // columns, and never depend on, or change, anything an upstream migration
-// may add later.
+// may add later. A new fork migration takes the next free version, and its
+// SQL file is named for it: TestMigrations_NumberingIsUniqueContiguousAndMatchesFiles
+// fails on a reused, skipped or misnamed version.
 var migrations = []Migration{
 	{Version: 1, Description: "core persistence tables", SQL: migration001SQL},
 	{Version: 2, Description: "extended token metrics", SQL: migration002SQL},
