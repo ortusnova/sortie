@@ -665,6 +665,8 @@ var holdTemplates = map[orchestrator.SkipReason]string{
 	orchestrator.SkipStageHopUnconfirmed: "hold_stage_hop",
 	orchestrator.SkipUsageLimit:          "hold_usage_limit",
 	orchestrator.SkipParkCommentsUnread:  "hold_park_comments",
+	orchestrator.SkipStandingHold:        "hold_standing",
+	orchestrator.SkipStandingHoldExpired: "hold_standing_expired",
 }
 
 func selectHold(h *orchestrator.SnapshotHold, c Context) (string, map[string]any) {
@@ -690,6 +692,8 @@ func selectHold(h *orchestrator.SnapshotHold, c Context) (string, map[string]any
 		"AgentKind": h.AgentKind,
 		"ModelOnly": h.ModelOnly,
 		"Model":     h.Model,
+		"Holder":    strings.TrimSpace(h.Holder),
+		"Note":      strings.TrimSpace(h.Note),
 	}
 
 	switch {

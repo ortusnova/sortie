@@ -714,6 +714,20 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		return
 	}
 
+	if standing := state.StandingHolds[issueID]; standing != nil && isActive {
+		log.Info("issue held, releasing claim",
+			slog.String("issue_state", issue.State),
+			slog.String("holder", standing.Holder),
+		)
+		delete(state.Claimed, issueID)
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry from store",
+				slog.Any("error", err),
+			)
+		}
+		return
+	}
+
 	if _, blocked := state.DispatchBlocks[issueID]; blocked && isActive {
 		log.Info("issue pulled back or cancelled by the plan, releasing claim",
 			slog.String("issue_state", issue.State),

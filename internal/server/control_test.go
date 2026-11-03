@@ -13,7 +13,10 @@ import (
 	"github.com/sortie-ai/sortie/internal/orchestrator"
 )
 
-type recordedHold struct{ identifier, reason, holder string }
+type recordedHold struct {
+	identifier, reason, holder string
+	req                        orchestrator.HoldRequest
+}
 
 func controlTestServer(t *testing.T, reply orchestrator.ControlReply, holds *[]recordedHold) *httptest.Server {
 	t.Helper()
@@ -21,8 +24,8 @@ func controlTestServer(t *testing.T, reply orchestrator.ControlReply, holds *[]r
 		SnapshotFn: fixedSnapshot(orchestrator.RuntimeSnapshotResult{}),
 		RefreshFn:  acceptingRefresh(),
 		Logger:     slog.New(slog.DiscardHandler),
-		HoldFn: func(identifier, reason, holder string) orchestrator.ControlReply {
-			*holds = append(*holds, recordedHold{identifier, reason, holder})
+		HoldFn: func(identifier string, req orchestrator.HoldRequest) orchestrator.ControlReply {
+			*holds = append(*holds, recordedHold{identifier, req.Reason, req.Holder, req})
 			return reply
 		},
 		ReleaseFn: func(identifier string) orchestrator.ControlReply {
@@ -96,7 +99,7 @@ func TestHoldAndRelease_StatusCodes(t *testing.T) {
 				if body["held"] != true || body["hold_reason"] != "human takeover" || body["holder"] != "acp-broker" || body["held_since"] != "2026-10-11T10:00:00Z" {
 					t.Errorf("hold body = %v, want the held state", body)
 				}
-				if len(calls) != 1 || calls[0] != (recordedHold{"LIVE-1", "human takeover", "acp-broker"}) {
+				if len(calls) != 1 || calls[0].identifier != "LIVE-1" || calls[0].reason != "human takeover" || calls[0].holder != "acp-broker" {
 					t.Errorf("HoldFn calls = %+v, want one for LIVE-1 with the body's reason and holder", calls)
 				}
 			} else if body["held"] != false || body["held_since"] != nil {
@@ -124,6 +127,51 @@ func TestHold_BodyHandling(t *testing.T) {
 	}
 	if len(calls) != 1 {
 		t.Errorf("HoldFn calls = %d, want 1 (only the well-formed request)", len(calls))
+	}
+}
+
+func TestHold_LeaseRequestAndReply(t *testing.T) {
+	t.Parallel()
+
+	since := time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC)
+	leased := orchestrator.ControlReply{Outcome: orchestrator.ControlDone, Hold: orchestrator.HoldState{
+		Identifier: "ONS-54", IssueID: "id-54", Held: true, Reason: "full vm chain proof running", Holder: "supervisor", HeldSince: since,
+		Lease: &orchestrator.StandingHold{
+			Identifier: "ONS-54", Holder: "supervisor", Reason: "full vm chain proof running", Evidence: "sandbox hl-ons-54-proof-1",
+			Since: since, RenewedAt: since, Until: since.Add(time.Hour),
+		},
+	}}
+	var calls []recordedHold
+	ts := controlTestServer(t, leased, &calls)
+
+	status, body := postControl(t, ts, http.MethodPost, "/api/v1/ONS-54/hold",
+		`{"by":"supervisor","reason":"full vm chain proof running","evidence":"sandbox hl-ons-54-proof-1","until":"2026-11-03T14:00:00Z"}`)
+	if status != http.StatusOK {
+		t.Fatalf("hold status = %d, want 200 (body %v)", status, body)
+	}
+	want := orchestrator.HoldRequest{Reason: "full vm chain proof running", Holder: "supervisor", Evidence: "sandbox hl-ons-54-proof-1", Until: since.Add(time.Hour)}
+	if len(calls) != 1 || calls[0].req != want {
+		t.Errorf("HoldFn calls = %+v, want one with %+v", calls, want)
+	}
+	lease, _ := body["lease"].(map[string]any)
+	if lease["by"] != "supervisor" || lease["evidence"] != "sandbox hl-ons-54-proof-1" || lease["until"] != "2026-11-03T14:00:00Z" ||
+		lease["renewed_at"] != "2026-11-03T13:00:00Z" || lease["expired"] != false || lease["expired_at"] != nil {
+		t.Errorf("lease = %v, want the lease with by, evidence, renewed_at, and until", lease)
+	}
+
+	if status, _ := postControl(t, ts, http.MethodPost, "/api/v1/ONS-54/hold", `{"evidence":"e","minutes":30}`); status != http.StatusOK {
+		t.Errorf("hold with minutes status = %d, want 200", status)
+	}
+	if len(calls) != 2 || calls[1].req.For != 30*time.Minute {
+		t.Errorf("HoldFn calls = %+v, want the second for 30 minutes", calls)
+	}
+	for _, bad := range []string{`{"evidence":"e","until":"tomorrow"}`, `{"evidence":"e","minutes":-1}`} {
+		if status, _ := postControl(t, ts, http.MethodPost, "/api/v1/ONS-54/hold", bad); status != http.StatusBadRequest {
+			t.Errorf("hold %s status = %d, want 400", bad, status)
+		}
+	}
+	if len(calls) != 2 {
+		t.Errorf("HoldFn calls = %d, want 2 (no call for a bad body)", len(calls))
 	}
 }
 
@@ -211,5 +259,43 @@ func TestEscalate_StatusCodes(t *testing.T) {
 				t.Errorf("EscalateFn calls = %+v, want the decoded request", got)
 			}
 		})
+	}
+}
+
+func TestState_ServesStandingHolds(t *testing.T) {
+	t.Parallel()
+
+	until := time.Date(2026, 11, 3, 14, 0, 0, 0, time.UTC)
+	srv := New(Params{
+		SnapshotFn: fixedSnapshot(orchestrator.RuntimeSnapshotResult{
+			GeneratedAt: until,
+			Holds: []orchestrator.SnapshotStandingHold{
+				{IssueID: "id-54", Identifier: "ONS-54", Holder: "supervisor", Reason: "full vm chain proof running", Evidence: "sandbox hl-ons-54-proof-1",
+					Since: until.Add(-time.Hour), RenewedAt: until.Add(-time.Hour), Until: until, ExpiredAt: until},
+			},
+		}),
+		RefreshFn: acceptingRefresh(),
+		Logger:    slog.New(slog.DiscardHandler),
+	})
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	status, body := getJSON[map[string]any](t, ts, "/api/v1/state")
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/state status = %d", status)
+	}
+	holds, _ := body["holds"].([]any)
+	if len(holds) != 1 {
+		t.Fatalf("holds = %v, want one", body["holds"])
+	}
+	h, _ := holds[0].(map[string]any)
+	if h["issue_identifier"] != "ONS-54" || h["by"] != "supervisor" || h["reason"] != "full vm chain proof running" ||
+		h["evidence"] != "sandbox hl-ons-54-proof-1" || h["renewed_at"] != "2026-11-03T13:00:00Z" || h["until"] != "2026-11-03T14:00:00Z" ||
+		h["expired"] != true || h["expired_at"] != "2026-11-03T14:00:00Z" {
+		t.Errorf("hold = %v, want the expired lease of ONS-54", h)
+	}
+	attention, _ := body["attention"].([]any)
+	if len(attention) != 1 || attention[0].(map[string]any)["kind"] != "hold_expired" {
+		t.Errorf("attention = %v, want one hold_expired item", attention)
 	}
 }
