@@ -202,6 +202,8 @@ export interface Declaration {
   run_slots: number;
   running: number;
   free: Free;
+  used?: Free;
+  unmanaged?: Unmanaged[];
 }
 
 export interface DispatchPausedResponse {
@@ -360,6 +362,13 @@ export interface HopDecisionResponse {
   completed_at: string;
 }
 
+export interface Host {
+  name: string;
+  capacity?: Size;
+  used?: Size;
+  unmanaged?: Machine[];
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -455,6 +464,15 @@ export interface LeaseView {
   attempt: number;
   worker: string;
   expires: string;
+  step?: string;
+  phase?: string;
+  step_at?: string;
+}
+
+export interface Machine {
+  name: string;
+  since: string;
+  state?: string;
 }
 
 export interface ModelPriceResponse {
@@ -579,6 +597,17 @@ export interface PullRequestResponse {
   url?: string;
   branch?: string;
   head_sha?: string;
+}
+
+export interface PullWaitResponse {
+  issue_identifier: string;
+  number: number;
+  repository: string;
+  url?: string;
+  waits_on: "review" | "ci" | "conflict" | "person" | "none";
+  reason: string;
+  since: string;
+  worker?: string;
 }
 
 export interface Queued {
@@ -840,6 +869,11 @@ export interface RunningEntryResponse {
   holder: string;
   held_since: string | null;
   held_total_ms: number;
+  worker?: string;
+  phase?: string;
+  step?: string;
+  step_at?: string;
+  estimated_end?: string;
 }
 
 export interface RunsResponse {
@@ -1014,6 +1048,12 @@ export interface ShapeWorker {
   max_concurrent_agents_per_host: number | null;
 }
 
+export interface Size {
+  cpu: number;
+  mem_gib: number;
+  disk_gib: number;
+}
+
 export interface SkillCall {
   skill: string;
   tool_error?: boolean;
@@ -1155,6 +1195,9 @@ export interface StateResponse {
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;
+  host?: Host;
+  waits: WaitResponse[];
+  pulls: PullWaitResponse[];
 }
 
 export interface Summary {
@@ -1230,6 +1273,12 @@ export interface Tokens {
   uncached: number;
 }
 
+export interface Unmanaged {
+  name: string;
+  since: string;
+  state?: string;
+}
+
 export interface UsageWindowAmountResponse {
   used: number;
   limit: number;
@@ -1248,6 +1297,15 @@ export interface UsageWindowResponse {
 export interface VerdictCount {
   verdict: string;
   runs: number;
+}
+
+export interface WaitResponse {
+  issue_identifier?: string;
+  worker?: string;
+  kind: "slot" | "capability" | "drain";
+  reason: string;
+  release: string;
+  since: string;
 }
 
 export interface Worker {

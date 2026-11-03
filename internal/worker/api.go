@@ -28,7 +28,7 @@ const Prefix = "/api/v1/workers/"
 //
 //	POST /api/v1/workers/checkin                                  body Declaration; 200 {heartbeat_ms, lease_ms}
 //	POST /api/v1/workers/poll                                     200 Offer or 204
-//	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat  200 {expires}
+//	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat  optional body Step; 200 {expires}
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report     body {outcome, reason, machine}; 204
 func Handler(m *Matcher, identityHeader string) http.Handler {
 	if identityHeader == "" {
@@ -90,7 +90,7 @@ func Handler(m *Matcher, identityHeader string) http.Handler {
 			problem(w, http.StatusBadRequest, "invalid_attempt", "attempt must be an integer")
 			return
 		}
-		exp, err := m.Heartbeat(id, r.PathValue("job"), attempt)
+		exp, err := m.HeartbeatStep(id, r.PathValue("job"), attempt, decodeStep(r.Body))
 		if err != nil {
 			fail(w, err)
 			return
@@ -172,6 +172,7 @@ func decodeDeclaration(r *http.Request) (Declaration, []string, []string, error)
 	if d.Backends == nil {
 		d.Backends = []string{}
 	}
+	decodeActivity(raw, &d)
 	return d, missing, invalid, nil
 }
 
