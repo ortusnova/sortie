@@ -228,6 +228,12 @@ type retryEntryResponse struct {
 	StagePosition     *stagePositionResponse `json:"stage_position"`
 	Paused            bool                   `json:"paused"`
 
+	// WorkerWait is why no worker can take the retry's remote job, which
+	// waits for one without an agent slot, since WorkerWaitSince.
+	// Omitted otherwise.
+	WorkerWait      *workerWaitResponse `json:"worker_wait,omitempty"`
+	WorkerWaitSince *time.Time          `json:"worker_wait_since,omitempty"`
+
 	StatusText     string `json:"status_text"`
 	StatusTextFull string `json:"status_text_full"`
 }
@@ -296,10 +302,33 @@ type holdSlotResponse struct {
 	Limit int    `json:"limit"`
 }
 
+// workerWaitResponse is the JSON wire format for why no worker can take
+// a remote job now: the capabilities the job requires, and per
+// checked-in worker what it lacks.
+type workerWaitResponse struct {
+	Capabilities []string `json:"capabilities"`
+	Waiting      []string `json:"waiting"`
+}
+
+func toWorkerWaitResponse(w *orchestrator.WorkerHold) *workerWaitResponse {
+	if w == nil {
+		return nil
+	}
+	return &workerWaitResponse{Capabilities: nonNil(w.Capabilities), Waiting: nonNil(w.Waiting)}
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 // holdResponse is the JSON wire format for why a candidate is held back.
 // Reason is one of the values of [orchestrator.HoldReasons]. Blockers is
 // non-null exactly for a blocked_by hold, Slot exactly for an agent_slots_full
-// hold, and ResetsAt exactly for a spend ceiling hold or a usage_limit hold.
+// hold, Worker exactly for a no_worker hold, and ResetsAt exactly for a
+// spend ceiling hold or a usage_limit hold.
 // AgentKind, ModelOnly, and Model are served for a usage_limit hold only. A
 // standing_hold or standing_hold_expired row has its lease in the state's
 // holds list. A
@@ -310,6 +339,7 @@ type holdResponse struct {
 	HeldSince   time.Time             `json:"held_since"`
 	Blockers    []holdBlockerResponse `json:"blockers"`
 	Slot        *holdSlotResponse     `json:"slot"`
+	Worker      *workerWaitResponse   `json:"worker,omitempty"`
 	ResetsAt    *time.Time            `json:"resets_at"`
 	AgentKind   string                `json:"agent_kind,omitempty"`
 	ModelOnly   bool                  `json:"model_only,omitempty"`
@@ -982,6 +1012,7 @@ func toHoldResponse(h *orchestrator.SnapshotHold, words sentence.Context) *holdR
 			Limit: h.Slot.Limit,
 		}
 	}
+	resp.Worker = toWorkerWaitResponse(h.Worker)
 	text := sentence.Hold(h, words)
 	resp.ReasonText, resp.ReleaseText = text.Reason, text.Release
 	return resp
@@ -1029,6 +1060,8 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		StagePosition:     toStagePositionResponse(e.StagePosition),
 		Paused:            e.Paused,
 		Environment:       toEnvironmentInfo(e.Environment),
+		WorkerWait:        toWorkerWaitResponse(e.WorkerWait),
+		WorkerWaitSince:   utcOrNil(e.WorkerWaitSince),
 	}
 }
 
