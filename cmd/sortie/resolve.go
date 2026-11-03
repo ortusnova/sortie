@@ -202,8 +202,10 @@ const (
 
 // resolveSupervisor returns server.supervisor_token and
 // server.supervisor_max_sessions from the server extension section. An
-// absent or blank token returns the empty string. The token must differ
-// from the control token, and the cap must be a whole number from 0.
+// absent or blank token returns the empty string. The token needs a
+// control token, because without one every control route admits a request
+// that carries no token, and must differ from it; the cap must be a whole
+// number from 0.
 func resolveSupervisor(serverSection map[string]any, controlToken string) (token string, sessionCap int, err error) {
 	if raw, exists := serverSection["supervisor_token"]; exists && raw != nil {
 		s, ok := raw.(string)
@@ -211,6 +213,9 @@ func resolveSupervisor(serverSection map[string]any, controlToken string) (token
 			return "", 0, fmt.Errorf("invalid %s value: unsupported type %T, must be a string", supervisorTokenSetting, raw)
 		}
 		token = strings.TrimSpace(s)
+	}
+	if token != "" && controlToken == "" {
+		return "", 0, fmt.Errorf("%s needs %s: without it every control route admits a request with no token", supervisorTokenSetting, controlTokenSetting)
 	}
 	if token != "" && token == controlToken {
 		return "", 0, fmt.Errorf("%s must differ from %s", supervisorTokenSetting, controlTokenSetting)

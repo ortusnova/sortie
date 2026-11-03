@@ -196,3 +196,34 @@ func TestResolveSupervisor(t *testing.T) {
 		})
 	}
 }
+
+// A supervisor token without a control token would scope nothing: every
+// control route admits a request that carries no token.
+func TestResolveSupervisor_NeedsAControlToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section map[string]any
+		wantErr string
+	}{
+		{name: "a supervisor token", section: map[string]any{"supervisor_token": "sup-1"}, wantErr: "server.control_token"},
+		{name: "no supervisor token", section: map[string]any{"supervisor_max_sessions": 2}},
+		{name: "a blank supervisor token", section: map[string]any{"supervisor_token": "  "}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			token, _, err := resolveSupervisor(tt.section, "")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("resolveSupervisor() err = %v, want one naming %s", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || token != "" {
+				t.Errorf("resolveSupervisor() = %q, %v, want no token and no error", token, err)
+			}
+		})
+	}
+}
