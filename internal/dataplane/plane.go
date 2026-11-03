@@ -370,16 +370,30 @@ func (a *Attempt) startRelay() {
 	session, worker, in := a.session, a.worker, a.workerIn
 	a.mu.Unlock()
 
-	// The session's frames, the agent's input, go to the worker as
-	// they are. When the session goes, as when Sortie stops it, the
-	// worker learns that the agent's input closed.
-	go func() {
-		_, _ = io.Copy(worker, session) //nolint:errcheck // either side closing ends the copy
-		if !a.isDetached() {
-			_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
-		}
-	}()
+	go a.relaySession(session, worker)
 	go a.relayWorker(worker, in, session)
+}
+
+// relaySession forwards the session's frames, the agent's input, to the
+// worker. When the session closes the input or goes, as when Sortie
+// stops it, the worker learns that the agent's input closed, unless the
+// attempt is left with its worker: then the input stays open for the
+// process that adopts it. The session's own stdin-closed frame takes the
+// same check, since a stopping process closes the session's input
+// before it detaches the attempt.
+func (a *Attempt) relaySession(session, worker net.Conn) {
+	for {
+		typ, payload, err := ReadFrame(session)
+		if err != nil || typ != FrameStdin {
+			break
+		}
+		if WriteFrame(worker, FrameStdin, payload) != nil {
+			return
+		}
+	}
+	if !a.isDetached() {
+		_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+	}
 }
 
 // relayWorker forwards the worker's frames to the session until the
