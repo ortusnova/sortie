@@ -492,6 +492,8 @@ type fakeWorker struct {
 	onPrompt func(n int, clone string)
 	// maxTurns overrides the run's agent.max_turns when set.
 	maxTurns int
+	// noSuggestion runs an agent that writes no .sortie/pr.json.
+	noSuggestion bool
 }
 
 // toolCall is the answer to one tool call on the mcp flow.
@@ -656,7 +658,7 @@ func (w *fakeWorker) session() {
 			_, _ = stdinW.Write(payload)
 		}
 	}()
-	err = fakeAgent(stdinR, &out, w.clone, w.reportUsage, func(p string) error {
+	err = fakeAgentRun(stdinR, &out, w.clone, !w.noSuggestion, w.reportUsage, func(p string) error {
 		w.received = append(w.received, p)
 		if w.onPrompt != nil {
 			w.onPrompt(len(w.received), w.clone)
@@ -822,7 +824,7 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 	run := remoteRun{upstream: upstream, adapter: adapter}
 	var brokenMu sync.Mutex
 	done := make(chan WorkerResult, 1)
-	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, issuer: rw.tokens, ended: func() bool { return len(done) > 0 }}
+	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, issuer: rw.tokens, ended: func() bool { return len(done) > 0 }, files: true}
 	if prepare != nil {
 		prepare(w)
 	}
@@ -986,20 +988,23 @@ func TestRemoteRunEndsAfterTheTurnThatWritesATerminalFile(t *testing.T) {
 	const verdict = `{"criteria": [{"criterion": "a", "verdict": "met", "evidence": "go test ./... passed"}]}`
 	for name, tc := range map[string]struct {
 		files     bool
+		suggest   bool
 		write     map[int][2]string
 		wantTurns int
 		wantStop  string
 	}{
-		"a verdict on turn 1 ends the run":        {files: true, write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 1},
-		"a blocked status on turn 1 ends the run": {files: true, write: map[int][2]string{1: {"status", "blocked\nWhich host list is right?\n"}}, wantTurns: 1, wantStop: "blocked"},
-		"a verdict on turn 2 takes two turns":     {files: true, write: map[int][2]string{2: {"criteria.json", verdict}}, wantTurns: 2},
-		"no verdict runs to max_turns":            {files: true, wantTurns: 4},
-		"an older worker's run goes to max_turns": {write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 4},
+		"a pull request suggestion on turn 1 ends the run": {files: true, suggest: true, wantTurns: 1},
+		"a suggestion on turn 3 takes three turns":         {files: true, write: map[int][2]string{3: {"pr.json", `{"title":"t","body":"b"}`}}, wantTurns: 3},
+		"a verdict on turn 1 ends the run":                 {files: true, write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 1},
+		"a blocked status on turn 1 ends the run":          {files: true, write: map[int][2]string{1: {"status", "blocked\nWhich host list is right?\n"}}, wantTurns: 1, wantStop: "blocked"},
+		"a verdict on turn 2 takes two turns":              {files: true, write: map[int][2]string{2: {"criteria.json", verdict}}, wantTurns: 2},
+		"no verdict runs to max_turns":                     {files: true, wantTurns: 4},
+		"an older worker's run goes to max_turns":          {write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 4},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newGitFixture(t)
 			run := runRemoteONS30(t, f, func(w *fakeWorker) {
-				w.files, w.maxTurns = tc.files, 4
+				w.files, w.maxTurns, w.noSuggestion = tc.files, 4, !tc.suggest
 				w.onPrompt = func(n int, clone string) {
 					if file, ok := tc.write[n]; ok {
 						writeSortieFile(t, clone, file[0], file[1])

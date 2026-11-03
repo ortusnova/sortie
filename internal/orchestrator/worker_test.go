@@ -5843,6 +5843,72 @@ func TestRunWorkerAttempt_A2OStatusSignal(t *testing.T) {
 	})
 }
 
+// The agent writes .sortie/pr.json when it has finished, so the turn
+// that writes it ends the run. One that a reused workspace already held,
+// and that the run left as it was, does not.
+func TestRunWorkerAttempt_PullRequestSuggestionEndsTheRun(t *testing.T) {
+	t.Parallel()
+	const suggestion = `{"title":"Add one","body":"One change."}`
+	for name, tc := range map[string]struct {
+		stale     bool
+		writeAt   int
+		wantTurns int
+	}{
+		"written on turn 2":             {writeAt: 2, wantTurns: 2},
+		"left from before, unchanged":   {stale: true, wantTurns: 4},
+		"left from before, rewritten 3": {stale: true, writeAt: 3, wantTurns: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			cfg := defaultWorkerConfig(tmpDir)
+			cfg.Agent.MaxTurns = 4
+			if tc.stale {
+				dir := filepath.Join(tmpDir, "TEST-1", ".sortie")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "pr.json"), []byte(`{"title":"Earlier","body":"An earlier run."}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var wsPath atomic.Value
+			var turn atomic.Int32
+			ec := newExitCapture()
+			deps := WorkerDeps{
+				TrackerAdapter: &mockTrackerAdapter{},
+				AgentAdapter: &mockAgentAdapter{
+					startSessionFn: func(_ context.Context, params domain.StartSessionParams) (domain.Session, error) {
+						wsPath.Store(params.WorkspacePath)
+						return domain.Session{ID: "sess-1"}, nil
+					},
+					runTurnFn: func(_ context.Context, session domain.Session, _ domain.RunTurnParams) (domain.TurnResult, error) {
+						if n := int(turn.Add(1)); n == tc.writeAt {
+							p, _ := wsPath.Load().(string)
+							_ = os.MkdirAll(filepath.Join(p, ".sortie"), 0o755)
+							_ = os.WriteFile(filepath.Join(p, ".sortie", "pr.json"), []byte(suggestion), 0o644)
+						}
+						return domain.TurnResult{SessionID: session.ID, ExitReason: domain.EventTurnCompleted}, nil
+					},
+				},
+				ConfigFunc:             func() config.ServiceConfig { return cfg },
+				PromptTemplateByIDFunc: func(_ string) *prompt.Template { return mustParseTemplate(t, "{{ .issue.title }}") },
+				OnEvent:                func(_ string, _ domain.AgentEvent) {},
+				OnExit:                 ec.onExit,
+				Logger:                 discardLogger(),
+			}
+			RunWorkerAttempt(context.Background(), workerTestIssue(), nil, deps)
+			result := ec.waitResult(t)
+			if result.ExitKind != WorkerExitNormal || result.SoftStop {
+				t.Fatalf("exit %q soft stop %v, want a normal exit", result.ExitKind, result.SoftStop)
+			}
+			if result.TurnsCompleted != tc.wantTurns {
+				t.Errorf("TurnsCompleted = %d, want %d", result.TurnsCompleted, tc.wantTurns)
+			}
+		})
+	}
+}
+
 func TestRuntimeStatusSuffixInjection(t *testing.T) {
 	t.Parallel()
 
