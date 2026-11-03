@@ -267,17 +267,18 @@ func diff(g Graph, t Tracker, issues []domain.PlanIssue) Preview {
 
 	// Approval is decided node by node: an approved story syncs beside
 	// drafts of its epic, and an epic syncs when it, or any of its
-	// stories, is approved.
+	// stories, is approved. A ui story that covers a requirement syncs as
+	// an approved one does, without an approval.
 	inGraph := map[string]bool{}
 	approved := map[string]Node{}
 	for _, n := range g.Nodes {
 		inGraph[n.PlanKey] = true
-		if n.Approval == ApprovalApproved {
+		if n.synced() {
 			approved[n.PlanKey] = n
 		}
 	}
 	for _, n := range g.Nodes {
-		if n.Kind != KindStory || n.Approval != ApprovalApproved {
+		if n.Kind != KindStory || !n.synced() {
 			continue
 		}
 		if pk, ok := parentOf[n.PlanKey]; ok {
@@ -441,15 +442,15 @@ func diff(g Graph, t Tracker, issues []domain.PlanIssue) Preview {
 	return p
 }
 
-// planOps adds the plan-control operations of one approved story: its
-// release, its review label, and its approver. exists reports whether the
+// planOps adds the plan-control operations of one synced story: its
+// release, its review label, and its approver. A ui story has none. exists reports whether the
 // story's issue exists, as issue.
 func (p *Preview) planOps(n Node, issue domain.PlanIssue, exists bool, release, backlog string, approvals bool) {
 	id := ""
 	if exists {
 		id = issue.ID
 	}
-	if n.Released() && (!exists || strings.EqualFold(issue.State, backlog)) {
+	if n.releases() && (!exists || strings.EqualFold(issue.State, backlog)) {
 		p.Releases = append(p.Releases, ReleaseOp{PlanKey: n.PlanKey, IssueID: id, Identifier: issue.Identifier, To: release})
 	}
 	if n.Review != "" {
