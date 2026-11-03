@@ -104,6 +104,12 @@ type Options struct {
 	// before the agent's exit was reported.
 	OnStdioBroken func(error)
 
+	// Keep, when set, is asked when the session ends or the worker's
+	// stream breaks: true means the attempt is being left with its worker
+	// for the next start, as [Attempt.Detach] leaves it, so the worker is
+	// not told that the agent's input closed and no break is reported.
+	Keep func() bool
+
 	// Logger receives diagnostics. Nil is [slog.Default].
 	Logger *slog.Logger
 }
@@ -148,6 +154,7 @@ type Attempt struct {
 	relaying   bool
 	toolBearer string
 	brokenOnce sync.Once
+	detached   bool
 	closed     chan struct{}
 	closeOnce  sync.Once
 }
@@ -246,6 +253,25 @@ func (a *Attempt) Close() {
 		a.tools.CloseIdleConnections()
 		_ = os.RemoveAll(a.sockDir) //nolint:errcheck // a leftover socket directory only costs an inode
 	})
+}
+
+// Detach stops serving the attempt as [Attempt.Close] does, but leaves
+// the worker's stream broken rather than ended: the worker is never told
+// that the agent's input closed, and OnStdioBroken is not called. A
+// process that hands the attempt to its next start detaches it, so the
+// worker keeps the job's machine and dials the stream again.
+func (a *Attempt) Detach() {
+	a.mu.Lock()
+	a.detached = true
+	a.mu.Unlock()
+	a.Close()
+}
+
+func (a *Attempt) isDetached() bool {
+	a.mu.Lock()
+	detached := a.detached
+	a.mu.Unlock()
+	return detached || (a.opts.Keep != nil && a.opts.Keep())
 }
 
 // WaitStdio waits until the worker opened the stdio stream.
@@ -348,8 +374,10 @@ func (a *Attempt) startRelay() {
 	// they are. When the session goes, as when Sortie stops it, the
 	// worker learns that the agent's input closed.
 	go func() {
-		_, _ = io.Copy(worker, session)               //nolint:errcheck // either side closing ends the copy
-		_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+		_, _ = io.Copy(worker, session) //nolint:errcheck // either side closing ends the copy
+		if !a.isDetached() {
+			_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+		}
 	}()
 	go a.relayWorker(worker, in, session)
 }
@@ -383,6 +411,9 @@ func (a *Attempt) broken(err error) {
 	case <-a.closed:
 		return
 	default:
+	}
+	if a.isDetached() {
+		return
 	}
 	a.brokenOnce.Do(func() {
 		a.logger.Warn("remote job stdio stream broke before the agent's exit",
