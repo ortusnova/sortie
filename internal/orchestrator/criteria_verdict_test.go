@@ -54,7 +54,7 @@ func (s *verdictStore) LoadCriteriaVerdict(_ context.Context, id string) (persis
 // verdictExitStore is the exit store with the verdict capability.
 type verdictExitStore struct {
 	*mockExitStore
-	verdictStore
+	*verdictStore
 }
 
 const (
@@ -101,7 +101,7 @@ func reviewExitFixture(t *testing.T, criteria string) (*hopExitFixture, *verdict
 	if criteria != "" {
 		f.result.CriteriaFile = []byte(criteria)
 	}
-	store := &verdictExitStore{mockExitStore: f.store}
+	store := &verdictExitStore{mockExitStore: f.store, verdictStore: &verdictStore{}}
 	f.params.Store = store
 	return f, store
 }
