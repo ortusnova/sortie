@@ -65,7 +65,7 @@ func (f *syncFixture) export() (ExportResult, error) {
 }
 
 func TestExport_FirstPush(t *testing.T) {
-	f := seeded(t, "ENG-70", config.SmolvmRepository{})
+	f := seeded(t, "ENG-70", config.Repository{})
 	head := f.agentCommit("feature.txt", []byte("feature\n"))
 	start := time.Now()
 
@@ -94,7 +94,7 @@ func TestExport_FirstPush(t *testing.T) {
 }
 
 func TestExport_RebaseReplacesSortiesOwnPush(t *testing.T) {
-	f := seeded(t, "ENG-71", config.SmolvmRepository{})
+	f := seeded(t, "ENG-71", config.Repository{})
 	first := f.agentCommit("feature.txt", []byte("feature\n"))
 	if _, err := f.export(); err != nil {
 		t.Fatalf("first Export() error = %v", err)
@@ -128,7 +128,7 @@ func TestExport_RebaseReplacesSortiesOwnPush(t *testing.T) {
 }
 
 func TestExport_HumanCommitAfterSortiesPushFails(t *testing.T) {
-	f := seeded(t, "ENG-72", config.SmolvmRepository{})
+	f := seeded(t, "ENG-72", config.Repository{})
 	first := f.agentCommit("feature.txt", []byte("feature\n"))
 	if _, err := f.export(); err != nil {
 		t.Fatalf("first Export() error = %v", err)
@@ -152,7 +152,7 @@ func TestExport_HumanCommitAfterSortiesPushFails(t *testing.T) {
 }
 
 func TestExport_HumanCreatedTheBranchBeforeSortiesFirstPush(t *testing.T) {
-	f := seeded(t, "ENG-73", config.SmolvmRepository{})
+	f := seeded(t, "ENG-73", config.Repository{})
 	human := f.humanCommit("sortie/ENG-73", "human.txt")
 	f.agentCommit("feature.txt", []byte("feature\n"))
 
@@ -169,7 +169,7 @@ func TestExport_HumanCreatedTheBranchBeforeSortiesFirstPush(t *testing.T) {
 }
 
 func TestPushIncoming_PushesWhatARefusedExportImported(t *testing.T) {
-	f := seeded(t, "ENG-74", config.SmolvmRepository{})
+	f := seeded(t, "ENG-74", config.Repository{})
 	ctx := context.Background()
 
 	if pushed, err := f.syncer.PushIncoming(ctx, "ENG-74"); pushed || err != nil {
@@ -215,7 +215,7 @@ func TestPushIncoming_PushesWhatARefusedExportImported(t *testing.T) {
 }
 
 func TestExport_HumanCommitOnTopOfSortiesPushIsUpToDate(t *testing.T) {
-	f := seeded(t, "ENG-74", config.SmolvmRepository{})
+	f := seeded(t, "ENG-74", config.Repository{})
 	first := f.agentCommit("feature.txt", []byte("feature\n"))
 	if _, err := f.export(); err != nil {
 		t.Fatalf("first Export() error = %v", err)
@@ -240,7 +240,7 @@ func TestExport_HumanCommitOnTopOfSortiesPushIsUpToDate(t *testing.T) {
 }
 
 func TestExport_MergedAndDeletedBranchIsNotPushedAgain(t *testing.T) {
-	f := seeded(t, "ENG-75", config.SmolvmRepository{})
+	f := seeded(t, "ENG-75", config.Repository{})
 	first := f.agentCommit("feature.txt", []byte("feature\n"))
 	if _, err := f.export(); err != nil {
 		t.Fatalf("first Export() error = %v", err)
@@ -261,7 +261,7 @@ func TestExport_MergedAndDeletedBranchIsNotPushedAgain(t *testing.T) {
 }
 
 func TestExport_RewindOfSortiesOwnPushIsPushed(t *testing.T) {
-	f := seeded(t, "ENG-76", config.SmolvmRepository{})
+	f := seeded(t, "ENG-76", config.Repository{})
 	first := f.agentCommit("feature.txt", []byte("feature\n"))
 	f.agentCommit("mistake.txt", []byte("mistake\n"))
 	if _, err := f.export(); err != nil {

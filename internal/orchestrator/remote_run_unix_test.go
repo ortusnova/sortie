@@ -336,8 +336,8 @@ func runDeps(t *testing.T, cfg config.ServiceConfig, adapter *lineAdapter, c *ru
 	}
 }
 
-func runRepository(upstream string) *config.SmolvmRepository {
-	return &config.SmolvmRepository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
+func runRepository(upstream string) *config.Repository {
+	return &config.Repository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
 }
 
 func baseRunConfig(t *testing.T) config.ServiceConfig {
@@ -418,8 +418,8 @@ func runColocated(t *testing.T, f *gitFixture) (runCapture, string) {
 func runColocatedOn(t *testing.T, upstream string) runCapture {
 	t.Helper()
 	cfg := baseRunConfig(t)
-	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, HostPrefix: []string{envPath(t)},
-		Smolvm: config.SmolvmConfig{Repository: runRepository(upstream)}}
+	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
+		Remote: config.RemoteConfig{Repository: runRepository(upstream)}}
 	self, _ := os.Executable()
 	prompts := filepath.Join(t.TempDir(), "prompts.jsonl")
 	inner := recordingEnvironment(t)

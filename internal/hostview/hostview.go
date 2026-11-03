@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// Labels that say who started a machine: a Sortie's smolvm environment,
-// or a worker daemon for a job.
+// Labels that say who started a machine: a Sortie, or a worker daemon
+// for a job.
 const (
 	LabelSortieManaged = "sortie.managed"
 	LabelWorkerJob     = "worker-daemon.job"

@@ -45,7 +45,7 @@ func (f *syncFixture) buildSeed() (Seed, string) {
 // remote-runs: Seed. git clone of the seed gives the repository on the
 // issue branch, at the base branch for a new issue branch.
 func TestBuildSeed_NewIssueBranchCheckedOut(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 
 	main := f.up.git("rev-parse", "main")
@@ -68,7 +68,7 @@ func TestBuildSeed_NewIssueBranchCheckedOut(t *testing.T) {
 }
 
 func TestBuildSeed_ExistingUpstreamBranchAtItsTip(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	tip := f.humanCommit("sortie/ONS-30", "earlier.txt")
 	seed, path := f.buildSeed()
 	if seed.Commit != tip {
@@ -91,7 +91,7 @@ func (f *syncFixture) returnBundle(dir string, refs ...string) string {
 // remote-runs: Pull request. Two commits on the issue branch come back
 // as a bundle and are pushed.
 func TestImportReturned_PushesTheNewCommits(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 	dir := f.workerClone(path)
 	f.workerCommit(dir, "one.txt")
@@ -114,7 +114,7 @@ func TestImportReturned_PushesTheNewCommits(t *testing.T) {
 }
 
 func TestImportReturned_UnchangedBranchPushesNothing(t *testing.T) {
-	f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ONS-30", config.Repository{})
 	seed, path := f.buildSeed()
 	bundle := f.returnBundle(f.workerClone(path), "refs/heads/sortie/ONS-30")
 	res, err := f.syncer.ImportReturned(context.Background(), "ONS-30", bundle, seed)
@@ -144,7 +144,7 @@ func TestImportReturned_RefusesNotTheBranch(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newSyncFixture(t, "ONS-30", config.SmolvmRepository{})
+			f := newSyncFixture(t, "ONS-30", config.Repository{})
 			seed, path := f.buildSeed()
 			bundle, ref := prepare(f, f.workerClone(path))
 			before := f.refs()

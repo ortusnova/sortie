@@ -11,14 +11,14 @@ import (
 func TestRepositorySync(t *testing.T) {
 	t.Parallel()
 
-	repo := &config.SmolvmRepository{URL: "https://example.com/org/app.git", Base: "main", BranchPrefix: "sortie/", MaxBundleMiB: 512}
+	repo := &config.Repository{URL: "https://example.com/org/app.git", Base: "main", BranchPrefix: "sortie/", MaxBundleMiB: 512}
 	state := t.TempDir()
 	logger := slog.Default()
 
 	for _, cfg := range []config.EnvironmentConfig{
 		{},
 		{Kind: config.EnvironmentKindLocal},
-		{Kind: config.EnvironmentKindSmolvm},
+		{Kind: config.EnvironmentKindRemote},
 	} {
 		got, err := repositorySync(cfg, state, logger)
 		if err != nil || got != nil {
@@ -26,7 +26,7 @@ func TestRepositorySync(t *testing.T) {
 		}
 	}
 
-	smolvm := config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, Smolvm: config.SmolvmConfig{Repository: repo}}
+	smolvm := config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{Repository: repo}}
 	got, err := repositorySync(smolvm, state, logger)
 	if err != nil {
 		t.Fatalf("repositorySync(smolvm with repository) error = %v", err)

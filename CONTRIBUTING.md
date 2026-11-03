@@ -80,7 +80,7 @@ SORTIE_CLAUDE_TEST=1 ANTHROPIC_API_KEY="sk-..." \
   make test PKG=./internal/agent/claude/...
 ```
 
-`make check-latest` runs the version tests (`SORTIE_LATEST_TEST=1`). They fetch the latest stable release of smolvm from GitHub and fail when the `smolvm` on `PATH` is not that release. They also fail for every module that the root or `tools/qualify` `go.mod` requires and that `go list -m -u` reports behind its latest release. They need the network, and they send `GH_TOKEN`, or the `gh` CLI's token, to GitHub when one is available.
+`make check-latest` runs the version tests (`SORTIE_LATEST_TEST=1`). They fail for every module that the root or `tools/qualify` `go.mod` requires and that `go list -m -u` reports behind its latest release. They need the network.
 
 GitHub integration tests also accept an optional `SORTIE_GITHUB_ISSUE_ID` variable (a valid issue number in the configured repo) to enable `FetchIssueByID` and `FetchIssueStatesByIDs` test cases.
 

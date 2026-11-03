@@ -169,7 +169,7 @@ func TestEnvironmentConfig_RemoteRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DispatchRepository(homelab) error = %v", err)
 	}
-	want := SmolvmRepository{
+	want := Repository{
 		Name: "homelab", URL: "https://example.com/o/homelab.git", Base: "trunk", BranchPrefix: defaultRepoBranchPrefix,
 		Provider: "github", Project: "o/homelab", MaxBundleMiB: defaultRepoMaxBundleMiB,
 		Image: "ghcr.io/ortusnova/homelab:1", Requires: &RemoteRequirements{Capabilities: []string{"nested"}, CPU: 4},
