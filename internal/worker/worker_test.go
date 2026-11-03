@@ -918,6 +918,65 @@ func TestWorkerAPIPathIsPlural(t *testing.T) {
 	}
 }
 
+// A job's grant names the worker that took it, once.
+func TestGrantedNamesTheWorker(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	m := newM(c)
+	m.Submit(job("ONS-30", 1))
+	granted := m.Granted("ONS-30")
+	select {
+	case id := <-granted:
+		t.Fatalf("granted to %q before any poll", id)
+	default:
+	}
+	m.CheckIn("taichi", host())
+	if _, ok, err := m.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll = %v %v", ok, err)
+	}
+	if id := <-granted; id != "taichi" {
+		t.Fatalf("granted to %q, want taichi", id)
+	}
+}
+
+// A restarted matcher that adopts a job the worker still runs accepts
+// the worker's heartbeat and report for it, as if it had granted it;
+// unrenewed, the adopted lease expires as any other.
+func TestAdoptedLeaseKeepsTheWorkersJob(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	m := newM(c)
+	ended, err := m.Adopt(job("ONS-30", 2), "taichi")
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if _, err := m.Adopt(job("ONS-30", 2), "p1"); !errors.Is(err, ErrLeaseHeld) {
+		t.Fatalf("a second Adopt = %v, want ErrLeaseHeld", err)
+	}
+	if _, err := m.Heartbeat("taichi", "ONS-30", 2); err != nil {
+		t.Fatalf("heartbeat of the adopted job: %v", err)
+	}
+	if _, err := m.Heartbeat("taichi", "ONS-30", 1); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("heartbeat of another attempt = %v, want ErrLeaseLost", err)
+	}
+	if err := m.Report("taichi", "ONS-30", 2, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if o := outcome(t, ended); !o.Succeeded {
+		t.Fatalf("outcome %+v, want the worker's success", o)
+	}
+
+	gone, err := m.Adopt(job("ONS-31", 1), "lost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.add(time.Minute)
+	if ids := m.ExpireLeases(); len(ids) != 1 || ids[0] != "ONS-31" {
+		t.Fatalf("expired %v, want ONS-31", ids)
+	}
+	if o := outcome(t, gone); !o.Expired {
+		t.Fatalf("outcome %+v, want an expired lease", o)
+	}
+}
+
 // A job no checked-in worker could take now is not placeable, and says
 // why per worker; once a worker that can run it checks in, it is. The
 // jobs already queued are counted first, so a slot one of them will

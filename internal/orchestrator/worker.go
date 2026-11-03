@@ -384,6 +384,11 @@ type WorkerDeps struct {
 	// continuation retries so the adapter can resume the conversation.
 	ResumeSessionID string
 
+	// Adopted, when set, is a run a previous process left with a worker:
+	// it is the same run, so the issue is not moved again nor its session
+	// announced, and the turns continue after those it completed.
+	Adopted *AdoptedRun
+
 	// ResumeUsage is the figure the previous run recorded for
 	// ResumeSessionID's session, passed to StartSession unchanged. Nil
 	// when ResumeSessionID is empty or that run recorded none.
@@ -888,7 +893,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 	// Move the issue to the in-progress state before workspace prep.
 	// Failure is non-fatal. A dispatch that does not drive issue state
 	// changes none, so it is suppressed there.
-	if cfg.Tracker.InProgressState != "" && deps.Posture.DrivesIssueState() {
+	if cfg.Tracker.InProgressState != "" && deps.Posture.DrivesIssueState() && deps.Adopted == nil {
 		if strings.EqualFold(issue.State, cfg.Tracker.InProgressState) {
 			logger.Debug("skipped in-progress transition, issue already in target state",
 				slog.String("issue_state", issue.State),
@@ -925,7 +930,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 
 	// A dispatch that does not drive issue state is not a work claim, so
 	// it publishes no session.started event.
-	if deps.Posture.DrivesIssueState() {
+	if deps.Posture.DrivesIssueState() && deps.Adopted == nil {
 		publishSessionStarted(ctx, issue, attempt, agentKind, deps, logger)
 	}
 
@@ -1556,7 +1561,13 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		continuation = ContinuationFromContext(ctx)
 	}
 
-	for {
+	skipTurns := false
+	if deps.Adopted != nil {
+		turnNumber, skipTurns = deps.Adopted.resume(&turnsCompleted, &turnsStarted, maxTurns)
+		presentedComments = adoptedPresentedComments(deps.ReactionKind, tmpl, issue.ToTemplateMap(), attemptInt, maxTurns, continuation, firstTurnOptions)
+	}
+
+	for !skipTurns {
 		if ctx.Err() != nil {
 			stopSessionBestEffort(ctx, deps.AgentAdapter, session, cfg, logger)
 			finishWorkspace(workerRunOutcome(ctx, WorkerExitCancelled, nil, ""))
@@ -1815,7 +1826,8 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 	signalAdmits := pendingSoftStopReason == "" ||
 		pendingSoftStopReason == string(workspace.StatusNeedsHumanReview) ||
 		pendingSoftStopReason == string(workspace.StatusNoChangeNeeded)
-	selfReviewAdmitted := reviewCfg.SelfReview.Enabled && isActiveState(issue.State, activeStates) && deps.Posture.DrivesIssueState() && signalAdmits
+	selfReviewAdmitted := reviewCfg.SelfReview.Enabled && isActiveState(issue.State, activeStates) && deps.Posture.DrivesIssueState() && signalAdmits &&
+		(deps.Adopted == nil || !deps.Adopted.SessionEnded)
 
 	if selfReviewAdmitted && ctx.Err() == nil {
 		if pendingSoftStopReason != "" {

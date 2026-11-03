@@ -428,3 +428,35 @@ func TestMCPWithoutAToolServerAnswersBadGateway(t *testing.T) {
 		t.Fatalf("no tool server: %d, want 502", resp.StatusCode)
 	}
 }
+
+// A detached attempt drops the worker's stream without telling it that
+// the agent's input closed, so the worker keeps its machine for the
+// process that adopts the attempt; the session ending after it sends
+// nothing either, and no break is reported.
+func TestDetachLeavesTheWorkerWithoutStdinClosed(t *testing.T) {
+	f := newFixture(t)
+	broke := make(chan error, 1)
+	a := f.open(1, Options{OnStdioBroken: func(err error) { broke <- err }})
+	conn, in := f.dialStdio(f.mint("ONS-30", 1)["stdio"])
+	b := startBridge(a)
+	if _, err := b.stdin.Write([]byte("prompt\n")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _, err := ReadFrame(in); err != nil || typ != FrameStdin {
+		t.Fatalf("worker got %q %v, want the prompt", typ, err)
+	}
+
+	a.Detach()
+	_ = b.stdin.Close()
+	typ, _, err := ReadFrame(in)
+	if err == nil {
+		t.Fatalf("worker read frame %q after the detach, want the stream to end", typ)
+	}
+	_ = conn.Close()
+	waittest.Receive(t, b.done, "bridge exit after the detach")
+	select {
+	case err := <-broke:
+		t.Fatalf("a detached attempt reported a broken stream: %v", err)
+	default:
+	}
+}
