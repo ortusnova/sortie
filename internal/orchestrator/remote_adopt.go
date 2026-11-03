@@ -83,6 +83,9 @@ type remoteRunEntry struct {
 	UnaccountedTurns    int                          `json:"unaccounted_turns"`
 	ToolTimeMs          int64                        `json:"tool_time_ms"`
 	APITimeMs           int64                        `json:"api_time_ms"`
+	// LastEventAt is the run's last agent event seen, zero before the
+	// first and in a record written before it was kept.
+	LastEventAt time.Time `json:"last_event_at"`
 }
 
 // remoteAdoption is a run a previous process left with a worker, restored
@@ -133,7 +136,7 @@ func snapshotRemoteEntry(entry *RunningEntry) remoteRunEntry {
 		TotalTokens: entry.AgentTotalTokens, CacheReadTokens: entry.CacheReadTokens, CacheWriteTokens: entry.CacheWriteTokens,
 		UsageByModel: maps.Clone(entry.UsageByModel), ModelName: entry.ModelName, APIRequestCount: entry.APIRequestCount,
 		RequestsByModel: maps.Clone(entry.RequestsByModel), UnaccountedTurns: entry.UnaccountedTurns,
-		ToolTimeMs: entry.ToolTimeMs, APITimeMs: entry.APITimeMs,
+		ToolTimeMs: entry.ToolTimeMs, APITimeMs: entry.APITimeMs, LastEventAt: entry.LastAgentTimestamp,
 	}
 }
 
@@ -164,6 +167,7 @@ func (s remoteRunEntry) restoreInto(entry *RunningEntry) {
 	entry.RequestsByModel = maps.Clone(s.RequestsByModel)
 	entry.UnaccountedTurns = s.UnaccountedTurns
 	entry.ToolTimeMs, entry.APITimeMs = s.ToolTimeMs, s.APITimeMs
+	entry.LastAgentTimestamp = s.LastEventAt
 }
 
 // storableContinuation returns a copy of a continuation context fit for
