@@ -656,7 +656,8 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 
 // run-supervision: A worker gone during the restart. Its restored lease
 // expires, the run fails as for any lost lease, and the issue is retried
-// once, as a new job attempt.
+// once, as a new job attempt; with no worker checked in, that retry waits
+// for one.
 func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	h := newRestartHarness(t, 1, 1500*time.Millisecond)
 	w := newRestartWorker(h)
@@ -675,12 +676,18 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 
 	second := h.start()
 	waittest.Until(t, func() error {
-		state := second.o.Workers().Snapshot()
-		if len(state.Queue) != 1 || state.Queue[0].Job.Attempt != 2 {
-			return fmt.Errorf("queue %+v, want ONS-30's second attempt", state.Queue)
+		snap, err := second.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 0 || len(snap.Retrying) != 1 || snap.Retrying[0].Identifier != "ONS-30" || snap.Retrying[0].Attempt != 1 {
+			return fmt.Errorf("running %d, retrying %+v, want ONS-30's one retry", len(snap.Running), snap.Retrying)
 		}
 		return nil
 	})
+	if state := second.o.Workers().Snapshot(); len(state.Leases) != 0 {
+		t.Errorf("leases %+v, want the gone worker's expired", state.Leases)
+	}
 	rows := h.history(second)
 	if len(rows) != 1 || rows[0].Status == "succeeded" {
 		t.Fatalf("run history %+v, want the one failed run", rows)

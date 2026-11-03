@@ -562,6 +562,35 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	return Offer{}, false, nil
 }
 
+// Placeable reports whether a checked-in worker could take a job that
+// requires r now, after the queued jobs took what they fit, and else
+// why it waits, per worker. A job that waits here is better not
+// submitted: no worker would take it.
+func (m *Matcher) Placeable(r Requires) ([]string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workers := make([]Worker, 0, len(m.workers))
+	for _, w := range m.workers {
+		workers = append(workers, *w)
+	}
+	sort.Slice(workers, func(i, j int) bool { return workers[i].ID < workers[j].ID })
+	for _, j := range m.pending {
+		for i := range workers {
+			if len(misfits(&workers[i], j)) == 0 {
+				workers[i].take(j.Requires)
+				break
+			}
+		}
+	}
+	probe := Job{Requires: r}
+	for i := range workers {
+		if len(misfits(&workers[i], probe)) == 0 {
+			return nil, true
+		}
+	}
+	return waiting(probe, workers), false
+}
+
 // held returns the leased job when workerID holds a live lease on
 // jobID's attempt.
 func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {

@@ -426,6 +426,11 @@ var table = map[string]parts{
 		long:   "Every SSH host runs as many sessions as its per-host limit allows. Sortie dispatches the issue once a session on one of them ends.",
 		clears: "Released when a session on an SSH host ends.",
 	},
+	"hold_no_worker": {
+		short:  "No worker can take its job{{if .Waiting}}: {{.Waiting}}{{end}}",
+		long:   "No checked-in worker can take the issue's remote job now{{if .Waiting}} ({{.Waiting}}){{end}}, so Sortie holds the issue without an agent slot. It dispatches the issue once a worker that can run the job checks in or frees what the job needs.",
+		clears: "Released when a worker that can run its job checks in or frees what the job needs.",
+	},
 	"hold_spend_daily": {
 		short:  "Daily spend ceiling reached" + resetsIn,
 		long:   "The daily spend ceiling is reached, so Sortie starts no agent session for any issue until the UTC day ends.",

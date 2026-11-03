@@ -660,6 +660,7 @@ var holdTemplates = map[orchestrator.SkipReason]string{
 	orchestrator.SkipBlockersNotRead:     "hold_blockers_not_read",
 	orchestrator.SkipBlockersIncomplete:  "hold_blockers_incomplete",
 	orchestrator.SkipSSHHostsFull:        "hold_ssh_hosts",
+	orchestrator.SkipNoWorker:            "hold_no_worker",
 	orchestrator.SkipDailySpendCeiling:   "hold_spend_daily",
 	orchestrator.SkipWeeklySpendCeiling:  "hold_spend_weekly",
 	orchestrator.SkipMonthlySpendCeiling: "hold_spend_monthly",
@@ -681,7 +682,12 @@ func selectHold(h *orchestrator.SnapshotHold, c Context) (string, map[string]any
 	if h.Slot != nil {
 		slot = *h.Slot
 	}
+	var waiting string
+	if h.Worker != nil {
+		waiting = strings.Join(h.Worker.Waiting, "; ")
+	}
 	data := map[string]any{
+		"Waiting":   waiting,
 		"Blockers":  blockers,
 		"Several":   len(blockers) > 1,
 		"Plan":      planRule,

@@ -333,3 +333,50 @@ func TestStatePullsSayWhatTheyWaitOn(t *testing.T) {
 	want[1] = pull{"ONS-2", "ci", "CI has not reported on it yet", "2026-11-02T09:10:00Z"}
 	check("ten minutes later", want)
 }
+
+// Under remote, a story held because no worker can take its job, and a
+// retry that waits so, wait for a worker as a queued job does, and
+// neither is running, so a drain waits on neither.
+func TestStateServesTheJobsNoWorkerCanTake(t *testing.T) {
+	t.Parallel()
+
+	m := worker.NewMatcher(worker.NewTTLLeaser(time.Minute), func() time.Time { return viewNow }, nil)
+	m.CheckIn("p1", worker.Declaration{OS: "linux", Arch: "x86_64", KVM: true, Backends: []string{"smolvm"}, RunSlots: 2,
+		Free: worker.Free{CPU: 16, MemGiB: 52, DiskGiB: 210}})
+	m.CheckIn("taichi", worker.Declaration{OS: "linux", Arch: "x86_64", KVM: true, Nested: true, Backends: []string{"smolvm"}, RunSlots: 2,
+		Free: worker.Free{CPU: 16, MemGiB: 52, DiskGiB: 92.04}})
+	wait := &orchestrator.WorkerHold{Capabilities: []string{"nested", "smolvm"},
+		Waiting: []string{"worker p1: no nested virtualization", "worker taichi: 92.04 of 200 GiB disk free"}}
+	snap := orchestrator.RuntimeSnapshotResult{
+		GeneratedAt: viewNow,
+		Held: []orchestrator.SnapshotHeldEntry{{IssueID: "id-54", Identifier: "ONS-54",
+			Hold: orchestrator.SnapshotHold{Reason: orchestrator.SkipNoWorker, Since: viewNow.Add(-time.Minute), Worker: wait}}},
+		Retrying: []orchestrator.SnapshotRetryEntry{{IssueID: "id-87", Identifier: "ONS-87", Attempt: 2, DueAtMS: viewNow.UnixMilli(),
+			WorkerWait: wait, WorkerWaitSince: viewNow.Add(-2 * time.Minute)}},
+		DispatchPause: &orchestrator.DispatchPause{Since: viewNow, By: "stage0-deploy"},
+	}
+	ts := viewServer(t, Params{SnapshotFn: fixedSnapshot(snap), WorkersFn: func() *worker.Matcher { return m }})
+
+	body := getJSONMap(t, ts.URL+"/api/v1/state")
+	if n := len(rows(t, body, "running")); n != 0 {
+		t.Errorf("running = %d, want 0", n)
+	}
+	held := rows(t, body, "held")[0]["hold"].(map[string]any)
+	if held["reason"] != "no_worker" ||
+		held["reason_text"] != "No worker can take its job: worker p1: no nested virtualization; worker taichi: 92.04 of 200 GiB disk free" ||
+		!reflect.DeepEqual(held["worker"], map[string]any{"capabilities": []any{"nested", "smolvm"},
+			"waiting": []any{"worker p1: no nested virtualization", "worker taichi: 92.04 of 200 GiB disk free"}}) {
+		t.Errorf("hold = %v", held)
+	}
+	waits := rows(t, body, "waits")
+	if len(waits) != 2 {
+		t.Fatalf("waits = %v, want ONS-54 and ONS-87 and no drain", waits)
+	}
+	for i, want := range []struct{ id, since string }{{"ONS-54", "2026-11-02T08:59:00Z"}, {"ONS-87", "2026-11-02T08:58:00Z"}} {
+		w := waits[i]
+		if w["issue_identifier"] != want.id || w["kind"] != "slot" || w["worker"] != "taichi" || w["since"] != want.since ||
+			w["reason"] != "worker p1: no nested virtualization; worker taichi: 92.04 of 200 GiB disk free" || w["release"] != "worker taichi frees a slot" {
+			t.Errorf("waits[%d] = %v, want %s waiting for taichi since %s", i, w, want.id, want.since)
+		}
+	}
+}

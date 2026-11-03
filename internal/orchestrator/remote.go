@@ -238,14 +238,6 @@ func credentialPlaceholder(name string) string { return "sortie-credential-" + n
 func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue, attempt *int, agentKind, defaultCommand string) worker.Job {
 	rc := cfg.Environment.Remote
 	n := normalizeAttempt(attempt) + 1
-	requires := rc.JobRequires(rc.Repository)
-	caps := slices.Clone(requires.Capabilities)
-	if rc.Backend != "" && !slices.Contains(caps, rc.Backend) {
-		caps = append(caps, rc.Backend)
-	}
-	if caps == nil {
-		caps = []string{}
-	}
 	identity := sessionIdentityFrom(ctx)
 	identity.Token = ""
 	env := map[string]string{}
@@ -269,7 +261,7 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 		Attempt:  n,
 		Priority: issue.Priority,
 		Issue:    worker.Issue{ID: issue.ID, Identifier: issue.Identifier, Title: issue.Title},
-		Requires: worker.Requires{Capabilities: caps, CPU: requires.CPU, MemGiB: requires.MemGiB, DiskGiB: requires.DiskGiB},
+		Requires: remoteRequires(rc),
 		Flows:    maps.Clone(rc.Flows),
 		Run: worker.Run{
 			Backend:        rc.Backend,
@@ -282,6 +274,41 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 			Credentials:    creds,
 		},
 	}
+}
+
+// remoteRequires returns what a worker must declare to take a job of
+// rc's repository: its requirements, with the backend as a capability.
+func remoteRequires(rc config.RemoteConfig) worker.Requires {
+	requires := rc.JobRequires(rc.Repository)
+	caps := slices.Clone(requires.Capabilities)
+	if rc.Backend != "" && !slices.Contains(caps, rc.Backend) {
+		caps = append(caps, rc.Backend)
+	}
+	if caps == nil {
+		caps = []string{}
+	}
+	return worker.Requires{Capabilities: caps, CPU: requires.CPU, MemGiB: requires.MemGiB, DiskGiB: requires.DiskGiB}
+}
+
+// workerWait returns why no checked-in worker can take issue's remote
+// job now, after the queued jobs took what they fit, and nil when one
+// can or cfg selects another kind. A job that waits so is not
+// dispatched: it would hold an agent slot, and count as running, until
+// a worker took it.
+func (o *Orchestrator) workerWait(cfg config.ServiceConfig, issue domain.Issue) *WorkerHold {
+	if o.remote == nil || !isRemoteKind(cfg.Environment) {
+		return nil
+	}
+	env := cfg.Environment
+	if issueEnv, _, err := issueRepository(env, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
+		env = issueEnv
+	}
+	requires := remoteRequires(env.Remote)
+	waiting, ok := o.remote.matcher.Placeable(requires)
+	if ok {
+		return nil
+	}
+	return &WorkerHold{Capabilities: requires.Capabilities, Waiting: waiting}
 }
 
 // remoteWorkspace is the workspace path inside a remote job's machine.

@@ -976,3 +976,44 @@ func TestAdoptedLeaseKeepsTheWorkersJob(t *testing.T) {
 		t.Fatalf("outcome %+v, want an expired lease", o)
 	}
 }
+
+// A job no checked-in worker could take now is not placeable, and says
+// why per worker; once a worker that can run it checks in, it is. The
+// jobs already queued are counted first, so a slot one of them will
+// take is not offered twice.
+func TestPlaceable(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	nested := Requires{Capabilities: []string{"nested"}, CPU: 8, MemGiB: 20, DiskGiB: 200}
+	if why, ok := m.Placeable(nested); ok || !reflect.DeepEqual(why, []string{"no worker has checked in"}) {
+		t.Fatalf("Placeable() before any check-in = %v, %v; want not placeable, no worker has checked in", why, ok)
+	}
+
+	p1 := host()
+	p1.Nested = false
+	m.CheckIn("p1", p1)
+	taichi := host()
+	taichi.Free.DiskGiB = 92.04
+	m.CheckIn("taichi", taichi)
+	want := []string{"worker p1: no nested virtualization", "worker taichi: 92.04 of 200 GiB disk free"}
+	if why, ok := m.Placeable(nested); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() = %v, %v; want not placeable, %v", why, ok, want)
+	}
+	if _, ok := m.Placeable(Requires{CPU: 4, MemGiB: 8, DiskGiB: 10}); !ok {
+		t.Fatal("Placeable() of an ordinary story = false, want true")
+	}
+
+	taichi.Free.DiskGiB = 210
+	taichi.RunSlots = 1
+	m.CheckIn("taichi", taichi)
+	if why, ok := m.Placeable(nested); !ok {
+		t.Fatalf("Placeable() once taichi has room = not placeable, %v; want placeable", why)
+	}
+	j := job("ONS-54", 1)
+	j.Requires = nested
+	m.Submit(j)
+	want = []string{"worker p1: no nested virtualization", "worker taichi: all 1 run slots in use, 10 of 200 GiB disk free"}
+	if why, ok := m.Placeable(nested); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() while ONS-54 waits for taichi's one slot = %v, %v; want not placeable, %v", why, ok, want)
+	}
+}

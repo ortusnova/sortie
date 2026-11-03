@@ -240,6 +240,12 @@ func TestFor(t *testing.T) {
 			short: "No free agent slot for In Progress: 2 of 2 running",
 		},
 		{name: "held with no free SSH host", entry: holding(orchestrator.SnapshotHold{Reason: orchestrator.SkipSSHHostsFull}), short: "No free SSH host"},
+		{
+			name: "held with no worker that can take its job",
+			entry: holding(orchestrator.SnapshotHold{Reason: orchestrator.SkipNoWorker, Worker: &orchestrator.WorkerHold{
+				Capabilities: []string{"nested"}, Waiting: []string{"worker p1: no nested virtualization", "worker taichi: 92.04 of 200 GiB disk free"}}}),
+			short: "No worker can take its job: worker p1: no nested virtualization; worker taichi: 92.04 of 200 GiB disk free",
+		},
 		{name: "held by the daily spend ceiling", entry: spend(orchestrator.SkipDailySpendCeiling, now.Add(5*time.Minute)), short: "Daily spend ceiling reached, resets in 5m"},
 		{name: "held by the weekly spend ceiling", entry: spend(orchestrator.SkipWeeklySpendCeiling, now.Add(5*time.Minute)), short: "Weekly spend ceiling reached, resets in 5m"},
 		{name: "held by the monthly spend ceiling", entry: spend(orchestrator.SkipMonthlySpendCeiling, now.Add(5*time.Minute)), short: "Monthly spend ceiling reached, resets in 5m"},

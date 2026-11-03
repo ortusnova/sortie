@@ -952,6 +952,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
 				},
+				WorkerWait: func(issue domain.Issue) *WorkerHold {
+					return o.workerWait(cfg, issue)
+				},
 			})
 			if heldReleased && !o.once.hasOutcome(issueID) {
 				o.once.record(issueID, retryIdentifier, RunOutcomeStopped)
@@ -1422,6 +1425,11 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 				o.once.declined(issue, SkipUsageLimit)
 				continue
 			}
+		}
+		if wait := o.workerWait(cfg, issue); wait != nil {
+			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
+			o.once.deferFor(issue.ID, deferTick)
+			continue
 		}
 		adapter, adapterErr := o.agentAdapterByKind(resolution.AgentKind)
 		if adapterErr != nil {
