@@ -256,6 +256,69 @@ func TestSupervisor_Merge(t *testing.T) {
 	}
 }
 
+// supervisorComments is a forge's conversation comments on the pull
+// request.
+type supervisorComments []domain.ReviewComment
+
+func (c supervisorComments) FetchPullRequestComments(context.Context, int, string, string) ([]domain.ReviewComment, error) {
+	return c, nil
+}
+
+// The supervisor's merge follows the story's latest criteria verdict: a
+// review that found every criterion met merges; one that left a
+// criterion to a live proof merges only once a live-proof job recorded
+// it proven at the pull request's head; one that found a criterion not
+// met, or recorded no verdict, never merges. CI alone is not enough:
+// before, a pull request whose live criterion was never proven merged
+// once its CI passed.
+func TestSupervisor_MergeFollowsTheCriteriaVerdict(t *testing.T) {
+	t.Parallel()
+	const head = "4d2c1aa9e1f0b7c3d5e6f7a8b9c0d1e2f3a4b5c6"
+	proven := func(sha string) domain.ReviewComment {
+		return domain.ReviewComment{ID: "c1", Reviewer: "ortus-kit", Body: "<!-- live-proof-result -->\nResult: proven\n" + LiveProofMarker + " " + sha + "\n"}
+	}
+	for _, tt := range []struct {
+		name     string
+		outcome  string
+		comments supervisorComments
+		noReader bool
+		code     string
+	}{
+		{name: "every criterion met", outcome: CriteriaOutcomeMet},
+		{name: "a live criterion proven at the head", outcome: CriteriaOutcomeLiveProof, comments: supervisorComments{proven(head[:12])}},
+		{name: "a live criterion never proven", outcome: CriteriaOutcomeLiveProof, code: "live_proof_unproven"},
+		{name: "a live criterion proven at an earlier head", outcome: CriteriaOutcomeLiveProof, comments: supervisorComments{proven("0123456789abcdef")}, code: "live_proof_unproven"},
+		{name: "a live criterion on a forge without comments", outcome: CriteriaOutcomeLiveProof, noReader: true, code: "live_proof_unproven"},
+		{name: "a criterion not met", outcome: CriteriaOutcomeRefused, comments: supervisorComments{proven(head)}, code: "criteria_not_met"},
+		{name: "no verdict", outcome: CriteriaOutcomeRefused, code: "criteria_not_met"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-11", 41))
+			h.tracker.labels = []string{config.ReviewCriteriaLabel}
+			h.forge.status.HeadSHA = head
+			if !tt.noReader {
+				h.o.prCommentReader = tt.comments
+			}
+			if err := h.store.UpsertCriteriaVerdict(t.Context(), persistence.CriteriaVerdict{
+				IssueID: "id-11", Outcome: tt.outcome, RecordedAt: time.Now(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := h.o.Supervisor().Merge(t.Context(), "id-11-ident")
+			if tt.code != "" {
+				if got.Status != SupervisorPrecondition || got.Code != tt.code || len(h.forge.merges) != 0 {
+					t.Errorf("merge = %+v with merges %v, want %s and none", got, h.forge.merges, tt.code)
+				}
+				return
+			}
+			if got.Status != SupervisorDone || len(h.forge.merges) != 1 || h.forge.merges[0] != head {
+				t.Errorf("merge = %+v with merges %v, want one at the head", got, h.forge.merges)
+			}
+		})
+	}
+}
+
 func TestSupervisor_MarkDraft(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-12", 51))
