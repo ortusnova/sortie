@@ -1,0 +1,227 @@
+package server
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/sortie-ai/sortie/internal/orchestrator"
+)
+
+// SupervisorPauseFunc pauses the supervisor when pause is true and
+// resumes it otherwise; by and reason describe a pause. ctx is the
+// request's context.
+type SupervisorPauseFunc func(ctx context.Context, pause bool, by, reason string) orchestrator.SupervisorPauseResult
+
+// supervisorPauseResponse answers the supervisor pause and resume routes.
+// SupervisorPaused is null once the supervisor runs.
+type supervisorPauseResponse struct {
+	SupervisorPaused *dispatchPausedResponse `json:"supervisor_paused"`
+}
+
+// supervisorTriggerResponse is one event that asked for a supervisor
+// session.
+type supervisorTriggerResponse struct {
+	Kind            string    `json:"kind"`
+	IssueIdentifier *string   `json:"issue_identifier"`
+	Detail          string    `json:"detail"`
+	At              time.Time `json:"at"`
+}
+
+// supervisorSessionResponse is one supervisor session. EndedAt and
+// Outcome are null while it runs.
+type supervisorSessionResponse struct {
+	StartedAt    time.Time                   `json:"started_at"`
+	EndedAt      *time.Time                  `json:"ended_at"`
+	Outcome      *string                     `json:"outcome"`
+	Error        *string                     `json:"error"`
+	Tokens       int64                       `json:"tokens"`
+	TriggerCount int                         `json:"trigger_count"`
+	Triggers     []supervisorTriggerResponse `json:"triggers"`
+}
+
+// supervisorBudgetResponse is the supervisor's spend in the current UTC
+// day against its daily budget.
+type supervisorBudgetResponse struct {
+	Day           time.Time `json:"day"`
+	ResetsAt      time.Time `json:"resets_at"`
+	SessionsUsed  int       `json:"sessions_used"`
+	SessionsLimit int       `json:"sessions_limit"`
+	TokensUsed    int64     `json:"tokens_used"`
+	TokensLimit   int64     `json:"tokens_limit"`
+}
+
+// supervisorResponse is the supervisor's state as GET /api/v1/state
+// serves it.
+type supervisorResponse struct {
+	Status          string                      `json:"status"`
+	Agent           string                      `json:"agent"`
+	Unavailable     *string                     `json:"unavailable"`
+	Paused          *dispatchPausedResponse     `json:"paused"`
+	Running         *supervisorSessionResponse  `json:"running"`
+	LastSession     *supervisorSessionResponse  `json:"last_session"`
+	LastTrigger     *supervisorTriggerResponse  `json:"last_trigger"`
+	PendingTriggers []supervisorTriggerResponse `json:"pending_triggers"`
+	Budget          supervisorBudgetResponse    `json:"budget"`
+	NextSweepAt     *time.Time                  `json:"next_sweep_at"`
+}
+
+func toSupervisorPausedResponse(p *orchestrator.SupervisorPause) *dispatchPausedResponse {
+	if p == nil {
+		return nil
+	}
+	return &dispatchPausedResponse{Since: p.Since.UTC(), By: p.By, Reason: p.Reason}
+}
+
+func toSupervisorTriggerResponse(t orchestrator.SupervisorTrigger) supervisorTriggerResponse {
+	return supervisorTriggerResponse{Kind: t.Kind, IssueIdentifier: nonEmpty(t.Identifier), Detail: t.Detail, At: t.At.UTC()}
+}
+
+func toSupervisorTriggerResponses(triggers []orchestrator.SupervisorTrigger) []supervisorTriggerResponse {
+	out := make([]supervisorTriggerResponse, 0, len(triggers))
+	for _, t := range triggers {
+		out = append(out, toSupervisorTriggerResponse(t))
+	}
+	return out
+}
+
+func toSupervisorSessionResponse(s *orchestrator.SupervisorSession) *supervisorSessionResponse {
+	if s == nil {
+		return nil
+	}
+	return &supervisorSessionResponse{
+		StartedAt:    s.StartedAt.UTC(),
+		EndedAt:      faultTimeOrNil(s.EndedAt),
+		Outcome:      nonEmpty(s.Outcome),
+		Error:        nonEmpty(s.Error),
+		Tokens:       s.Tokens,
+		TriggerCount: s.TriggerCount,
+		Triggers:     toSupervisorTriggerResponses(s.Triggers),
+	}
+}
+
+func toSupervisorResponse(s *orchestrator.SupervisorSnapshot) *supervisorResponse {
+	if s == nil {
+		return nil
+	}
+	resp := &supervisorResponse{
+		Status:          s.Status,
+		Agent:           s.Agent,
+		Unavailable:     nonEmpty(s.Unavailable),
+		Paused:          toSupervisorPausedResponse(s.Pause),
+		Running:         toSupervisorSessionResponse(s.Running),
+		LastSession:     toSupervisorSessionResponse(s.LastSession),
+		PendingTriggers: toSupervisorTriggerResponses(s.Pending),
+		Budget: supervisorBudgetResponse{
+			Day:           s.Budget.Day.UTC(),
+			ResetsAt:      s.Budget.ResetsAt.UTC(),
+			SessionsUsed:  s.Budget.SessionsUsed,
+			SessionsLimit: s.Budget.SessionsLimit,
+			TokensUsed:    s.Budget.TokensUsed,
+			TokensLimit:   s.Budget.TokensLimit,
+		},
+		NextSweepAt: faultTimeOrNil(s.NextSweepAt),
+	}
+	if s.LastTrigger != nil {
+		t := toSupervisorTriggerResponse(*s.LastTrigger)
+		resp.LastTrigger = &t
+	}
+	return resp
+}
+
+func (s *Server) handleSupervisorPause(w http.ResponseWriter, r *http.Request) {
+	var req dispatchPauseRequest
+	if err := decodeControlBody(r, &req); err != nil {
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with optional by and reason")
+		return
+	}
+	if req.By == "" {
+		req.By = defaultPausedBy
+	}
+	s.serveSupervisorPause(w, r, true, req.By, req.Reason)
+}
+
+func (s *Server) handleSupervisorResume(w http.ResponseWriter, r *http.Request) {
+	s.serveSupervisorPause(w, r, false, "", "")
+}
+
+func (s *Server) serveSupervisorPause(w http.ResponseWriter, r *http.Request, pause bool, by, reason string) {
+	start := time.Now()
+	status := http.StatusOK
+	defer func() {
+		s.logger.Debug("request served",
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", status),
+			slog.Duration("duration", time.Since(start)),
+		)
+	}()
+	if s.supervisorPauseFn == nil {
+		status = http.StatusServiceUnavailable
+		writeErrorJSON(w, s.logger, status, "orchestrator_unavailable", "the supervisor pause is not available")
+		return
+	}
+	result := s.supervisorPauseFn(r.Context(), pause, by, reason)
+	switch result.Status {
+	case orchestrator.SupervisorPauseDone:
+		writeJSON(w, s.logger, status, supervisorPauseResponse{SupervisorPaused: toSupervisorPausedResponse(result.Pause)})
+	case orchestrator.SupervisorPauseNotConfigured:
+		status = http.StatusConflict
+		writeErrorJSON(w, s.logger, status, "supervisor_not_configured", "the workflow configures no supervisor section")
+	default:
+		status = http.StatusServiceUnavailable
+		writeErrorJSON(w, s.logger, status, "orchestrator_unavailable", "the orchestrator did not take the request")
+	}
+}
+
+// supervisorQuestionRequest is the body of POST /api/v1/supervisor/questions.
+type supervisorQuestionRequest struct {
+	Evidence string   `json:"evidence"`
+	Action   string   `json:"action"`
+	Where    string   `json:"where"`
+	Stories  []string `json:"stories"`
+	Checked  string   `json:"checked"`
+	Cause    string   `json:"cause"`
+}
+
+// supervisorQuestionResponse answers POST /api/v1/supervisor/questions.
+// Existing reports that an open question named the same action and place,
+// so the stories joined it.
+type supervisorQuestionResponse struct {
+	Action        string                `json:"action"`
+	Existing      bool                  `json:"existing"`
+	PlatformFault platformFaultResponse `json:"platform_fault"`
+}
+
+func (s *Server) handleSupervisorQuestion(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	if s.supervisor == nil {
+		writeErrorJSON(w, s.logger, http.StatusServiceUnavailable, "orchestrator_unavailable", "supervisor actions are not available")
+		return
+	}
+	var req supervisorQuestionRequest
+	if err := decodeControlBody(r, &req); err != nil {
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object")
+		return
+	}
+	result := s.supervisor.AskPerson(r.Context(), orchestrator.SupervisorQuestion{
+		Action: req.Action, Where: req.Where, Stories: req.Stories, Checked: req.Checked, Cause: req.Cause,
+	})
+	if result.Status != orchestrator.SupervisorDone {
+		s.writeSupervisorResult(w, r, start, supervisorActionAsk, result.SupervisorResult)
+		return
+	}
+	noteSupervised(r, result.Identifier, "", "")
+	writeJSON(w, s.logger, http.StatusOK, supervisorQuestionResponse{
+		Action:        supervisorActionAsk,
+		Existing:      result.Existing,
+		PlatformFault: toPlatformFaultResponse(result.Fault),
+	})
+	s.logger.Debug("request served",
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+		slog.Int("status", http.StatusOK),
+		slog.Duration("duration", time.Since(start)),
+	)
+}

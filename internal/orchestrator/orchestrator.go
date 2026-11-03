@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -322,6 +323,15 @@ type OrchestratorParams struct {
 	// PlatformFaultChecker checks an open platform fault again. Nil uses
 	// the default check.
 	PlatformFaultChecker PlatformFaultChecker
+
+	// SupervisorToken is server.supervisor_token, which a supervisor
+	// session receives to act through Sortie's API. Empty starts no
+	// supervisor session.
+	SupervisorToken string
+
+	// SupervisorDir is the directory a supervisor session runs in. Empty
+	// uses a "supervisor" directory beside the database.
+	SupervisorDir string
 }
 
 // Orchestrator owns the poll-and-dispatch event loop and all runtime state.
@@ -458,6 +468,12 @@ type Orchestrator struct {
 	// faultChecker checks an open platform fault again; nil uses
 	// [Orchestrator.checkPlatformFault].
 	faultChecker PlatformFaultChecker
+
+	// supervisorToken and supervisorWorkDir are what a supervisor session
+	// runs with; supervisorWg tracks the session's goroutine.
+	supervisorToken   string
+	supervisorWorkDir string
+	supervisorWg      sync.WaitGroup
 }
 
 // NewOrchestrator creates an [Orchestrator] with all dependencies wired.
@@ -604,6 +620,8 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		abandonCh:                         params.AbandonCh,
 		hostName:                          faultHostName(params.HostName),
 		faultChecker:                      params.PlatformFaultChecker,
+		supervisorToken:                   params.SupervisorToken,
+		supervisorWorkDir:                 params.SupervisorDir,
 	}
 	workflowPath := ""
 	if params.WorkflowManager != nil {
@@ -856,6 +874,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.prepareConfiguredModels(startCfg)
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
+	o.superviseOnLoop(ctx, time.Now())
 
 	leaseSweep := time.NewTicker(leaseSweepInterval)
 	defer leaseSweep.Stop()
@@ -990,6 +1009,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			req.ReplyCh <- o.handleControl(ctx, req)
 		}
 
+		o.superviseOnLoop(ctx, time.Now())
+
 		if o.once != nil && ctx.Err() == nil && o.once.settled(o.state) {
 			o.shutdown(tickTimer)
 			return
@@ -1005,6 +1026,7 @@ func (o *Orchestrator) shutdown(tickTimer *time.Timer) {
 	tickTimer.Stop()
 	o.pollHealth.schedule(time.Time{})
 	o.notifyObservers()
+	o.stopSupervisor()
 	o.drainRunningWorkers()
 	o.runEventRetry.Stop()
 	o.drainTriageRuns()
@@ -1554,6 +1576,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 
 	o.state.BlockerReadOffset = nextBlockerReadOffset(pass)
 	o.state.Held = held.entries()
+	noteStalledReactions(o.state, time.Now())
+	noteIdleSlot(o.state, dispatched, time.Now())
 
 	switch {
 	case pass.halted:

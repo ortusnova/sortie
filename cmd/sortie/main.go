@@ -1043,6 +1043,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		AbandonCh:                         abandonCh,
 		Rates:                             startupRates,
 		Once:                              br.once,
+		SupervisorToken:                   br.supervisorToken,
 	})
 
 	var srv *server.Server
@@ -1089,6 +1090,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			EscalateFn:             server.EscalateFunc(o.EscalateFunc()),
 			AnswerFn:               server.AnswerFunc(o.AnswerFunc()),
 			DispatchPauseFn:        server.DispatchPauseFunc(o.DispatchPauseFunc()),
+			SupervisorPauseFn:      server.SupervisorPauseFunc(o.SupervisorPauseFunc()),
 			PlatformFaultDoneFn:    server.PlatformFaultDoneFunc(o.PlatformFaultDoneFunc()),
 			SessionGrantFn:         server.SessionGrantFunc(o.SessionGrantFunc()),
 			HostFn:                 newHostView(br.mgr.Config, br.logger),

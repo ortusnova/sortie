@@ -301,6 +301,9 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 		logger.Info("control token removed from the environment agents inherit", slog.Any("names", removed))
 	}
 	supervisorToken, supervisorCap, supervisorErr := resolveSupervisor(cfg.ExtensionSection("server"), controlToken)
+	if supervisorErr == nil {
+		supervisorErr = checkSupervisorSection(cfg.Supervisor, supervisorToken)
+	}
 	if supervisorErr != nil {
 		logger.Error("server supervisor token configuration error", slog.Any("error", supervisorErr))
 		return bootResult{}, 1

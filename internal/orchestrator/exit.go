@@ -1576,6 +1576,12 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					slog.Bool("person_action", fault.Action != nil),
 				)
 				holdUnderPlatformFault(ctx, state, params.Store, fault, faultHoldOf(entry, workerResult, now), log)
+				if fault.Class == failcause.ClassUnclassified {
+					noteSupervisorTrigger(state, SupervisorTrigger{
+						Kind: SupervisorTriggerUnclassifiedFailure, IssueID: workerResult.IssueID, Identifier: workerResult.Identifier,
+						Detail: "platform fault " + fault.ID + ": " + fault.Cause, At: now,
+					})
+				}
 
 			case repeatedFailure && entry.Trigger != triggerStoryFault && incumbent == nil:
 				// The run failed as the previous run did, on something the

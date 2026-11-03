@@ -231,6 +231,15 @@ func resolveSupervisor(serverSection map[string]any, controlToken string) (token
 	return token, sessionCap, nil
 }
 
+// checkSupervisorSection refuses a supervisor section without a
+// supervisor token, which the supervisor session acts with.
+func checkSupervisorSection(sc config.SupervisorConfig, supervisorToken string) error {
+	if sc.Enabled() && supervisorToken == "" {
+		return fmt.Errorf("the supervisor section needs %s: without it the supervisor session could not act", supervisorTokenSetting)
+	}
+	return nil
+}
+
 // checkControlBinding refuses a non-loopback bind address without a
 // control token, because every state-changing endpoint would then be
 // open to the network.

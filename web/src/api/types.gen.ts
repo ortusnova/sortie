@@ -1223,6 +1223,7 @@ export interface StateResponse {
   spend_ceiling?: SpendCeilingResponse;
   dispatch_paused: DispatchPausedResponse | null;
   platform_faults: PlatformFaultResponse[] | null;
+  supervisor: SupervisorResponse | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;
@@ -1266,12 +1267,57 @@ export interface SupervisorActionResponse {
   at: string;
 }
 
+export interface SupervisorBudgetResponse {
+  day: string;
+  resets_at: string;
+  sessions_used: number;
+  sessions_limit: number;
+  tokens_used: number;
+  tokens_limit: number;
+}
+
+export interface SupervisorQuestionResponse {
+  action: string;
+  existing: boolean;
+  platform_fault: PlatformFaultResponse;
+}
+
+export interface SupervisorResponse {
+  status: string;
+  agent: string;
+  unavailable: string | null;
+  paused: DispatchPausedResponse | null;
+  running: SupervisorSessionResponse | null;
+  last_session: SupervisorSessionResponse | null;
+  last_trigger: SupervisorTriggerResponse | null;
+  pending_triggers: SupervisorTriggerResponse[] | null;
+  budget: SupervisorBudgetResponse;
+  next_sweep_at: string | null;
+}
+
 export interface SupervisorResultResponse {
   action: string;
   issue_identifier: string;
   issue_id: string;
   pull_request: string | null;
   merge_commit: string | null;
+}
+
+export interface SupervisorSessionResponse {
+  started_at: string;
+  ended_at: string | null;
+  outcome: string | null;
+  error: string | null;
+  tokens: number;
+  trigger_count: number;
+  triggers: SupervisorTriggerResponse[] | null;
+}
+
+export interface SupervisorTriggerResponse {
+  kind: string;
+  issue_identifier: string | null;
+  detail: string;
+  at: string;
 }
 
 export interface TableInForceResponse {

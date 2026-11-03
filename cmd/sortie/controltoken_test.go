@@ -227,3 +227,20 @@ func TestResolveSupervisor_NeedsAControlToken(t *testing.T) {
 		})
 	}
 }
+
+// The supervisor session acts with the supervisor token, so a supervisor
+// section without one is refused.
+func TestCheckSupervisorSection(t *testing.T) {
+	t.Parallel()
+
+	sc := config.SupervisorConfig{Agent: "claude-code", Prompt: "supervisor.md"}
+	if err := checkSupervisorSection(sc, ""); err == nil || !strings.Contains(err.Error(), "server.supervisor_token") {
+		t.Errorf("checkSupervisorSection(no token) = %v, want an error naming server.supervisor_token", err)
+	}
+	if err := checkSupervisorSection(sc, "sup-1"); err != nil {
+		t.Errorf("checkSupervisorSection(token) = %v, want nil", err)
+	}
+	if err := checkSupervisorSection(config.SupervisorConfig{}, ""); err != nil {
+		t.Errorf("checkSupervisorSection(no section) = %v, want nil", err)
+	}
+}

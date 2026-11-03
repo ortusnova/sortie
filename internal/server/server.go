@@ -485,6 +485,11 @@ type Params struct {
 	// 503.
 	DispatchPauseFn DispatchPauseFunc
 
+	// SupervisorPauseFn pauses and resumes the supervisor. Called on POST
+	// /api/v1/supervisor/pause and /resume. When nil, those routes answer
+	// 503.
+	SupervisorPauseFn SupervisorPauseFunc
+
 	// PlatformFaultDoneFn marks the person action of a platform fault done
 	// and checks the fault again. Called on POST
 	// /api/v1/platform-faults/{id}/action-done. When nil, that route
@@ -583,6 +588,7 @@ type Server struct {
 	escalateFn          EscalateFunc
 	answerFn            AnswerFunc
 	dispatchPauseFn     DispatchPauseFunc
+	supervisorPauseFn   SupervisorPauseFunc
 	platformFaultDoneFn PlatformFaultDoneFunc
 	sessionGrantFn      SessionGrantFunc
 	hostFn              HostFunc
@@ -654,6 +660,7 @@ func New(params Params) *Server {
 		escalateFn:          params.EscalateFn,
 		answerFn:            params.AnswerFn,
 		dispatchPauseFn:     params.DispatchPauseFn,
+		supervisorPauseFn:   params.SupervisorPauseFn,
 		platformFaultDoneFn: params.PlatformFaultDoneFn,
 		sessionGrantFn:      params.SessionGrantFn,
 		hostFn:              params.HostFn,
@@ -716,6 +723,8 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/refresh", s.controlRoute(scopeOperator, s.handleRefresh))
 	mux.HandleFunc("/api/v1/dispatch/pause", s.controlRoute(scopeOperator, s.handleDispatchPause))
 	mux.HandleFunc("/api/v1/dispatch/resume", s.controlRoute(scopeOperator, s.handleDispatchResume))
+	mux.HandleFunc("/api/v1/supervisor/pause", s.controlRoute(scopeOperator, s.handleSupervisorPause))
+	mux.HandleFunc("/api/v1/supervisor/resume", s.controlRoute(scopeOperator, s.handleSupervisorResume))
 	mux.HandleFunc("/api/v1/platform-faults/{id}/action-done", s.controlRoute(scopeOperator, s.handlePlatformFaultDone))
 	mux.HandleFunc("/api/v1/retries/{identifier}/run", s.controlRoute(scopeOperator, s.handleRetryNow))
 	mux.HandleFunc("/api/v1/attention/{id}/acknowledge", s.controlRoute(scopeOperator, s.handleAcknowledge))

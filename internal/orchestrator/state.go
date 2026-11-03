@@ -1660,6 +1660,10 @@ type State struct {
 	// sessionGrants is what the store holds of the sessions operators
 	// granted beyond agent.max_sessions. Owned by the event loop.
 	sessionGrants sessionGrantCache
+
+	// supervisor is the supervisor's runtime state. Owned by the event
+	// loop; nil leaves the supervisor off.
+	supervisor *supervisorState
 }
 
 // continuationCtxKey is the context key for reaction continuation data
@@ -1749,6 +1753,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
 		PlatformFaults:            make(map[string]*PlatformFault),
 		FaultHolds:                make(map[string]string),
+		supervisor:                newSupervisorState(),
 	}
 }
 
@@ -2222,6 +2227,10 @@ type RuntimeSnapshotResult struct {
 	// SessionGrants is the sessions granted to each issue beyond
 	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
 	SessionGrants map[string]int `json:"-"`
+
+	// Supervisor is the supervisor's state; nil while the workflow
+	// configures no supervisor.
+	Supervisor *SupervisorSnapshot `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -2514,6 +2523,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.DispatchPause = state.dispatchPause.snapshot()
 	snap.PlatformFaults = snapshotPlatformFaults(state)
 	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
+	snap.Supervisor = snapshotSupervisor(state)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))

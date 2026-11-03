@@ -94,6 +94,10 @@ type ServiceConfig struct {
 	// Backends) means no notifier backend is configured.
 	Notifications NotificationsConfig
 
+	// Supervisor configures the supervisor session. Zero value (Agent
+	// == "") means no supervisor runs.
+	Supervisor SupervisorConfig
+
 	// Environment selects where the workspace code of every issue runs.
 	// Its Kind is [EnvironmentKindLocal] when the workflow has no
 	// environment block.
@@ -624,6 +628,7 @@ var knownTopLevelKeys = map[string]bool{
 	"dispatch":      true,
 	"notifications": true,
 	"environment":   true,
+	"supervisor":    true,
 }
 
 // NewServiceConfig converts a raw front matter map into a validated
@@ -823,6 +828,11 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		return ServiceConfig{}, err
 	}
 
+	supervisor, err := buildSupervisorConfig(raw)
+	if err != nil {
+		return ServiceConfig{}, err
+	}
+
 	registerConfigSecrets(tracker, reactions, notifications, extensions, raw)
 
 	cfg := ServiceConfig{
@@ -840,6 +850,7 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		extensionsPreResolution: preResolution,
 		Notifications:           notifications,
 		Environment:             environment,
+		Supervisor:              supervisor,
 		conversions:             conversions,
 		envSet:                  envKeys,
 	}
