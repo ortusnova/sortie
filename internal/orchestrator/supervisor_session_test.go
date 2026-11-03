@@ -99,6 +99,7 @@ type supTracker struct {
 	mu         sync.Mutex
 	candidates []domain.Issue
 	done       map[string]bool
+	blockers   map[string][]string // issue ID to the IDs of the issues that block it
 	polls      chan struct{}
 }
 
@@ -113,9 +114,18 @@ func (s *supTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, erro
 	defer s.mu.Unlock()
 	out := make([]domain.Issue, 0, len(s.candidates))
 	for _, c := range s.candidates {
-		if !s.done[c.ID] {
-			out = append(out, c)
+		if s.done[c.ID] {
+			continue
 		}
+		c.BlockedBy = nil
+		for _, id := range s.blockers[c.ID] {
+			state := "To Do"
+			if s.done[id] {
+				state = "Done"
+			}
+			c.BlockedBy = append(c.BlockedBy, domain.BlockerRef{ID: id, Identifier: strings.ToUpper(id), State: state})
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -153,6 +163,7 @@ type supHarness struct {
 	tracker *supTracker
 	forge   *supervisorForge
 	logs    *lockedBuf
+	params  func(p *OrchestratorParams)
 	cancel  context.CancelFunc
 	done    chan struct{}
 }
@@ -178,7 +189,7 @@ func newSupHarness(t *testing.T, mutate func(cfg *config.ServiceConfig)) *supHar
 		t: t, cfg: cfg, store: openRepeatedFailureStore(t), sup: newFakeSupervisorAgent(), forge: newSupervisorForge(),
 		story: &mockAgentAdapter{}, logs: &lockedBuf{},
 	}
-	h.tracker = &supTracker{done: map[string]bool{}, polls: make(chan struct{}, 1)}
+	h.tracker = &supTracker{done: map[string]bool{}, blockers: map[string][]string{}, polls: make(chan struct{}, 1)}
 	h.tracker.mockTrackerAdapter = &mockTrackerAdapter{
 		fetchIssueByIDFn: func(_ context.Context, id string) (domain.Issue, error) {
 			return domain.Issue{ID: id, Identifier: strings.ToUpper(id), State: h.tracker.stateOf(id)}, nil
@@ -201,7 +212,7 @@ func (h *supHarness) run() {
 	pf.ConfigFunc = func() config.ServiceConfig { return h.cfg }
 	wm := &stubWorkflowManager{config: h.cfg, template: mustParseTemplate(h.t, "do {{ .issue.identifier }}"), absPath: filepath.Join(filepath.Dir(h.cfg.Workspace.Root), "WORKFLOW.md")}
 	state := NewState(h.cfg.Polling.IntervalMS, h.cfg.Agent.MaxConcurrentAgents, 0, nil, AgentTotals{})
-	h.o = NewOrchestrator(OrchestratorParams{
+	params := OrchestratorParams{
 		State:          state,
 		Logger:         slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		TrackerAdapter: h.tracker,
@@ -222,7 +233,11 @@ func (h *supHarness) run() {
 		SessionAPIURL:    testSupervisorAPI,
 		SupervisorToken:  testSupervisorToken,
 		SupervisorDir:    filepath.Join(h.t.TempDir(), "supervisor"),
-	})
+	}
+	if h.params != nil {
+		h.params(&params)
+	}
+	h.o = NewOrchestrator(params)
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan struct{})
 	go func() {
@@ -675,25 +690,52 @@ func TestSupervisor_UnavailableWithoutAToken(t *testing.T) {
 	}
 }
 
-// Scenario "A merged story stays parked": the supervisor sees the forge
-// show the pull request merged, records the merge, and releases the park.
+// Scenario "A merged story stays parked": ONS-7 is parked and the forge
+// shows its pull request merged. Within one sweep the supervisor records
+// the merge and releases the park, the story ends in the done state, and
+// ONS-9, which ONS-7 blocked, is dispatched.
 func TestScenario_AMergedStoryStaysParked(t *testing.T) {
 	t.Parallel()
-	h := newSupHarness(t, nil)
+	h := newSupHarness(t, func(cfg *config.ServiceConfig) {
+		cfg.Tracker.TerminalStates = []string{"Done"}
+		cfg.Supervisor.SweepIntervalMS = 1
+	})
+	h.params = func(p *OrchestratorParams) {
+		p.MergeCompletionConfig = MergeCompletionReactionConfig{TargetState: "Done"}
+		p.MergeCompletionReactionConfigured = true
+	}
 	h.forge.status = domain.PRMergeStatus{Merged: true, Closed: true, MergeCommitSHA: "abc123"}
+	h.tracker.transitionIssueFn = func(_ context.Context, id, target string) error {
+		if target == "Done" {
+			h.tracker.finish(id)
+		}
+		return nil
+	}
+	h.tracker.blockers["id-9"] = []string{"id-7"}
+	dispatched := make(chan string, 16)
+	h.story = &mockAgentAdapter{startSessionFn: func(_ context.Context, params domain.StartSessionParams) (domain.Session, error) {
+		dispatched <- filepath.Base(params.WorkspacePath)
+		return domain.Session{ID: "story"}, nil
+	}}
+	var once sync.Once
 	results := make(chan []SupervisorResult, 1)
 	h.sup.setTurn(func(ctx context.Context, prompt string, _ func(domain.AgentEvent)) (domain.TurnResult, error) {
-		if !strings.Contains(prompt, "- park ONS-7") {
-			return domain.TurnResult{}, errors.New("not the park")
+		if strings.Contains(prompt, "- sweep") && strings.Contains(prompt, `"reason": "agent_blocked"`) {
+			once.Do(func() {
+				sup := h.o.Supervisor()
+				results <- []SupervisorResult{sup.RecordMerge(ctx, "ONS-7", "o/r#12", "abc123"), sup.ReleasePark(ctx, "ONS-7")}
+			})
 		}
-		sup := h.o.Supervisor()
-		results <- []SupervisorResult{sup.RecordMerge(ctx, "ONS-7", "o/r#12", "abc123"), sup.ReleasePark(ctx, "ONS-7")}
 		return domain.TurnResult{ExitReason: domain.EventTurnCompleted}, nil
 	})
 	h.run()
-
 	h.park("id-7", "ONS-7")
-	got := waittest.Receive(t, results, "the supervisor's actions")
+	h.tracker.setCandidates(
+		domain.Issue{ID: "id-7", Identifier: "ONS-7", Title: "seven", State: "To Do"},
+		domain.Issue{ID: "id-9", Identifier: "ONS-9", Title: "nine", State: "To Do"},
+	)
+
+	got := waittest.Receive(t, results, "the sweep's actions")
 	if got[0].Status != SupervisorDone || got[0].MergeCommit != "abc123" || got[1].Status != SupervisorDone {
 		t.Fatalf("actions = %+v, want the merge recorded and the park released", got)
 	}
@@ -701,11 +743,19 @@ func TestScenario_AMergedStoryStaysParked(t *testing.T) {
 	if err != nil || len(rows["id-7"]) != 1 || rows["id-7"][0].Kind != persistence.PlanSatisfactionMerged {
 		t.Errorf("plan satisfaction = %+v, %v, want the merge", rows, err)
 	}
-	h.onLoop(func(context.Context) {
-		if _, parked := h.o.state.Parked["id-7"]; parked {
-			t.Error("ONS-7 is still parked")
+
+	// The release queued a poll: it moves ONS-7 to Done.
+	waittest.Until(t, func() error {
+		if h.tracker.stateOf("id-7") != "Done" {
+			return fmt.Errorf("ONS-7 is %s, want Done", h.tracker.stateOf("id-7"))
 		}
+		return nil
 	})
+	// The next poll finds ONS-9's blocker done and dispatches it.
+	h.refresh()
+	if got := waittest.Receive(t, dispatched, "the dispatch of ONS-9"); got != "ONS-9" {
+		t.Errorf("dispatched %s, want ONS-9", got)
+	}
 }
 
 // Scenario "A question with a false premise": a story parks asking a
@@ -746,17 +796,59 @@ func TestScenario_AQuestionWithAFalsePremise(t *testing.T) {
 }
 
 // Scenario "A pull request nobody is moving": a pull request whose review
-// and CI passed waits on a person to merge it; the stalled reaction starts
-// the supervisor, which merges it, and the merge is recorded.
+// and CI passed has waited 30 minutes on a person to merge it, too short a
+// wait for the stalled-reaction trigger; the sweep starts the supervisor,
+// which merges it, and the merge is recorded.
 func TestScenario_APullRequestNobodyIsMoving(t *testing.T) {
 	t.Parallel()
-	h := newSupHarness(t, nil)
+	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Supervisor.SweepIntervalMS = 1 })
+	var once sync.Once
 	merged := make(chan SupervisorResult, 1)
+	h.sup.setTurn(func(ctx context.Context, prompt string, _ func(domain.AgentEvent)) (domain.TurnResult, error) {
+		if strings.Contains(prompt, "- sweep") && strings.Contains(prompt, `"pull_request": "owner/repo#41"`) {
+			once.Do(func() { merged <- h.o.Supervisor().Merge(ctx, "id-41-ident") })
+		}
+		return domain.TurnResult{ExitReason: domain.EventTurnCompleted}, nil
+	})
+	h.run()
+
+	var pending []SupervisorTrigger
+	h.onLoop(func(context.Context) {
+		waiting := newReviewPendingEntry("id-41", 41)
+		waiting.CreatedAt = time.Now().Add(-31 * time.Minute)
+		h.o.state.PendingReactions[ReactionKey("id-41", ReactionKindReview)] = waiting
+		noteStalledReactions(h.o.state, time.Now())
+		pending = slices.Clone(h.o.state.supervisor.pending)
+	})
+	if slices.ContainsFunc(pending, func(t SupervisorTrigger) bool { return t.Kind == SupervisorTriggerStalledReaction }) {
+		t.Fatalf("a 31-minute wait started a stalled-reaction trigger: %v", triggerKinds(pending))
+	}
+	got := waittest.Receive(t, merged, "the supervisor's merge")
+	if got.Status != SupervisorDone || got.MergeCommit != "merge-1" || len(h.forge.merges) != 1 {
+		t.Fatalf("merge = %+v with merges %v, want the pull request merged once", got, h.forge.merges)
+	}
+	rows, err := h.store.LoadPlanSatisfaction(t.Context(), []string{"id-41"})
+	if err != nil || len(rows["id-41"]) != 1 || rows["id-41"][0].Ref != "merge-1" {
+		t.Errorf("plan satisfaction = %+v, %v, want the merge recorded", rows, err)
+	}
+}
+
+// Scenario "A pull request nobody is moving", the conflict: the pull
+// request conflicts and no fix run started for an hour; the stalled
+// reaction starts the supervisor, whose merge the forge refuses as not
+// mergeable, so it starts the fix run.
+func TestScenario_AConflictingPullRequestNobodyIsMoving(t *testing.T) {
+	t.Parallel()
+	h := newSupHarness(t, nil)
+	h.forge.status.Mergeability = domain.MergeabilityDirty
+	acted := make(chan []SupervisorResult, 1)
 	h.sup.setTurn(func(ctx context.Context, prompt string, _ func(domain.AgentEvent)) (domain.TurnResult, error) {
 		if !strings.Contains(prompt, "- stalled_reaction id-41-ident") {
 			return domain.TurnResult{}, errors.New("not the stalled reaction")
 		}
-		merged <- h.o.Supervisor().Merge(ctx, "id-41-ident")
+		sup := h.o.Supervisor()
+		merge := sup.Merge(ctx, "id-41-ident")
+		acted <- []SupervisorResult{merge, sup.FixRun(ctx, "id-41-ident", "owner/repo#41 conflicts with its base; rebase it and resolve the conflict.")}
 		return domain.TurnResult{ExitReason: domain.EventTurnCompleted}, nil
 	})
 	h.run()
@@ -767,14 +859,23 @@ func TestScenario_APullRequestNobodyIsMoving(t *testing.T) {
 		h.o.state.PendingReactions[ReactionKey("id-41", ReactionKindReview)] = stalled
 		noteStalledReactions(h.o.state, time.Now())
 	})
-	got := waittest.Receive(t, merged, "the supervisor's merge")
-	if got.Status != SupervisorDone || got.MergeCommit != "merge-1" || len(h.forge.merges) != 1 {
-		t.Fatalf("merge = %+v with merges %v, want the pull request merged once", got, h.forge.merges)
+	got := waittest.Receive(t, acted, "the supervisor's actions")
+	if got[0].Status != SupervisorPrecondition || got[0].Code != "not_mergeable" || len(h.forge.merges) != 0 {
+		t.Errorf("merge = %+v with merges %v, want refused as not mergeable", got[0], h.forge.merges)
 	}
-	rows, err := h.store.LoadPlanSatisfaction(t.Context(), []string{"id-41"})
-	if err != nil || len(rows["id-41"]) != 1 || rows["id-41"][0].Ref != "merge-1" {
-		t.Errorf("plan satisfaction = %+v, %v, want the merge recorded", rows, err)
+	if got[1].Status != SupervisorDone || got[1].PullRequest != "owner/repo#41" {
+		t.Fatalf("fix run = %+v, want started on owner/repo#41", got[1])
 	}
+	h.onLoop(func(context.Context) {
+		retry := h.o.state.RetryAttempts["id-41"]
+		if retry == nil || retry.ReactionKind != ReactionKindReview {
+			t.Fatalf("retry = %+v, want a review fix run", retry)
+		}
+		comments, _ := retry.ContinuationContext[reviewCommentsKey].([]map[string]any)
+		if len(comments) != 1 || !strings.Contains(comments[0]["body"].(string), "conflicts with its base") {
+			t.Errorf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
+		}
+	})
 }
 
 // Scenario "A token scope": pushes fail on a missing scope; the supervisor
