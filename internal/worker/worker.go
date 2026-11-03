@@ -8,6 +8,7 @@ package worker
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"sort"
@@ -560,16 +561,20 @@ func misfits(w *Worker, j Job) []string {
 	}
 	a, r := w.Available, j.Requires
 	if a.CPU < r.CPU {
-		out = append(out, fmt.Sprintf("%g of %g CPUs free", a.CPU, r.CPU))
+		out = append(out, fmt.Sprintf("%g of %g CPUs free", hundredths(a.CPU), r.CPU))
 	}
 	if a.MemGiB < r.MemGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB memory free", a.MemGiB, r.MemGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB memory free", hundredths(a.MemGiB), r.MemGiB))
 	}
 	if a.DiskGiB < r.DiskGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB disk free", a.DiskGiB, r.DiskGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB disk free", hundredths(a.DiskGiB), r.DiskGiB))
 	}
 	return out
 }
+
+// hundredths rounds what is free to hundredths, as a worker declares it:
+// charging jobs against it leaves float noise (11.430000000000007).
+func hundredths(x float64) float64 { return math.Round(x*100) / 100 }
 
 // capable reports whether w is not gone and declares every capability
 // j requires, whatever it has free.
