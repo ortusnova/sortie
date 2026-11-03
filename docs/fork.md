@@ -33,6 +33,10 @@ The agentic-orchestration workbench syncs the plan on its own, with no Sync step
 
 The stage-0 kit drains a host before a deploy or a host setup change, following `agent-platform/run-supervision` ("A pending deploy drains its host"). It calls `POST /api/v1/dispatch/pause`, waits until `running` on `/api/v1/state` is empty, applies the change, and calls `POST /api/v1/dispatch/resume`; both routes take the control token. The pause lives in `internal/orchestrator/dispatch_pause.go` and `internal/server/dispatch_pause.go`, with one hook in the poll tick's dispatch pass and one in `HandleRetryTimer`. It is kept in memory, so a restart clears it: the kit resumes after every change and repeats its pause each minute while it waits, so a persisted pause would add nothing and could leave a host paused with no one to resume it.
 
+## More sessions for one issue
+
+The workbench unblocks a story the session budget holds, following `agent-platform/run-supervision` ("Unblock from the lane"). It calls `POST /api/v1/{identifier}/sessions` with `{"add": N, "by", "reason"}` and the control token, and the issue runs again without a change to `agent.max_sessions` for every issue. The grant lives in `internal/orchestrator/session_grant.go`, `internal/server/session_grant.go` and `internal/persistence/session_grants.go` (table `session_grants`, migration 1007). Hooks in upstream files count it: the poll tick's budget set in `rebuildBudgetExhausted`, the session gate in `HandleRetryTimer`, the snapshot, the served rows and sentences, and the `cost_budget` tool. Grants are stored, unlike the dispatch pause, because a story granted sessions must not be held again by a restart.
+
 ## smolvm egress with virtio-net
 
 Answer: smolvm filters egress with `virtio-net`, and does not with TSI. Measured on smolvm 1.32.4 on 2026-11-01, on p1 (Intel, `kvm_intel nested=Y`), with throwaway Alpine 3.22 machines.

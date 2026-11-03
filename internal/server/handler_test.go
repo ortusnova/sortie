@@ -1045,6 +1045,7 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				StagePosition:   position,
 				AgentKind:       "claude-code",
 				ConfiguredModel: "opus",
+				GrantedSessions: 2,
 			}),
 			want: map[string]any{
 				"issue_id":           "id-3",
@@ -1058,6 +1059,7 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"reason":             "session_budget",
 				"used_sessions":      float64(3),
 				"budget_sessions":    float64(3),
+				"granted_sessions":   float64(2),
 				"budget_tokens":      nil,
 				"dispatched_at":      "2026-03-24T09:00:00Z",
 				"rule_name":          "implement",
@@ -2749,6 +2751,18 @@ func TestHandleIssueDetail_NextOutcomes(t *testing.T) {
 			wantNext: []nextOutcomeResponse{
 				{Condition: "If the run succeeds", Text: held},
 				{Condition: "If the run fails", Text: held},
+			},
+		},
+		{
+			name: "a grant beyond the session budget lets the next run start",
+			snap: orchestrator.RuntimeSnapshotResult{
+				Running:       []orchestrator.SnapshotRunningEntry{{IssueID: "id-1", Identifier: "MT-1"}},
+				SessionGrants: map[string]int{"id-1": 1},
+			},
+			history: oneRunShort,
+			wantNext: []nextOutcomeResponse{
+				{Condition: "If the run succeeds", Text: "Sortie dispatches another session if the issue is still in an active state."},
+				{Condition: "If the run fails", Text: "Sortie retries with exponential backoff."},
 			},
 		},
 		{
