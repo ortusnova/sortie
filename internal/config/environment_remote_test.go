@@ -4,6 +4,7 @@ import (
 	"errors"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,178 @@ func TestEnvironmentConfig_RemoteRejects(t *testing.T) {
 				t.Fatalf("error = %v, want a ConfigError on %s", err, tc.field)
 			}
 		})
+	}
+}
+
+// remoteRepositoriesRaw is the remote block of a homelab story and a
+// Sortie story at once: homelab runs in its own image on a worker that
+// declares nested, sortie is the default, and a third repository is
+// closed to dispatch.
+func remoteRepositoriesRaw() map[string]any {
+	return remoteRaw(map[string]any{
+		"repositories": []any{
+			map[string]any{
+				"name": "homelab", "url": "https://example.com/o/homelab.git", "base": "trunk",
+				"provider": "github", "project": "o/homelab", "image": "ghcr.io/ortusnova/homelab:1",
+				"requires": map[string]any{"capabilities": []any{"nested"}, "cpu": 4},
+			},
+			map[string]any{
+				"name": "sortie", "url": "https://example.com/o/sortie.git", "base": "main",
+				"provider": "github", "project": "o/sortie", "image": "ghcr.io/ortusnova/sortie:1",
+			},
+			map[string]any{"name": "attic", "url": "https://example.com/o/attic.git", "base": "main", "dispatch": false},
+		},
+		"default_repository": "sortie",
+	})
+}
+
+// remote-runs: each repository decides its job's seed, image and
+// requirements, and the default takes an issue that names none.
+func TestEnvironmentConfig_RemoteRepositories(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := NewServiceConfig(remoteRepositoriesRaw())
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	rc := cfg.Environment.Remote
+	if rc.DefaultRepository != "sortie" || rc.Repository == nil || rc.Repository.Name != "sortie" {
+		t.Fatalf("default = %q, Repository = %+v, want sortie", rc.DefaultRepository, rc.Repository)
+	}
+	set := cfg.Environment.RepositorySet()
+	if got := set.RepositoryNames(); !reflect.DeepEqual(got, []string{"homelab", "sortie", "attic"}) {
+		t.Fatalf("RepositoryNames() = %v", got)
+	}
+
+	homelab, err := set.DispatchRepository([]string{"sortie-repository:homelab"})
+	if err != nil {
+		t.Fatalf("DispatchRepository(homelab) error = %v", err)
+	}
+	want := SmolvmRepository{
+		Name: "homelab", URL: "https://example.com/o/homelab.git", Base: "trunk", BranchPrefix: defaultRepoBranchPrefix,
+		Provider: "github", Project: "o/homelab", MaxBundleMiB: defaultRepoMaxBundleMiB,
+		Image: "ghcr.io/ortusnova/homelab:1", Requires: &RemoteRequirements{Capabilities: []string{"nested"}, CPU: 4},
+	}
+	if !reflect.DeepEqual(*homelab, want) {
+		t.Errorf("homelab = %+v, want %+v", *homelab, want)
+	}
+	if rc.JobImage(homelab) != "ghcr.io/ortusnova/homelab:1" || !reflect.DeepEqual(rc.JobRequires(homelab).Capabilities, []string{"nested"}) {
+		t.Errorf("homelab job: image %q requires %+v", rc.JobImage(homelab), rc.JobRequires(homelab))
+	}
+
+	sortie, err := set.DispatchRepository(nil)
+	if err != nil || sortie.Name != "sortie" {
+		t.Fatalf("DispatchRepository(no label) = %+v, %v, want sortie", sortie, err)
+	}
+	if rc.JobImage(sortie) != "ghcr.io/ortusnova/sortie:1" || !reflect.DeepEqual(rc.JobRequires(sortie), RemoteRequirements{}) {
+		t.Errorf("sortie job: image %q requires %+v, want its own image and the block's requirements", rc.JobImage(sortie), rc.JobRequires(sortie))
+	}
+
+	if _, err := set.DispatchRepository([]string{"sortie-repository:attic"}); !errors.Is(err, ErrNotDispatched) {
+		t.Errorf("DispatchRepository(attic) error = %v, want ErrNotDispatched", err)
+	}
+	if got := cfg.Environment.RepositoryField(0); got != "environment.remote.repositories[0]" {
+		t.Errorf("RepositoryField(0) = %q", got)
+	}
+	for _, w := range ValidateFrontMatter(remoteRepositoriesRaw(), ServiceConfig{}) {
+		if strings.Contains(w.Field, "repositor") {
+			t.Errorf("unexpected warning %+v", w)
+		}
+	}
+}
+
+// The block's image is required only for a repository without its own.
+func TestEnvironmentConfig_RemoteImageFallsBack(t *testing.T) {
+	t.Parallel()
+
+	own := map[string]any{"name": "a", "url": "u", "base": "main", "image": "ghcr.io/o/a:1"}
+	cfg, err := NewServiceConfig(map[string]any{"environment": map[string]any{"kind": "remote", "remote": map[string]any{
+		"flows": remoteFlowsRaw(), "repositories": []any{own}, "default_repository": "a",
+	}}})
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	if rc := cfg.Environment.Remote; rc.Image != "" || rc.JobImage(rc.Repository) != "ghcr.io/o/a:1" {
+		t.Errorf("image %q, job image %q", rc.Image, rc.JobImage(rc.Repository))
+	}
+
+	cfg, err = NewServiceConfig(remoteRaw(map[string]any{"repository": map[string]any{"url": "u", "base": "main"}}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	if rc := cfg.Environment.Remote; rc.JobImage(rc.Repository) != "ghcr.io/ortusnova/agent:1" || len(rc.Repositories) != 1 || rc.DefaultRepository != "" {
+		t.Errorf("single repository block: %+v", rc)
+	}
+}
+
+// remote-runs: A key the remote kind does not run. A key environment.remote
+// does not know, at any depth, fails validation naming the key.
+func TestEnvironmentConfig_RemoteRefusesUnknownKeys(t *testing.T) {
+	t.Parallel()
+
+	repo := func(extra map[string]any) map[string]any {
+		r := map[string]any{"name": "a", "url": "u", "base": "main"}
+		maps.Copy(r, extra)
+		return r
+	}
+	extraFlow := remoteFlowsRaw()
+	extraFlow["stdio"] = map[string]any{"url": "https://edge.example/stdio", "token": "t"}
+	noImage := map[string]any{"environment": map[string]any{"kind": "remote", "remote": map[string]any{
+		"flows": remoteFlowsRaw(), "repositories": []any{repo(map[string]any{"image": "i"}), repo(map[string]any{"name": "b"})},
+	}}}
+	closed := repo(map[string]any{"dispatch": false})
+	for name, tc := range map[string]struct {
+		raw   map[string]any
+		field string
+	}{
+		"pass_env":              {remoteRaw(map[string]any{"pass_env": []any{"HOME"}}), "environment.remote.pass_env"},
+		"allow_hosts":           {remoteRaw(map[string]any{"allow_hosts": []any{"example.com"}}), "environment.remote.allow_hosts"},
+		"smolvm key":            {remoteRaw(map[string]any{"pack": "/p"}), "environment.remote.pack"},
+		"repository entry key":  {remoteRaw(map[string]any{"repositories": []any{repo(map[string]any{"pass_env": []any{"A"}})}}), "environment.remote.repositories[0].pass_env"},
+		"single block key":      {remoteRaw(map[string]any{"repository": repo(map[string]any{"mounts": []any{}})}), "environment.remote.repository.mounts"},
+		"repository requires":   {remoteRaw(map[string]any{"repositories": []any{repo(map[string]any{"requires": map[string]any{"gpu": 1}})}}), "environment.remote.repositories[0].requires.gpu"},
+		"credential key":        {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A", "hosts": []any{"h.example"}, "value": "x"}}}), "environment.remote.credentials[0].value"},
+		"flow key":              {remoteRaw(map[string]any{"flows": extraFlow}), "environment.remote.flows.stdio.token"},
+		"repository image":      {noImage, "environment.remote.image"},
+		"empty repo image":      {remoteRaw(map[string]any{"repositories": []any{repo(map[string]any{"image": ""})}}), "environment.remote.repositories[0].image"},
+		"single block dispatch": {remoteRaw(map[string]any{"repository": repo(map[string]any{"dispatch": false})}), "environment.remote.repository.dispatch"},
+		"closed default":        {remoteRaw(map[string]any{"repositories": []any{closed}, "default_repository": "a"}), "environment.remote.default_repository"},
+		"unlisted default":      {remoteRaw(map[string]any{"repositories": []any{repo(nil)}, "default_repository": "b"}), "environment.remote.default_repository"},
+		"both forms":            {remoteRaw(map[string]any{"repositories": []any{repo(nil)}, "repository": repo(nil)}), "environment.remote.repositories"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewServiceConfig(tc.raw)
+			var ce *ConfigError
+			if !errors.As(err, &ce) || ce.Field != tc.field {
+				t.Fatalf("error = %v, want a ConfigError on %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// remote-runs: A key the remote kind does not run. A workspace hook under
+// the remote kind fails validation naming the hook; the other kinds keep
+// their hooks.
+func TestEnvironmentConfig_RemoteRefusesHooks(t *testing.T) {
+	t.Parallel()
+
+	for _, hook := range []string{"after_create", "before_run", "after_run", "before_remove"} {
+		raw := remoteRaw(nil)
+		raw["hooks"] = map[string]any{hook: "make setup", "timeout_ms": 1000}
+		_, err := NewServiceConfig(raw)
+		var ce *ConfigError
+		if !errors.As(err, &ce) || ce.Field != "hooks."+hook {
+			t.Errorf("%s: error = %v, want a ConfigError on hooks.%s", hook, err, hook)
+		}
+	}
+
+	raw := remoteRaw(nil)
+	raw["hooks"] = map[string]any{"timeout_ms": 1000}
+	if _, err := NewServiceConfig(raw); err != nil {
+		t.Errorf("hooks.timeout_ms alone: error = %v, want none", err)
+	}
+	if _, err := NewServiceConfig(map[string]any{"hooks": map[string]any{"after_create": "make setup"}}); err != nil {
+		t.Errorf("hook under the local kind: error = %v, want none", err)
 	}
 }

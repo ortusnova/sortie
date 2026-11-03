@@ -474,6 +474,8 @@ type fakeWorker struct {
 	issuer *jobtoken.Issuer
 	// toolCalls holds the answers to those calls, in that order.
 	toolCalls []toolCall
+	// noNested checks in without nested virtualization.
+	noNested bool
 }
 
 // toolCall is the answer to one tool call on the mcp flow.
@@ -518,14 +520,14 @@ func (w *fakeWorker) makeToolCalls() error {
 	return nil
 }
 
-func (w *fakeWorker) api(method, path string, body any) *http.Response {
+func (w *fakeWorker) post(path string, body any) *http.Response {
 	w.t.Helper()
 	var r io.Reader
 	if body != nil {
 		raw, _ := json.Marshal(body)
 		r = bytes.NewReader(raw)
 	}
-	req, _ := http.NewRequest(method, w.base+path, r)
+	req, _ := http.NewRequest(http.MethodPost, w.base+path, r)
 	req.Header.Set(worker.ProtocolHeader, "1")
 	req.Header.Set(w.header, w.id)
 	resp, err := http.DefaultClient.Do(req)
@@ -543,8 +545,8 @@ func (w *fakeWorker) flow(name string) (string, string) {
 // take checks in and polls until it holds a job.
 func (w *fakeWorker) take() {
 	w.t.Helper()
-	resp := w.api(http.MethodPost, "/api/v1/workers/checkin", map[string]any{
-		"os": "linux", "arch": "x86_64", "kvm": true, "nested": true, "backends": []string{"smolvm"},
+	resp := w.post("/api/v1/workers/checkin", map[string]any{
+		"os": "linux", "arch": "x86_64", "kvm": true, "nested": !w.noNested, "backends": []string{"smolvm"},
 		"run_slots": 2, "running": 0, "free": map[string]any{"cpu": 8, "mem_gib": 32, "disk_gib": 100},
 	})
 	_ = resp.Body.Close()
@@ -555,7 +557,7 @@ func (w *fakeWorker) take() {
 		if w.ended != nil && w.ended() {
 			w.t.Fatal("the run ended before its job was offered")
 		}
-		resp := w.api(http.MethodPost, "/api/v1/workers/poll", nil)
+		resp := w.post("/api/v1/workers/poll", nil)
 		defer resp.Body.Close() //nolint:errcheck // test
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("poll: %d", resp.StatusCode)
@@ -712,7 +714,7 @@ func (w *fakeWorker) giveBack() {
 	if resp.StatusCode != http.StatusNoContent {
 		w.t.Fatalf("result: %d", resp.StatusCode)
 	}
-	resp = w.api(http.MethodPost, fmt.Sprintf("/api/v1/workers/jobs/%s/attempts/%d/report", w.offer.Job.ID, w.offer.Job.Attempt),
+	resp = w.post(fmt.Sprintf("/api/v1/workers/jobs/%s/attempts/%d/report", w.offer.Job.ID, w.offer.Job.Attempt),
 		map[string]string{"outcome": "succeeded", "machine": "stopped"})
 	_ = resp.Body.Close()
 }

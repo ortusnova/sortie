@@ -253,10 +253,10 @@ func writePlanText(w io.Writer, r planSyncReport) {
 			p("  not written: %s", u)
 		}
 		for _, u := range pv.UnlistedRepositories {
-			p("  refused %s: repository %q is not listed in environment.smolvm.repositories", u.PlanKey, u.Repository)
+			p("  refused %s: repository %q is not listed in the workflow's repositories", u.PlanKey, u.Repository)
 		}
 		for _, key := range pv.MissingRepositories {
-			p("  refused %s: names no repository and environment.smolvm sets no default_repository", key)
+			p("  refused %s: names no repository and the workflow sets no default_repository", key)
 		}
 		for _, op := range pv.Creates {
 			line := fmt.Sprintf("  create %s %s %q", op.Kind, op.PlanKey, op.Title)
@@ -312,11 +312,7 @@ func workflowRepositories(current func() config.ServiceConfig) func() []string {
 		return nil
 	}
 	return func() []string {
-		cfg := current()
-		if cfg.Environment.Kind != config.EnvironmentKindSmolvm {
-			return []string{}
-		}
-		names := cfg.Environment.Smolvm.RepositoryNames()
+		names := current().Environment.RepositorySet().RepositoryNames()
 		if names == nil {
 			names = []string{}
 		}
@@ -332,8 +328,7 @@ func workflowRequiresRepository(current func() config.ServiceConfig) func() bool
 		return nil
 	}
 	return func() bool {
-		cfg := current()
-		return cfg.Environment.Kind == config.EnvironmentKindSmolvm &&
-			len(cfg.Environment.Smolvm.Repositories) > 0 && cfg.Environment.Smolvm.DefaultRepository == ""
+		set := current().Environment.RepositorySet()
+		return len(set.Repositories) > 0 && set.Repository == nil
 	}
 }

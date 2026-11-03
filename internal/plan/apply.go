@@ -356,7 +356,7 @@ func UnlistedRepositoriesError(unlisted []UnlistedRepository) error {
 	}
 	return &domain.TrackerError{
 		Kind:    domain.ErrTrackerPayload,
-		Message: "stories name repositories the workflow does not list in environment.smolvm.repositories: " + strings.Join(names, ", "),
+		Message: "stories name repositories the workflow does not list in its repositories: " + strings.Join(names, ", "),
 	}
 }
 
@@ -366,6 +366,6 @@ func UnlistedRepositoriesError(unlisted []UnlistedRepository) error {
 func MissingRepositoriesError(planKeys []string) error {
 	return &domain.TrackerError{
 		Kind:    domain.ErrTrackerPayload,
-		Message: "stories name no repository and environment.smolvm sets no default_repository: " + strings.Join(planKeys, ", "),
+		Message: "stories name no repository and the workflow sets no default_repository: " + strings.Join(planKeys, ", "),
 	}
 }
