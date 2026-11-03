@@ -51,6 +51,7 @@ type GitHubCIProvider struct {
 	owner       string
 	repo        string
 	maxLogLines int
+	refusals    checkRunsRefusals
 }
 
 // NewGitHubCIProvider creates a [GitHubCIProvider] from primitives and
@@ -121,14 +122,17 @@ func NewGitHubCIProvider(maxLogLines int, adapterConfig map[string]any) (domain.
 }
 
 // FetchCIStatus returns the aggregate CI pipeline status for the given
-// git ref by querying the GitHub Checks API. Check runs are mapped to
+// git ref by querying the GitHub Checks API, or the GitHub Actions jobs
+// for the ref when the token may not read check runs. Check runs are mapped to
 // domain types, aggregate status is computed, and a log excerpt is built
 // from the first failing GitHub Actions check run when maxLogLines is
 // positive. The excerpt holds the output of the step that failed, or the
 // end of the job log when that step cannot be located, and opens with a
 // note line saying which.
 func (p *GitHubCIProvider) FetchCIStatus(ctx context.Context, ref string) (domain.CIResult, error) {
-	raw, err := p.fetchAllCheckRuns(ctx, ref)
+	raw, err := readCheckRuns(ctx, p.client, &p.refusals, p.owner, p.repo, ref, func() ([]githubCheckRun, error) {
+		return p.fetchAllCheckRuns(ctx, ref)
+	})
 	if err != nil {
 		return domain.CIResult{}, scmcore.ToCIError(fmt.Errorf("fetching checks for ref %q: %w", ref, err))
 	}
