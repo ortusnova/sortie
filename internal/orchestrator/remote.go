@@ -534,6 +534,8 @@ type remoteAttempt struct {
 	ended     *worker.Outcome
 	outcome   chan struct{}
 	finished  bool
+	// worker is the ID of the worker that took the job, once one did.
+	worker string
 	// recorded reports that the run's record holds the job a worker
 	// took; detached that the attempt was left with it for the next
 	// start.
@@ -676,6 +678,9 @@ func (a *remoteAttempt) record(ctx context.Context, granted <-chan string, dp *d
 	case <-dp.Done():
 		return
 	}
+	a.mu.Lock()
+	a.worker = workerID
+	a.mu.Unlock()
 	if a.workers.runs == nil {
 		return
 	}
@@ -864,8 +869,10 @@ func (a *remoteAttempt) finish() {
 }
 
 // adjust reports a run the worker ended first as failed with the
-// worker's reason, and counts usage reported after the last turn.
+// worker's reason, counts usage reported after the last turn, and names
+// the worker that took the job.
 func (a *remoteAttempt) adjust(r WorkerResult) WorkerResult {
+	r.Worker = a.workerID()
 	if out, ok := a.endedOutcome(); ok && !out.Succeeded && !out.Cancelled && r.ExitKind != WorkerExitNormal {
 		r.ExitKind = WorkerExitError
 		r.Error = errors.New(outcomeReason(out))
@@ -886,6 +893,18 @@ func (a *remoteAttempt) adjust(r WorkerResult) WorkerResult {
 		a.pending = nil
 	}
 	return r
+}
+
+// workerID returns the ID of the worker that took the job: the one an
+// adopted attempt was recorded with, else the one the matcher granted it
+// to, or "" while none did.
+func (a *remoteAttempt) workerID() string {
+	if a.adopt != nil {
+		return a.adopt.run.WorkerID
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.worker
 }
 
 func (a *remoteAttempt) receiveUsage(u dataplane.Usage) {

@@ -4168,6 +4168,7 @@ Returns issue-specific runtime and debug details for a single issue, and the iss
         "reaction_config_key": "",
         "session_id": "thread-1-turn-1",
         "ssh_host": "",
+        "worker": null,
         "stage_chain": ["specify", "implement"],
         "pr_loop": null,
         "issue_outcome": null
@@ -4393,6 +4394,7 @@ The response is ordered by descending `run_id`, the order Sortie recorded the ru
       "reaction_config_key": "ci_failure",
       "session_id": "thread-1-turn-1",
       "ssh_host": "",
+      "worker": null,
       "dispatch_id": "RLQFSIOFERWGDW2HZY45W55VXK",
       "stage_chain": ["specify", "implement", "review"],
       "pr_loop": {"ci_failure": {"result": "acted", "continuations": 1}, "review_comments": {"result": "quiet", "continuations": 0}, "bot_review": {"result": "quiet", "continuations": 0}, "auto_merge": {"result": "quiet", "continuations": 0}},
@@ -4454,6 +4456,7 @@ The response is ordered by descending `run_id`, the order Sortie recorded the ru
 | `reaction_config_key`    | string or `null`   | The key of the `reactions` section of `WORKFLOW.md` that `reaction_kind` is configured under. `""` or `null` exactly when `reaction_kind` is. |
 | `session_id`             | string or `null`   | The agent session the run used, `""` when it started none, `null` when not recorded. Not masked. |
 | `ssh_host`               | string or `null`   | The SSH worker the run executed on, `""` for a local run, `null` when not recorded. |
+| `worker`                 | string or `null`   | Under `environment.kind: remote`, the ID of the worker that held the run's lease, as it checked in. `null` for a run no worker took, for a run under any other kind, and for a run recorded before the worker was kept. Not masked. |
 | `dispatch_id`            | string or `null`   | The dispatch ID of the run, the key of its agent events on [`GET /api/v1/runs/{dispatch_id}/events`](#get-apiv1runsdispatch_idevents-run-events). `""` on the recorded CI result, which no dispatch produced, and `null` for a run recorded before the dispatch ID existed. A run with either has no retained events. |
 | `stage_chain`            | array of strings or `null` | The stage chain the run's rule stands on, as the rule names of the chain in `next` order. It is the chain `stage_position.chain` serves for the run's `rule_name` and `stage_previous`, and it follows the configuration in effect, so a reload that edits the chains changes it for runs recorded before the reload. Always present. `null` when the run has no `rule_name`, when its rule is on no chain, and when the server holds no workflow shape. Not masked. On the per-issue response, `history.last_stage.chain` equals the `stage_chain` of the deciding run. |
 | `issue_outcome`          | object or `null`   | How the issue's latest work ended, as Sortie observed it, or `null` when Sortie observed no ending since it last picked the issue up, or when the issue ended before outcomes were recorded. Always present. It belongs to the issue, so every run of one issue carries the same object, and it is served as recorded whatever the issue's live state. `kind` is `handed_off`, `merged`, or `terminal`, and `observed_at` is when Sortie made or observed the ending, in UTC. `state` is present for `handed_off` and `terminal`: the state the handoff wrote, or the terminal state Sortie read. `merge_path` and `pull_request` are present for `merged`: `merge_path` is `auto_merge` or `merge_completion`, the `reactions` key that observed the merge, and `pull_request` holds `number` and `repository`. `state` and `repository` are masked like `issue_title`. `status_text` and `status_text_full` are always present: the sentence of how the issue ended, worded from the outcome alone, so a stage hop that was not made appears only in the top-level pair of a `history` response. |

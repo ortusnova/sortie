@@ -144,6 +144,10 @@ type RunHistoryEntry struct {
 	SessionID string
 	// SSHHost is the SSH worker the run executed on; empty for a local run.
 	SSHHost string
+	// Worker is the ID of the worker that held the run's lease under
+	// environment.kind remote; empty for a run no worker took, for a run
+	// under any other kind, and for a run recorded before the worker was.
+	Worker string
 	// DispatchID keys the run's retained events: empty on the recorded CI
 	// result, nil for a run recorded before the dispatch ID existed.
 	DispatchID *string

@@ -730,3 +730,16 @@ func (h *restartHarness) oneSessionHandedOff(p *sortieProcess, dispatchID string
 		h.t.Errorf("remote runs %+v %v, want none left", runs, err)
 	}
 }
+
+// A run no worker took records no worker.
+func TestRemoteAttemptWithoutAGrantNamesNoWorker(t *testing.T) {
+	t.Parallel()
+	a := &remoteAttempt{}
+	if got := a.adjust(WorkerResult{}).Worker; got != "" {
+		t.Errorf("Worker = %q, want empty for an attempt no worker took", got)
+	}
+	a = &remoteAttempt{adopt: &remoteAdoption{run: persistence.RemoteRun{WorkerID: "taichi"}}}
+	if got := a.adjust(WorkerResult{}).Worker; got != "taichi" {
+		t.Errorf("Worker = %q, want taichi for an adopted attempt", got)
+	}
+}

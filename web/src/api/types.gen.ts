@@ -820,6 +820,7 @@ export interface RunResponse {
   reaction_config_key: string | null;
   session_id: string | null;
   ssh_host: string | null;
+  worker: string | null;
   dispatch_id: string | null;
   model_usage: ModelUsageResponse[] | null;
   skills?: SkillCall[];

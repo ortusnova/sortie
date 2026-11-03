@@ -259,6 +259,7 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"exported_commit", "TEXT", true, 0},
 				{"error_detail", "TEXT", true, 0},
 				{"failure_signature", "TEXT", true, 0},
+				{"worker", "TEXT", true, 0},
 			},
 		},
 		{
@@ -1433,5 +1434,47 @@ func TestLatestRunFailureSignature(t *testing.T) {
 	run("rh-sig", "succeeded", "")
 	if got, err := s.LatestRunFailureSignature(ctx, "rh-sig"); err != nil || got != "" {
 		t.Errorf("LatestRunFailureSignature(after a success) = %q, %v, want empty", got, err)
+	}
+}
+
+func TestMigrate_Migration1013_WorkerDefaultsToEmpty(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateToVersion(t, s, 1012)
+	insertBareRun(t, s, "rh-pre1013")
+
+	migrateOrFatal(t, s)
+
+	rows, err := s.QueryRunHistoryByIssue(context.Background(), "rh-pre1013")
+	if err != nil || len(rows) != 1 || rows[0].Worker != "" {
+		t.Errorf("QueryRunHistoryByIssue for a pre-migration-1013 row = %+v, %v, want one row without a worker", rows, err)
+	}
+}
+
+// A run on a remote worker records the worker that held its lease, and
+// both run-history reads return it.
+func TestMigrate_Migration1013_RecordsTheWorker(t *testing.T) {
+	t.Parallel()
+
+	s := openTestStore(t)
+	migrateOrFatal(t, s)
+	ctx := context.Background()
+
+	for _, w := range []string{"taichi", ""} {
+		if _, err := s.AppendRunHistory(ctx, RunHistory{IssueID: "rh-worker", Identifier: "ONS-30", Attempt: 1, AgentAdapter: "mock",
+			Workspace: "/tmp/ONS-30", StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:01:00Z",
+			Status: "succeeded", Worker: w}); err != nil {
+			t.Fatalf("AppendRunHistory: %v", err)
+		}
+	}
+
+	byIssue, err := s.QueryRunHistoryByIssue(ctx, "rh-worker")
+	if err != nil || len(byIssue) != 2 || byIssue[0].Worker != "" || byIssue[1].Worker != "taichi" {
+		t.Errorf("QueryRunHistoryByIssue(rh-worker) = %+v, %v, want the host run without a worker and the remote run on taichi", byIssue, err)
+	}
+	recent, err := s.QueryRunHistory(ctx, RunHistoryFilter{Limit: 2})
+	if err != nil || len(recent) != 2 || recent[0].Worker != "" || recent[1].Worker != "taichi" {
+		t.Errorf("QueryRunHistory(2) = %+v, %v, want the host run without a worker and the remote run on taichi", recent, err)
 	}
 }
