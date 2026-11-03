@@ -77,7 +77,7 @@ Fields (logical):
 - `path` (workspace path; current runtime typically uses absolute paths, but relative roots are possible if configured without path separators)
 - `workspace_key` (sanitized issue identifier)
 - `created_now` (boolean, used to gate `after_create` hook; with an execution environment, whether the environment was created now)
-- `guest_path` (the workspace path inside the execution environment: the host path under `local`, `/workspace` under `smolvm`)
+- `guest_path` (the workspace path inside the execution environment: the host path under `local`, `/workspace` under `remote`)
 - `environment` (the kind that created the workspace and its instance name, recorded in `.sortie/environment`; absent for `local`)
 
 #### 4.1.5 Run Attempt
@@ -139,11 +139,11 @@ Fields (logical):
 - `dispatch_id` (string or unknown)
   - The dispatch ID of the attempt (Section 4.2), the key of its retained agent events. Empty on the recorded CI result, which no dispatch produced. Unknown where the row does not record it.
 - `environment` (kind and instance name)
-  - The execution environment instance the attempt's workspace ran in, such as a smolvm VM. Empty on the host. Shown in the runtime snapshot, not persisted.
+  - The execution environment instance the attempt's workspace ran in, for a kind that names one. Empty on the host and under `remote`. Shown in the runtime snapshot, not persisted.
 - `environment_image_sha256` (string)
-  - The SHA-256 of the image the instance was created from, for `smolvm` the pack file. Empty on the host.
+  - The SHA-256 of the image the instance was created from, for a kind that reports one. Empty on the host and under `remote`.
 - `exported_commit` (string)
-  - The commit the attempt pushed to the upstream issue branch, under `smolvm` with a repository. Empty when it pushed nothing.
+  - The commit the attempt pushed to the upstream issue branch, under `remote` with a repository. Empty when it pushed nothing.
 - `error` (optional)
 - `error_detail` (string)
   - The whole cause of a failed attempt: the full output of the step that failed it, for a git command its porcelain output and standard error, for an agent runtime its error object, capped at 16 KiB and with every registered credential masked. Empty when the failing step left no output, for an attempt that did not fail, and on a row recorded before the field was kept.
