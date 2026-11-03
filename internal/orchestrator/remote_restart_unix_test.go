@@ -763,6 +763,22 @@ func TestRemoteAttemptWithoutAGrantNamesNoWorker(t *testing.T) {
 	}
 }
 
+// sawEvent waits until the event loop took the agent's first event, so
+// the record written at shutdown keeps it.
+func (h *restartHarness) sawEvent(p *sortieProcess) {
+	h.t.Helper()
+	waittest.Until(h.t, func() error {
+		snap, err := p.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 1 || snap.Running[0].LastAgentTimestamp.IsZero() {
+			return errors.New("no agent event seen yet")
+		}
+		return nil
+	})
+}
+
 // backdate moves ONS-30's recorded run back in time, as if it had started
 // started ago and its last agent event came lastEvent ago. The record is
 // the only clock a restart carries, so this is the restart of a run that
@@ -824,6 +840,7 @@ func TestRestartKeepsARunOlderThanTheStallTimeout(t *testing.T) {
 			}()
 			waittest.Receive(t, w.holding, "the agent in the middle of its turn")
 			h.recorded(first, nil)
+			h.sawEvent(first)
 			dispatchID := h.dispatchID(first)
 			h.stopAndGo(first)
 			h.backdate(tt.started, tt.lastEvent)
@@ -854,6 +871,7 @@ func TestRestartStallsAnAdoptedRunSilentForTheTimeout(t *testing.T) {
 	}()
 	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
 	h.recorded(first, nil)
+	h.sawEvent(first)
 	h.stopAndGo(first)
 	waittest.Receive(t, worked, "the worker gone silent")
 	// Scaled down: the run's last event is 16 stall timeouts old.
