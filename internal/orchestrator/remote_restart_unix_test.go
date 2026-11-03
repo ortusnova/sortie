@@ -616,6 +616,12 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
 	first := h.start()
+	// The retry may fire before the worker checks in, and then waits a
+	// poll interval for one; once the worker is in, run it now.
+	w.checkIn()
+	if got := first.o.RetryNowFunc()(t.Context(), "ONS-30"); got.Status != RetryNowDue && got.Status != RetryNowNotFound {
+		t.Fatalf("retry now = %+v, want it due or already dispatched", got)
+	}
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)

@@ -542,8 +542,8 @@ func (w *fakeWorker) flow(name string) (string, string) {
 	return f.URL + "/jobs/" + url.PathEscape(w.offer.Job.ID) + "/attempts/" + fmt.Sprint(w.offer.Job.Attempt), f.Token
 }
 
-// take checks in and polls until it holds a job.
-func (w *fakeWorker) take() {
+// checkIn declares the worker's capacity to Sortie.
+func (w *fakeWorker) checkIn() {
 	w.t.Helper()
 	resp := w.post("/api/v1/workers/checkin", map[string]any{
 		"os": "linux", "arch": "x86_64", "kvm": true, "nested": !w.noNested, "backends": []string{"smolvm"},
@@ -553,6 +553,12 @@ func (w *fakeWorker) take() {
 	if resp.StatusCode != http.StatusOK {
 		w.t.Fatalf("checkin: %d", resp.StatusCode)
 	}
+}
+
+// take checks in and polls until it holds a job.
+func (w *fakeWorker) take() {
+	w.t.Helper()
+	w.checkIn()
 	waittest.Until(w.t, func() error {
 		if w.ended != nil && w.ended() {
 			w.t.Fatal("the run ended before its job was offered")
