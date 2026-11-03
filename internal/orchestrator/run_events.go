@@ -378,10 +378,11 @@ func (b *runEventBuffer) retain(e RunEvent) {
 }
 
 // retainEvent adds event to the run's buffer. It does nothing for an entry
-// with no buffer, a token_usage event, and a notification or other message
-// whose text is blank, because those carry nothing to show an operator.
+// with no buffer, a token_usage event, a tool_started event, whose call its
+// tool_result shows, and a notification or other message whose text is
+// blank, because those carry nothing to show an operator.
 func retainEvent(entry *RunningEntry, event domain.AgentEvent) {
-	if entry.events == nil || event.Type == domain.EventTokenUsage {
+	if entry.events == nil || event.Type == domain.EventTokenUsage || event.Type == domain.EventToolStarted {
 		return
 	}
 	if (event.Type == domain.EventNotification || event.Type == domain.EventOtherMessage) &&

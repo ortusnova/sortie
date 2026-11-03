@@ -25,6 +25,7 @@ type ReconcileStore interface {
 	AppendRunHistory(ctx context.Context, run persistence.RunHistory) (persistence.RunHistory, error)
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
+	GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error)
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
 	DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
@@ -90,6 +91,11 @@ type ReconcileParams struct {
 	// StallTimeoutMS is the configured stall detection threshold.
 	// If <= 0, stall detection is skipped entirely.
 	StallTimeoutMS int
+
+	// ToolCallTimeoutMS is the stall threshold of a run inside a tool call
+	// whose worker shows it alive (State.WorkerLive). It applies only when
+	// longer than StallTimeoutMS.
+	ToolCallTimeoutMS int
 
 	// MaxRetryBackoffMS is the configured cap for exponential backoff
 	// delay (from config.Agent.MaxRetryBackoffMS). Used when scheduling
@@ -410,13 +416,13 @@ func reconcileOverdueRetries(state *State, params ReconcileParams, log *slog.Log
 }
 
 // reconcileStalled cancels running entries whose last activity exceeds the
-// stall timeout and schedules an exponential-backoff retry for each.
+// stall timeout and schedules an exponential-backoff retry for each. A run
+// inside a tool call whose worker shows it alive is measured against the
+// tool-call timeout instead.
 func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ctx context.Context, now time.Time, metrics domain.Metrics) {
 	if params.StallTimeoutMS <= 0 {
 		return
 	}
-
-	stallThreshold := int64(params.StallTimeoutMS)
 
 	for issueID, entry := range state.Running {
 		// A held run is silent because a person is working in it, and
@@ -427,15 +433,27 @@ func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ct
 
 		entryLog := logging.WithIssue(log, issueID, entry.Identifier)
 
+		timeoutMS, toolCallBound := stallTimeout(entry, params.StallTimeoutMS, params.ToolCallTimeoutMS,
+			workerLive(state, issueID, now))
 		elapsedMS := now.Sub(stallReference(entry)).Milliseconds()
-		if elapsedMS <= stallThreshold {
+		if elapsedMS <= int64(timeoutMS) {
 			continue
 		}
 
-		entryLog.Warn("stall detected, cancelling worker",
+		attrs := []any{
 			slog.Int64("elapsed_ms", elapsedMS),
 			slog.Int("stall_timeout_ms", params.StallTimeoutMS),
-		)
+		}
+		if since, open := inToolCallSince(entry); open {
+			attrs = append(attrs,
+				slog.Int64("in_tool_call_ms", now.Sub(since).Milliseconds()),
+				slog.Bool("tool_call_bound", toolCallBound),
+			)
+			if toolCallBound {
+				attrs = append(attrs, slog.Int("tool_call_timeout_ms", timeoutMS))
+			}
+		}
+		entryLog.Warn("stall detected, cancelling worker", attrs...)
 		stallRunningEntry(ctx, state, issueID, entry, params, log, metrics, "")
 	}
 }

@@ -608,6 +608,32 @@ func TestNewServiceConfig(t *testing.T) {
 		assertIntEqual(t, "Agent.StallTimeoutMS", 300000, cfg.Agent.StallTimeoutMS)
 	})
 
+	t.Run("ToolCallTimeout", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := NewServiceConfig(map[string]any{"agent": map[string]any{"kind": "claude-code"}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertIntEqual(t, "Agent.ToolCallTimeoutMS default", 5400000, cfg.Agent.ToolCallTimeoutMS)
+
+		for _, v := range []any{0, 7200000, "600000"} {
+			cfg, err := NewServiceConfig(map[string]any{"agent": map[string]any{"tool_call_timeout_ms": v}})
+			if err != nil {
+				t.Fatalf("tool_call_timeout_ms %v: unexpected error: %v", v, err)
+			}
+			want := map[any]int{0: 0, 7200000: 7200000, "600000": 600000}[v]
+			assertIntEqual(t, "Agent.ToolCallTimeoutMS", want, cfg.Agent.ToolCallTimeoutMS)
+		}
+
+		for _, v := range []any{-1, "abc"} {
+			_, err := NewServiceConfig(map[string]any{"agent": map[string]any{"tool_call_timeout_ms": v}})
+			var cfgErr *ConfigError
+			if !errors.As(err, &cfgErr) || cfgErr.Field != "agent.tool_call_timeout_ms" {
+				t.Errorf("tool_call_timeout_ms %v: error = %v, want a ConfigError on agent.tool_call_timeout_ms", v, err)
+			}
+		}
+	})
+
 	t.Run("DBPath/Absent", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := NewServiceConfig(map[string]any{})

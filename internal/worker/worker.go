@@ -8,6 +8,7 @@ package worker
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"sort"
@@ -398,8 +399,8 @@ type Matcher struct {
 	pending []Job
 	leased  map[string]Job
 	ends    map[string]chan Outcome
-	// granted holds, per queued job, the channel its worker's ID
-	// arrives on when it is leased.
+	// granted holds, per submitted job until it ends, the channel its
+	// worker's ID arrives on when it is leased.
 	granted map[string]chan string
 	// steps holds the step each leased job last reported.
 	steps map[string]Step
@@ -461,7 +462,9 @@ func (m *Matcher) Submit(j Job) <-chan Outcome {
 }
 
 // Granted returns the channel the ID of the worker that leases the
-// submitted job arrives on, once; nil for a job not queued.
+// submitted job arrives on, once; nil for a job not submitted or already
+// ended. A call after the grant still returns it, with the ID waiting, so
+// a poll between Submit and Granted loses nothing.
 func (m *Matcher) Granted(jobID string) <-chan string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -560,16 +563,20 @@ func misfits(w *Worker, j Job) []string {
 	}
 	a, r := w.Available, j.Requires
 	if a.CPU < r.CPU {
-		out = append(out, fmt.Sprintf("%g of %g CPUs free", a.CPU, r.CPU))
+		out = append(out, fmt.Sprintf("%g of %g CPUs free", hundredths(a.CPU), r.CPU))
 	}
 	if a.MemGiB < r.MemGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB memory free", a.MemGiB, r.MemGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB memory free", hundredths(a.MemGiB), r.MemGiB))
 	}
 	if a.DiskGiB < r.DiskGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB disk free", a.DiskGiB, r.DiskGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB disk free", hundredths(a.DiskGiB), r.DiskGiB))
 	}
 	return out
 }
+
+// hundredths rounds what is free to hundredths, as a worker declares it:
+// charging jobs against it leaves float noise (11.430000000000007).
+func hundredths(x float64) float64 { return math.Round(x*100) / 100 }
 
 // capable reports whether w is not gone and declares every capability
 // j requires, whatever it has free.
@@ -660,7 +667,8 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 		m.leased[j.ID] = j
 		delete(m.steps, j.ID)
 		if ch, ok := m.granted[j.ID]; ok {
-			delete(m.granted, j.ID)
+			// Buffered for the one grant of the submission, which left
+			// the queue above; endLocked drops the channel.
 			ch <- workerID
 		}
 		w.take(j.Requires)

@@ -203,10 +203,10 @@ A recorded value is written in the statement that writes the share's cost, and a
 | `issue_id`    | TEXT    | Tracker-internal issue ID (composite PK with `kind`)          |
 | `kind`        | TEXT    | Reaction kind; one row per issue per kind                     |
 | `fingerprint` | TEXT    | The observed value this kind deduplicates on                  |
-| `dispatched`  | INTEGER | `1` when the action for this fingerprint has been performed   |
+| `dispatched`  | INTEGER | How many times the action for this fingerprint has been dispatched; non-zero when it has been performed. A kind that reads it as a flag sees only zero or not |
 | `updated_at`  | TEXT    | ISO-8601 timestamp                                            |
 
-Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action.
+Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action. Each dispatch adds one; the merge-conflict reaction reads the count to bound the rebase runs one head gets across restarts.
 
 What the fingerprint holds is defined by the owning kind, not by this table: a digest of the comment set last acted on, the git ref last checked, a journal high-water mark, or a merge commit identifier, whichever value identifies "the same observation" for that kind. The column is opaque text and this schema attaches no meaning to it beyond equality.
 
@@ -226,7 +226,7 @@ Cleanup is owned by an active merge-completion pass. Such a pass deletes the obs
 | `kind`               | TEXT    | Reaction kind that escalated; one row per issue per kind                                                    |
 | `subject`            | TEXT    | What the latest escalation judged: the pull request head, the comment set fingerprint, the merge fingerprint, the merge commit, or the pull request identity; empty when it has none. Defaults to empty |
 | `escalated_at`       | TEXT    | RFC 3339 with nanoseconds; NULL once the escalation ended                                                   |
-| `escalation_trigger` | TEXT    | `budget_exhausted`, `triage`, `refused`, or `missing_merge_commit`                                          |
+| `escalation_trigger` | TEXT    | `budget_exhausted`, `triage`, `refused`, `missing_merge_commit`, or `unresolved`                            |
 | `attempts`           | INTEGER | The kind's attempt counter at the escalation. Defaults to `0`                                               |
 | `pr_number`          | INTEGER | Pull request number                                                                                         |
 | `pr_owner`           | TEXT    | Pull request owner                                                                                          |

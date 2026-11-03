@@ -1401,7 +1401,7 @@ func TestReconcileBotReviewComments_CoexistsWithReview(t *testing.T) {
 	// The fingerprint upsert is per-tick bookkeeping that runs before the
 	// arbitration decision, so it still records the observed comment set;
 	// only the dispatched flag distinguishes a deferral from a dispatch.
-	if store.fingerprints[botKey].dispatched {
+	if store.fingerprints[botKey].dispatches > 0 {
 		t.Error("bot-review fingerprint marked dispatched; want undispatched after a deferral")
 	}
 

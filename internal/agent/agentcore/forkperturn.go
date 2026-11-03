@@ -226,7 +226,30 @@ type ForkPerTurnSession struct {
 	// to a force kill. Set by NewForkPerTurnSession from the operator's
 	// configured stop grace.
 	stopGrace time.Duration
+
+	// newTimer starts the first-event bound's timer. Set by
+	// NewForkPerTurnSession; overridden only by tests in this package,
+	// which drive the bound from their own clock.
+	newTimer func(time.Duration) turnTimer
 }
+
+// turnTimer is a timer a turn arms, restarts and stops: a [time.Timer]
+// outside tests.
+type turnTimer interface {
+	C() <-chan time.Time
+	Reset(d time.Duration)
+	Stop()
+}
+
+type realTimer struct{ t *time.Timer }
+
+func newRealTimer(d time.Duration) turnTimer { return realTimer{t: time.NewTimer(d)} }
+
+func (r realTimer) C() <-chan time.Time { return r.t.C }
+
+func (r realTimer) Reset(d time.Duration) { r.t.Reset(d) }
+
+func (r realTimer) Stop() { r.t.Stop() }
 
 // startWithOwnedPipes is the turn's process start. Only a test replaces
 // it, to return a start failure no real launch can be made to produce at
@@ -279,6 +302,7 @@ func NewForkPerTurnSession(
 		logger:     logger,
 		drainGrace: procutil.DefaultDrainGrace,
 		stopGrace:  procutil.StopGrace(stopGraceMS),
+		newTimer:   newRealTimer,
 	}
 }
 
@@ -489,11 +513,11 @@ func (s *ForkPerTurnSession) RunTurn(
 
 	// A positive timeout is armed from the start until the first accepted
 	// line or the reap; a nil channel keeps the select arm inert.
-	var firstEvent *time.Timer
+	var firstEvent turnTimer
 	var firstEventC <-chan time.Time
 	if s.hooks.FirstEventTimeout > 0 {
-		firstEvent = time.NewTimer(s.hooks.FirstEventTimeout)
-		firstEventC = firstEvent.C
+		firstEvent = s.newTimer(s.hooks.FirstEventTimeout)
+		firstEventC = firstEvent.C()
 		defer firstEvent.Stop()
 	}
 	disarm := func() {

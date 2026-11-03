@@ -31,7 +31,9 @@ type normalizedUpdate struct {
 }
 
 // applySessionUpdate normalizes one decoded session/update variant,
-// mutating tracker for the two variants that begin or end a tool call.
+// mutating tracker for the two variants that begin or end a tool call. A
+// tool call that begins in progress is published as tool_started, so the
+// orchestrator knows the agent is inside it while it emits nothing.
 // tracker is the session's own tool tracker; the pump is its only
 // caller, so no synchronization is needed here.
 func applySessionUpdate(tracker *agentcore.ToolTracker, ev sessionUpdateEvent) normalizedUpdate {
@@ -72,8 +74,24 @@ func applySessionUpdate(tracker *agentcore.ToolTracker, ev sessionUpdateEvent) n
 		return normalizedUpdate{}
 
 	case updateToolCall:
-		tracker.Begin(string(ev.toolCallBegin.ToolCallID), toolCallOf(ev.toolCallBegin))
-		return normalizedUpdate{}
+		id := string(ev.toolCallBegin.ToolCallID)
+		call := toolCallOf(ev.toolCallBegin)
+		tracker.Begin(id, call)
+		if status := ev.toolCallBegin.Status; status != nil &&
+			(*status == toolCallStatusCompleted || *status == toolCallStatusFailed) {
+			return normalizedUpdate{}
+		}
+		return normalizedUpdate{
+			event: domain.AgentEvent{
+				Type:         domain.EventToolStarted,
+				Timestamp:    now,
+				ToolName:     call.Name,
+				ToolKind:     call.Kind,
+				ToolArgument: call.Argument,
+				ToolCallID:   id,
+			},
+			hasEvent: true,
+		}
 
 	case updateToolCallUpdate:
 		if ev.toolCallUpdate.Status == nil {
@@ -98,6 +116,7 @@ func applySessionUpdate(tracker *agentcore.ToolTracker, ev sessionUpdateEvent) n
 					ToolArgument:   call.Argument,
 					ToolDurationMS: durationMS,
 					ToolError:      *ev.toolCallUpdate.Status == toolCallStatusFailed,
+					ToolCallID:     string(ev.toolCallUpdate.ToolCallID),
 					Message:        redact.Truncate(title, messageTruncateLimit),
 				},
 				hasEvent: true,

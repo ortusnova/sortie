@@ -938,6 +938,37 @@ func TestGrantedNamesTheWorker(t *testing.T) {
 	}
 }
 
+// A poll that leases the job before its submitter asks for the grant
+// still names the worker: a submitter's Granted call races the workers'
+// polls.
+func TestGrantedAfterThePollNamesTheWorker(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	m := newM(c)
+	m.CheckIn("taichi", host())
+	m.Submit(job("ONS-30", 1))
+	if _, ok, err := m.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll = %v %v", ok, err)
+	}
+	granted := m.Granted("ONS-30")
+	if granted == nil {
+		t.Fatal("Granted after the poll = nil, want the grant's channel")
+	}
+	select {
+	case id := <-granted:
+		if id != "taichi" {
+			t.Fatalf("granted to %q, want taichi", id)
+		}
+	default:
+		t.Fatal("no worker ID on the grant's channel after the poll")
+	}
+	if err := m.Report("taichi", "ONS-30", 1, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if ch := m.Granted("ONS-30"); ch != nil {
+		t.Error("Granted after the job ended = a channel, want nil")
+	}
+}
+
 // A restarted matcher that adopts a job the worker still runs accepts
 // the worker's heartbeat and report for it, as if it had granted it;
 // unrenewed, the adopted lease expires as any other.
@@ -1018,6 +1049,23 @@ func TestPlaceable(t *testing.T) {
 	}
 	if !m.Queued("ONS-54") || !m.Holds("ONS-54") || m.Queued("ONS-55") || m.Holds("ONS-55") {
 		t.Fatal("Queued/Holds do not name ONS-54 alone")
+	}
+}
+
+// A waiting job's reason gives what is free in hundredths, as the worker
+// declared it, not the float noise of the jobs charged against it (live,
+// 2026-11-03: "11.430000000000007 of 20 GiB disk free").
+func TestWaitingRoundsWhatIsFree(t *testing.T) {
+	m := newM(&clock{t: time.Unix(0, 0)})
+	d := host()
+	d.Free.DiskGiB = 71.43
+	m.CheckIn("taichi", d)
+	for _, id := range []string{"ONS-1", "ONS-2", "ONS-3"} {
+		m.Submit(Job{ID: id, Requires: Requires{DiskGiB: 20}})
+	}
+	want := []string{"worker taichi: 11.43 of 20 GiB disk free"}
+	if why, ok := m.Placeable(Requires{DiskGiB: 20}); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() = %v, %v; want %v", why, ok, want)
 	}
 }
 

@@ -182,6 +182,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `agent.turn_timeout_ms`: positive integer, default `3600000`; the deadline the orchestrator places on the context of every agent turn it runs, self-review turns included; the expiry of that deadline cancels the turn's context, and the attempt then fails with the `turn_timeout` failure class, retryable per the retry path, once the adapter returns from the cancelled turn, which for an adapter that does not observe a done context promptly is later than the deadline; `turn_timeout` applies only to a turn the adapter reports cancelled after the deadline passed while the worker context stayed live, and any other report stands; a non-positive value is rejected when the config is parsed, so startup, `sortie validate`, and the live-reload fail-safe path all reject it
 - `agent.read_timeout_ms`: integer, default `5000`
 - `agent.stall_timeout_ms`: integer, default `300000`
+- `agent.tool_call_timeout_ms`: non-negative integer, default `5400000`
 - `agent.max_concurrent_agents`: integer, default `10`
 - `agent.max_turns`: integer, default `20`
 - `agent.max_retry_backoff_ms`: integer, default `300000` (5m)

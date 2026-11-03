@@ -148,6 +148,12 @@ type RunningEntry struct {
 	WorkerQueued    bool
 	WorkerGrantedAt time.Time
 
+	// AdoptedAt is when this process adopted a run a previous one left
+	// with its worker ([adoptIssue]). The run's events while no process
+	// ran are not seen, so stall detection measures silence from no
+	// earlier than this instant. Runtime-only.
+	AdoptedAt time.Time
+
 	// TurnClock bounds the run's turns; a hold pauses it. Shared with the
 	// worker goroutine, and safe for concurrent use.
 	TurnClock *turnClock
@@ -161,6 +167,11 @@ type RunningEntry struct {
 	LastAgentEvent domain.AgentEventType
 
 	LastAgentTimestamp time.Time
+
+	// OpenToolCalls maps the ID of each tool call the agent began and has
+	// not ended to when it began. A turn's end ends them all. Nil when none
+	// is open.
+	OpenToolCalls map[string]time.Time
 
 	LastAgentMessage string
 
@@ -770,6 +781,11 @@ type PendingReaction struct {
 	// WatchRestartedAt is when a retry-slot deferral last restarted the
 	// entry's watch window; zero when none has.
 	WatchRestartedAt time.Time
+
+	// SameHeadSince is when a merge-conflict pass first found the head it
+	// had dispatched for still conflicting with no run of the issue in
+	// flight; zero otherwise. Runtime-only.
+	SameHeadSince time.Time
 
 	// PullRequestURL is the pull request's web page as the latest read of
 	// it reported; empty until a read reports one.
@@ -1472,6 +1488,17 @@ type State struct {
 	// event-loop goroutine.
 	StallTimeoutMS int
 
+	// ToolCallTimeoutMS mirrors config.Agent.ToolCallTimeoutMS as of the
+	// latest poll tick: the stall timeout of a run inside a tool call whose
+	// worker shows it alive. Written only on the event-loop goroutine.
+	ToolCallTimeoutMS int
+
+	// WorkerLive reports whether the worker of the running issue with the
+	// given ID shows its run alive at the given instant: under the remote
+	// environment kind, whether its job's lease is current. Nil treats
+	// every run's worker as live. Written only on the event-loop goroutine.
+	WorkerLive func(issueID string, now time.Time) bool
+
 	// RetainedEvents holds the event buffer of every running run. Nil
 	// retains nothing.
 	RetainedEvents *RunEventLog
@@ -1990,6 +2017,14 @@ type SnapshotRunningEntry struct {
 	// run: the instant the stall timeout is measured from.
 	StallReference time.Time `json:"-"`
 
+	// StallToolCallBound reports that the stall timeout is the tool-call
+	// bound, because a tool call is open and the run's worker shows it alive.
+	StallToolCallBound bool `json:"-"`
+
+	// InToolCallSince is when the earliest tool call still open began; zero
+	// when no tool call is open.
+	InToolCallSince time.Time `json:"in_tool_call_since"`
+
 	// Held reports a hold in effect; HoldReason, Holder, and HeldSince
 	// describe it and are empty otherwise. HeldTotal counts every hold of
 	// the run, the current one up to the snapshot included.
@@ -2346,7 +2381,7 @@ func SnapshotIssueUsageOf(usage *persistence.IssueTokenUsage) *SnapshotIssueUsag
 
 // stallReference returns the instant the stall timeout of entry is measured
 // from: its last agent event, else the start of the run, or the end of its
-// last hold when that is later. The stall check and
+// last hold, the grant of its worker or its adoption when that is later. The stall check and
 // the snapshot's stall instants share it so they cannot disagree.
 func stallReference(entry *RunningEntry) time.Time {
 	ref := entry.StartedAt
@@ -2359,7 +2394,30 @@ func stallReference(entry *RunningEntry) time.Time {
 	if entry.WorkerGrantedAt.After(ref) {
 		ref = entry.WorkerGrantedAt
 	}
+	if entry.AdoptedAt.After(ref) {
+		ref = entry.AdoptedAt
+	}
 	return ref
+}
+
+// stallTimeout returns the stall timeout of entry in milliseconds and
+// whether it is the tool-call bound: toolCallMS, when it is longer than
+// stallMS, while a tool call is open and live reports the run's worker
+// shows it alive; stallMS otherwise. A non-positive stallMS turns stall
+// detection off, so it is returned unchanged. The stall check and the
+// snapshot's stall instants share it so they cannot disagree.
+func stallTimeout(entry *RunningEntry, stallMS, toolCallMS int, live bool) (timeoutMS int, toolCall bool) {
+	if stallMS <= 0 || toolCallMS <= stallMS || len(entry.OpenToolCalls) == 0 || !live {
+		return stallMS, false
+	}
+	return toolCallMS, true
+}
+
+// workerLive reports whether state's WorkerLive shows the worker of the
+// running issue issueID alive at now; a nil WorkerLive shows every worker
+// alive.
+func workerLive(state *State, issueID string, now time.Time) bool {
+	return state.WorkerLive == nil || state.WorkerLive(issueID, now)
 }
 
 // stallInstants returns the instants half and all of timeoutMS after
@@ -2434,7 +2492,10 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			maps.Copy(modelRequests, entry.RequestsByModel)
 		}
 		identity := maskedIdentity(issueIdentityOf(entry.Issue))
-		quietAt, stallAt := stallInstants(stallReference(entry), state.StallTimeoutMS)
+		timeoutMS, toolCallBound := stallTimeout(entry, state.StallTimeoutMS, state.ToolCallTimeoutMS,
+			workerLive(state, entry.Issue.ID, now))
+		quietAt, stallAt := stallInstants(stallReference(entry), timeoutMS)
+		inToolCall, _ := inToolCallSince(entry)
 		liveCost, liveStatus := pricing.PriceSession(spendOfRunningEntry(entry), state.Rates)
 		snap.Running = append(snap.Running, SnapshotRunningEntry{
 			IssueID:             entry.Issue.ID,
@@ -2487,18 +2548,20 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			UsageAttribution:    entry.UsageAttribution,
 			TokensPending: entry.UsageArrival == registry.UsageArrivalTurnEnd &&
 				entry.UsageMeasured && !isTurnTerminalEvent(entry.LastAgentEvent),
-			TokensAwaited:    tokensAwaited,
-			IssueUsage:       SnapshotIssueUsageOf(entry.IssueUsage),
-			UnaccountedTurns: entry.UnaccountedTurns,
-			DispatchID:       entry.DispatchID,
-			QuietAt:          quietAt,
-			StallAt:          stallAt,
-			StallReference:   stallReference(entry),
-			Held:             !entry.HeldSince.IsZero(),
-			HoldReason:       entry.HoldReason,
-			Holder:           entry.Holder,
-			HeldSince:        entry.HeldSince,
-			HeldTotal:        holdStateOf(entry.Issue.ID, entry, now).HeldTotal,
+			TokensAwaited:      tokensAwaited,
+			IssueUsage:         SnapshotIssueUsageOf(entry.IssueUsage),
+			UnaccountedTurns:   entry.UnaccountedTurns,
+			DispatchID:         entry.DispatchID,
+			QuietAt:            quietAt,
+			StallAt:            stallAt,
+			StallReference:     stallReference(entry),
+			StallToolCallBound: toolCallBound,
+			InToolCallSince:    inToolCall,
+			Held:               !entry.HeldSince.IsZero(),
+			HoldReason:         entry.HoldReason,
+			Holder:             entry.Holder,
+			HeldSince:          entry.HeldSince,
+			HeldTotal:          holdStateOf(entry.Issue.ID, entry, now).HeldTotal,
 		})
 
 		if !entry.StartedAt.IsZero() {

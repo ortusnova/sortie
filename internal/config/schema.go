@@ -96,6 +96,7 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			{Name: "turn_timeout_ms", Type: FieldInt},
 			{Name: "read_timeout_ms", Type: FieldInt},
 			{Name: "stall_timeout_ms", Type: FieldInt},
+			{Name: "tool_call_timeout_ms", Type: FieldInt},
 			{Name: "max_concurrent_agents", Type: FieldInt},
 			{Name: "max_turns", Type: FieldInt},
 			{Name: "max_retry_backoff_ms", Type: FieldInt},
