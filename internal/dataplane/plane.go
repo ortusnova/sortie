@@ -57,6 +57,13 @@ const StdioProtocol = "sortie-stdio/1"
 // MaxPRFile bounds the .sortie/pr.json a returned result carries.
 const MaxPRFile = 64 << 10
 
+// MaxStatusFile bounds the .sortie/status a returned result carries.
+const MaxStatusFile = 4 << 10
+
+// MaxCriteriaFile bounds the .sortie/criteria.json a returned result
+// carries.
+const MaxCriteriaFile = 64 << 10
+
 // ErrClosed reports an attempt that ended before what was waited for
 // arrived.
 var ErrClosed = errors.New("dataplane: the attempt ended")
@@ -82,6 +89,14 @@ type Result struct {
 	// PR is the agent's .sortie/pr.json, nil when the worker returned
 	// none.
 	PR []byte
+
+	// Status is the agent's .sortie/status, nil when the worker returned
+	// none.
+	Status []byte
+
+	// Criteria is the agent's .sortie/criteria.json, the verdict of a
+	// criteria review, nil when the worker returned none.
+	Criteria []byte
 }
 
 // Options configures one attempt.
@@ -529,10 +544,10 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	unbounded(w)
-	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+(64<<10))
+	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxStatusFile+MaxCriteriaFile+(64<<10))
 	parts, err := r.MultipartReader()
 	if err != nil {
-		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle and pr")
+		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr, status and criteria")
 		return
 	}
 	var res Result
@@ -565,17 +580,24 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			res.Bundle = path
-		case "pr":
-			body, err := io.ReadAll(io.LimitReader(part, MaxPRFile+1))
-			if err != nil || len(body) > MaxPRFile {
+		case "pr", "status", "criteria":
+			name, limit, dst := part.FormName(), int64(MaxPRFile), &res.PR
+			switch name {
+			case "status":
+				limit, dst = MaxStatusFile, &res.Status
+			case "criteria":
+				limit, dst = MaxCriteriaFile, &res.Criteria
+			}
+			body, err := io.ReadAll(io.LimitReader(part, limit+1))
+			if err != nil || int64(len(body)) > limit {
 				cleanup()
-				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", "the pr part exceeds 64 KiB")
+				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", fmt.Sprintf("the %s part exceeds %d bytes", name, limit))
 				return
 			}
-			res.PR = body
+			*dst = body
 		default:
 			cleanup()
-			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr", part.FormName()))
+			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, status, criteria", part.FormName()))
 			return
 		}
 	}

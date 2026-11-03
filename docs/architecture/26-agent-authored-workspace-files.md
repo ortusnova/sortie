@@ -71,6 +71,18 @@ Under `environment.kind: smolvm` with `environment.smolvm.repository.provider` s
 
 The file has no effect under the `local` kind, or without a repository provider: there the agent opens its own pull request.
 
+### 21.3a `.sortie/criteria.json`
+
+A run of a `gate: criteria` rule under plan control records its verdict on each acceptance criterion of the story:
+
+```json
+{"criteria": [{"criterion": "make test passes", "verdict": "met", "evidence": "make test: 4846 passed"}]}
+```
+
+- `verdict` is `met`, `not-met`, `live-proof` or `unsettled`. Only a file whose every criterion is `met` with non-empty `evidence` passes the check. A missing, malformed or empty file, or any other verdict, fails it: the run ends as if the agent wrote `blocked`, with a statement naming the criteria not met. A file whose only criteria not met are `live-proof` holds the merge for a live proof.
+- The latest check's verdict is kept per story, and auto-merge reads it before every merge, including after a restart.
+- Each run removes a file an earlier run left before it starts. The read takes at most 65536 bytes, with the same link refusal as the other files here. Under the remote kind the worker returns the file, and `.sortie/status`, with the issue branch (`criteria` and `status` result parts).
+
 ### 21.4 Sortie-owned entries in a VM workspace
 
 Two other entries in a `smolvm` workspace are written by Sortie, not by the agent:

@@ -707,9 +707,11 @@ func (w *fakeWorker) giveBack() {
 	part, _ := mw.CreateFormFile("bundle", "out.bundle")
 	raw, _ := os.ReadFile(bundle) //nolint:gosec // G304: the test's own file
 	_, _ = part.Write(raw)
-	if pr, err := os.ReadFile(filepath.Join(w.clone, ".sortie", "pr.json")); err == nil {
-		part, _ := mw.CreateFormFile("pr", "pr.json")
-		_, _ = part.Write(pr)
+	for _, f := range []struct{ part, name string }{{"pr", "pr.json"}, {"status", "status"}, {"criteria", "criteria.json"}} {
+		if data, err := os.ReadFile(filepath.Join(w.clone, ".sortie", f.name)); err == nil { //nolint:gosec // G304: the test's own clone
+			part, _ := mw.CreateFormFile(f.part, f.name)
+			_, _ = part.Write(data)
+		}
 	}
 	_ = mw.Close()
 	f := w.offer.Flows["bundles"]
@@ -874,6 +876,40 @@ func TestRemoteRunMatchesTheColocatedRun(t *testing.T) {
 	_, store, tracker := handOff(t, remote.result, &sequence)
 	if len(tracker.transitionCalls) != 1 || tracker.transitionCalls[0].TargetState != "Human Review" || store.runHistories[0].Status != "succeeded" {
 		t.Errorf("handoff transitions %+v, history %+v", tracker.transitionCalls, store.runHistories)
+	}
+}
+
+// A remote run's agent writes its status and its review verdict in the
+// worker's machine: the worker returns them with the issue branch, and
+// the run ends as if the agent had written them here. A review that
+// stopped blocked in a worker's machine is a refusal, not a pass.
+func TestRemoteRunReturnsTheAgentsStatusAndVerdict(t *testing.T) {
+	f := newGitFixture(t)
+	const verdict = `{"criteria": [{"criterion": "a", "verdict": "not-met", "evidence": "the chain timed out"}]}`
+	run := runRemoteONS30(t, f, nil, func(w *fakeWorker, _ context.CancelCauseFunc) {
+		w.take()
+		w.seed()
+		w.session()
+		dir := filepath.Join(w.clone, ".sortie")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "status"), []byte("blocked\nWhich host list is right?\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "criteria.json"), []byte(verdict), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w.giveBack()
+	})
+	if run.result.ExitKind != WorkerExitNormal || run.result.Error != nil {
+		t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+	}
+	if !run.result.SoftStop || run.result.SoftStopReason != "blocked" || !strings.Contains(run.result.SoftStopStatement.Text, "Which host list") {
+		t.Errorf("soft stop %v %q %q, want blocked with the agent's question", run.result.SoftStop, run.result.SoftStopReason, run.result.SoftStopStatement.Text)
+	}
+	if string(run.result.CriteriaFile) != verdict {
+		t.Errorf("criteria file %q, want the agent's verdict", run.result.CriteriaFile)
 	}
 }
 

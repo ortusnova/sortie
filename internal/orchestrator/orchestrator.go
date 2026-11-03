@@ -1230,7 +1230,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
-		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
+		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter, o.store),
 		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
 		ClickProofs:                       planClickProofs(cfg, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,

@@ -1045,6 +1045,14 @@ type remoteRepository struct {
 
 var _ Repository = (*remoteRepository)(nil)
 
+// statusFileName is the agent's status file in .sortie.
+const statusFileName = "status"
+
+// returnedSortieFiles are the files of the agent's .sortie directory a
+// worker returns with the issue branch: the pull request suggestion, the
+// status and a review's criteria verdict.
+var returnedSortieFiles = []string{pullRequestSuggestionFile, statusFileName, CriteriaFile}
+
 // Seed builds the job's workspace seed, served on the bundles flow once
 // the job is queued.
 func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, ws environment.Workspace) error {
@@ -1063,8 +1071,10 @@ func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, 
 	if err != nil {
 		return err
 	}
-	if err := workspacekit.RemoveSortieFile(ws.HostPath, pullRequestSuggestionFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear the previous pull request suggestion: %w", err)
+	for _, name := range returnedSortieFiles {
+		if err := workspacekit.RemoveSortieFile(ws.HostPath, name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("clear the previous .sortie/%s: %w", name, err)
+		}
 	}
 	a.mu.Lock()
 	a.seed, a.seedPath = &seed, path
@@ -1095,9 +1105,12 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 	if err != nil {
 		return none, err
 	}
-	if res.PR != nil {
-		if err := workspacekit.WriteSortieFile(ws.HostPath, pullRequestSuggestionFile, res.PR); err != nil {
-			return none, fmt.Errorf("store the returned pull request suggestion: %w", err)
+	for name, data := range map[string][]byte{pullRequestSuggestionFile: res.PR, statusFileName: res.Status, CriteriaFile: res.Criteria} {
+		if data == nil {
+			continue
+		}
+		if err := workspacekit.WriteSortieFile(ws.HostPath, name, data); err != nil {
+			return none, fmt.Errorf("store the returned .sortie/%s: %w", name, err)
 		}
 	}
 	if res.Bundle == "" {

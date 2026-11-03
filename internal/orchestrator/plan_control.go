@@ -222,8 +222,11 @@ type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed
 // workflow that routes every story through the check lets Sortie merge
 // either kind. A ui story is let through as a criteria story is, and the
 // entry remembers it, so auto-merge also waits for its click-proofs (see
-// [planClickProofs]).
-func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) ReviewGateFunc {
+// [planClickProofs]). Whatever its label, the story's latest criteria
+// review must have recorded every criterion met (store, a
+// [CriteriaVerdictLoader]): a review that found one not met, or that
+// only a live proof settles, or that recorded no verdict, is not merged.
+func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter, store any) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
 	}
@@ -238,21 +241,26 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) Rev
 			return false, "", err
 		}
 		data, _ := pending.KindData.(*AutoMergeReactionData)
+		labelled := false
 		if slices.ContainsFunc(issue.Labels, isUIReviewLabel) {
 			if data != nil {
 				data.story = storyUI
 			}
-			return true, "", nil
-		}
-		if data != nil {
-			data.story = storyOther
-		}
-		for _, l := range issue.Labels {
-			if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
-				return true, "", nil
+			labelled = true
+		} else {
+			if data != nil {
+				data.story = storyOther
+			}
+			for _, l := range issue.Labels {
+				if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
+					labelled = true
+				}
 			}
 		}
-		return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
+		if !labelled {
+			return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
+		}
+		return criteriaMergeAllowed(ctx, store, pending.IssueID)
 	}
 }
 
@@ -425,6 +433,9 @@ const maxCriteriaSummary = 4000
 func handleCriteriaFailure(ctx context.Context, state *State, params HandleWorkerExitParams, entry *RunningEntry, result WorkerResult, log *slog.Logger) {
 	rule, _ := params.Dispatch.RuleByName(entry.RuleName)
 	summary := strings.TrimSpace(redact.Mask(entry.LastAgentMessage))
+	if statement := strings.TrimSpace(redact.Mask(result.SoftStopStatement.Text)); statement != "" {
+		summary = strings.TrimSpace(statement + "\n\n" + summary)
+	}
 	if len(summary) > maxCriteriaSummary {
 		summary = summary[:maxCriteriaSummary] + "…"
 	}
