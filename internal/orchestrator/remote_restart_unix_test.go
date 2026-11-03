@@ -470,8 +470,9 @@ func (w *restartWorker) session() bool {
 	return false
 }
 
-// agent is [fakeAgent] that may hold a prompt until the stream breaks.
-// It commits its two changes once, at the first prompt it works.
+// agent is [fakeAgent] that may hold a prompt, after one message, until
+// the stream breaks. It commits its two changes once, at the first prompt
+// it works.
 func (w *restartWorker) agent(start int, in io.Reader, out io.Writer, broken <-chan struct{}) error {
 	enc := json.NewEncoder(out)
 	sc := bufio.NewScanner(in)
@@ -485,6 +486,9 @@ func (w *restartWorker) agent(start int, in io.Reader, out io.Writer, broken <-c
 		w.prompts[start-1] = append(w.prompts[start-1], line.Prompt)
 		w.mu.Unlock()
 		if w.hold != nil && w.hold(start, line.Prompt) {
+			if err := enc.Encode(fakeAgentLine{Message: "working"}); err != nil {
+				return err
+			}
 			w.holdingOnce.Do(func() { close(w.holding) })
 			<-broken
 			return errStreamBroken
@@ -756,5 +760,154 @@ func TestRemoteAttemptWithoutAGrantNamesNoWorker(t *testing.T) {
 	a = &remoteAttempt{adopt: &remoteAdoption{run: persistence.RemoteRun{WorkerID: "taichi"}}}
 	if got := a.adjust(WorkerResult{}).Worker; got != "taichi" {
 		t.Errorf("Worker = %q, want taichi for an adopted attempt", got)
+	}
+}
+
+// sawEvent waits until the event loop took the agent's first event, so
+// the record written at shutdown keeps it.
+func (h *restartHarness) sawEvent(p *sortieProcess) {
+	h.t.Helper()
+	waittest.Until(h.t, func() error {
+		snap, err := p.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 1 || snap.Running[0].LastAgentTimestamp.IsZero() {
+			return errors.New("no agent event seen yet")
+		}
+		return nil
+	})
+}
+
+// backdate moves ONS-30's recorded run back in time, as if it had started
+// started ago and its last agent event came lastEvent ago. The record is
+// the only clock a restart carries, so this is the restart of a run that
+// old.
+func (h *restartHarness) backdate(started, lastEvent time.Duration) {
+	h.t.Helper()
+	ctx := context.Background()
+	store, err := persistence.Open(ctx, h.dbPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer store.Close() //nolint:errcheck // test
+	runs, err := store.LoadRemoteRuns(ctx)
+	if err != nil || len(runs) != 1 {
+		h.t.Fatalf("remote runs %+v %v, want ONS-30's", runs, err)
+	}
+	e, err := decodeRemoteRunEntry(runs[0].Entry)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if e.LastEventAt.IsZero() {
+		h.t.Fatal("the record keeps no last event")
+	}
+	now := time.Now()
+	e.StartedAt, e.LastEventAt = now.Add(-started), now.Add(-lastEvent)
+	raw, err := json.Marshal(e)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := store.UpdateRemoteRunEntry(ctx, runs[0].IssueID, string(raw)); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// run-supervision: A deploy restarts Sortie under a run older than the
+// stall timeout. The restarted Sortie measures the adopted run's silence
+// from no earlier than its adoption, so its first pass does not stop it
+// as stalled: the run goes on and hands off once. A tool call open at the
+// restart ended with the agent process the restart stopped, and the turn
+// it was in runs again.
+func TestRestartKeepsARunOlderThanTheStallTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		started, lastEvent time.Duration
+	}{
+		{"20 minutes in, its last event a minute ago", 20 * time.Minute, time.Minute},
+		{"an hour in, inside a tool call for 40 minutes", time.Hour, 40 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newRestartHarness(t, 1)
+			h.cfg.Agent.StallTimeoutMS = int((15 * time.Minute).Milliseconds())
+			w := newRestartWorker(h)
+			w.hold = func(start int, _ string) bool { return start == 1 }
+			first := h.start()
+			worked := make(chan struct{})
+			go func() {
+				defer close(worked)
+				w.run()
+			}()
+			waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+			h.recorded(first, nil)
+			h.sawEvent(first)
+			dispatchID := h.dispatchID(first)
+			h.stopAndGo(first)
+			h.backdate(tt.started, tt.lastEvent)
+
+			second := h.start()
+			h.handedOff(second)
+			waittest.Receive(t, worked, "the worker's report")
+			h.oneSessionHandedOff(second, dispatchID, 1)
+		})
+	}
+}
+
+// A run silent for longer than the stall timeout before the restart, with
+// no tool call open, is still stopped as stalled once it stays silent for
+// the timeout after its adoption; until then the running row's quiet_at
+// and stall_at count from the adoption.
+func TestRestartStallsAnAdoptedRunSilentForTheTimeout(t *testing.T) {
+	const timeout = 2 * time.Second
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	w.dieOnBreak = true
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(first, nil)
+	h.sawEvent(first)
+	h.stopAndGo(first)
+	waittest.Receive(t, worked, "the worker gone silent")
+	// Scaled down: the run's last event is 16 stall timeouts old.
+	h.backdate(30*timeout, 16*timeout)
+	h.cfg.Agent.StallTimeoutMS = int(timeout.Milliseconds())
+	h.cfg.Polling.IntervalMS = 100
+
+	adopted := time.Now()
+	second := h.start()
+	snap, err := second.o.SnapshotFunc()()
+	if err != nil || len(snap.Running) != 1 {
+		t.Fatalf("running %+v %v, want the adopted ONS-30", snap.Running, err)
+	}
+	row := snap.Running[0]
+	if row.StallAt.Before(adopted.Add(timeout)) || !row.QuietAt.Equal(row.StallAt.Add(-timeout/2)) {
+		t.Errorf("quiet_at %v, stall_at %v, want them counted from the adoption at %v", row.QuietAt, row.StallAt, adopted)
+	}
+	if row.LastAgentTimestamp.IsZero() || !row.LastAgentTimestamp.Before(adopted.Add(-15*timeout)) {
+		t.Errorf("last_event_at %v, want the recorded last event", row.LastAgentTimestamp)
+	}
+
+	var rows []persistence.RunHistory
+	waittest.Until(t, func() error {
+		if rows = h.history(second); len(rows) == 0 {
+			return errors.New("no run ended")
+		}
+		return nil
+	})
+	if len(rows) != 1 || rows[0].Error == nil || *rows[0].Error != StallCancelError {
+		t.Fatalf("run history %+v, want the one run stopped as stalled", rows)
+	}
+	ended, err := time.Parse(time.RFC3339, rows[0].CompletedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended.Before(adopted.Add(timeout).Truncate(time.Second)) {
+		t.Errorf("stopped at %v, before the stall timeout after the adoption at %v", ended, adopted)
 	}
 }
