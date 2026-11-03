@@ -243,6 +243,11 @@ type WorkerResult struct {
 	// upstream's issue branch. Empty when the run configures no
 	// repository, or its export pushed nothing.
 	ExportedCommit string
+
+	// Worker is the ID of the worker that held the run's lease under
+	// environment.kind remote. Empty when no worker took the run, and
+	// under any other kind.
+	Worker string
 }
 
 // SessionToolRegistryFunc builds the first-turn tool advertisement.

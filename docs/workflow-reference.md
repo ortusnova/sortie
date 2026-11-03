@@ -3972,10 +3972,11 @@ Sortie lists the machines at most every 30 seconds, when a request asks for the 
 | `dispatch.chains` | array of arrays of strings | Each stage chain the `next` links form, as rule names in `next` order, in the order of the rules that start them. A chain starts at a rule that carries `next` and that no `next` names, and ends at a rule without `next`. Chains that share a tail list it in each chain. A rule that carries no `next` and that no `next` names belongs to no chain. `[]` when no rule carries `next`. |
 | `dispatch.max_consecutive_hops` | integer or `null` | The value `dispatch.max_consecutive_hops` writes. `null` when the key is absent. |
 | `dispatch.hop_ceiling` | integer | The limit a worker exit compares with an issue's hop count: the written `dispatch.max_consecutive_hops`, or the larger of `10` and the hops of the longest chain. With no chain no hop occurs, and the value is the ceiling a reload that adds `next` would apply. |
-| `repositories` | array of objects | The repositories `environment.smolvm` opens under `environment.kind: smolvm`, in the order written: the `repositories` list, or the single `repository` block as its one entry. `[]` when the workflow opens none. Two Sorties over one tracker project each show the repositories they run here. |
+| `repositories` | array of objects | The repositories `environment.smolvm` opens under `environment.kind: smolvm`, or `environment.remote` under `remote`, in the order written: the `repositories` list, or the single `repository` block as its one entry. `[]` when the workflow opens none. Two Sorties over one tracker project each show the repositories they run here. |
 | `repositories[].name` | string | The entry's `name`. `""` for an unnamed single `repository` block. |
 | `repositories[].dispatch` | boolean | Whether Sortie dispatches the issues that run in the repository: `false` for an entry with `dispatch: false`, whose issues another Sortie runs. |
 | `repositories[].default` | boolean | Whether an issue that names no repository runs in it: `true` for `default_repository` and for the single `repository` block. With no entry `true`, Sortie dispatches no issue that names no repository. |
+| `repositories[].requires` | object or `null` | Under `environment.kind: remote`, what a worker must declare to take a job of the repository, as the matcher requires it: `capabilities` (the repository's `requires.capabilities`, else `environment.remote.requires.capabilities`, with `environment.remote.backend` added), `cpu`, `mem_gib` and `disk_gib`, `0` when not required. A client matches a queued job to the checked-in workers with it before Sortie offers the job. `null` under any other kind. |
 | `reactions` | object | A member per reaction kind the process applies, keyed as in `reactions` of WORKFLOW.md. `{}` when it applies none. Key order carries no meaning. |
 | `reactions.ci_failure` | object or absent | Present exactly while the CI check runs, which needs both a CI provider and a source-control adapter. Holds `max_retries`, `triage`, and the escalation members. |
 | `reactions.review_comments` | object or absent | Present when the reaction was configured at startup. Holds `max_continuation_turns`, `debounce_ms`, `poll_interval_ms`, `triage`, and the escalation members. |
@@ -4170,6 +4171,7 @@ Returns issue-specific runtime and debug details for a single issue, and the iss
         "reaction_config_key": "",
         "session_id": "thread-1-turn-1",
         "ssh_host": "",
+        "worker": null,
         "stage_chain": ["specify", "implement"],
         "pr_loop": null,
         "issue_outcome": null
@@ -4323,6 +4325,8 @@ Returns the finished runs of run history, newest first, one page at a time. Ever
 | `cursor`   | A `next_cursor` value                         | The runs recorded before the last run of the previous page. |
 | `limit`    | An integer from 1 to 200, default 50          | The page size. |
 
+`ended_since` and `ended_until` select by when an issue's work ended, not by when a run finished: a run that finished in the range on an issue still in progress, or one Sortie observed no ending for, is not selected. To read the runs that finished in a range, use `since` and `until`. Encode a `+` offset as `%2B`, or write the time in UTC with `Z`: a bare `+` in a query string reads as a space, and the time is then refused with `400`.
+
 The response is ordered by descending `run_id`, the order Sortie recorded the runs. Each run is appended when it completes, so this is completion order. `next_cursor` is `null` on the last page and otherwise the `run_id` of the page's last run, as a string. A client treats it as opaque and passes it back with any filters. A run recorded between two requests never lands on a later page and never displaces a served run; reading the first page again shows it.
 
 ```json
@@ -4395,6 +4399,7 @@ The response is ordered by descending `run_id`, the order Sortie recorded the ru
       "reaction_config_key": "ci_failure",
       "session_id": "thread-1-turn-1",
       "ssh_host": "",
+      "worker": null,
       "dispatch_id": "RLQFSIOFERWGDW2HZY45W55VXK",
       "stage_chain": ["specify", "implement", "review"],
       "pr_loop": {"ci_failure": {"result": "acted", "continuations": 1}, "review_comments": {"result": "quiet", "continuations": 0}, "bot_review": {"result": "quiet", "continuations": 0}, "auto_merge": {"result": "quiet", "continuations": 0}},
@@ -4456,6 +4461,7 @@ The response is ordered by descending `run_id`, the order Sortie recorded the ru
 | `reaction_config_key`    | string or `null`   | The key of the `reactions` section of `WORKFLOW.md` that `reaction_kind` is configured under. `""` or `null` exactly when `reaction_kind` is. |
 | `session_id`             | string or `null`   | The agent session the run used, `""` when it started none, `null` when not recorded. Not masked. |
 | `ssh_host`               | string or `null`   | The SSH worker the run executed on, `""` for a local run, `null` when not recorded. |
+| `worker`                 | string or `null`   | Under `environment.kind: remote`, the ID of the worker that held the run's lease, as it checked in. `null` for a run no worker took, for a run under any other kind, and for a run recorded before the worker was kept. Not masked. |
 | `dispatch_id`            | string or `null`   | The dispatch ID of the run, the key of its agent events on [`GET /api/v1/runs/{dispatch_id}/events`](#get-apiv1runsdispatch_idevents-run-events). `""` on the recorded CI result, which no dispatch produced, and `null` for a run recorded before the dispatch ID existed. A run with either has no retained events. |
 | `stage_chain`            | array of strings or `null` | The stage chain the run's rule stands on, as the rule names of the chain in `next` order. It is the chain `stage_position.chain` serves for the run's `rule_name` and `stage_previous`, and it follows the configuration in effect, so a reload that edits the chains changes it for runs recorded before the reload. Always present. `null` when the run has no `rule_name`, when its rule is on no chain, and when the server holds no workflow shape. Not masked. On the per-issue response, `history.last_stage.chain` equals the `stage_chain` of the deciding run. |
 | `issue_outcome`          | object or `null`   | How the issue's latest work ended, as Sortie observed it, or `null` when Sortie observed no ending since it last picked the issue up, or when the issue ended before outcomes were recorded. Always present. It belongs to the issue, so every run of one issue carries the same object, and it is served as recorded whatever the issue's live state. `kind` is `handed_off`, `merged`, or `terminal`, and `observed_at` is when Sortie made or observed the ending, in UTC. `state` is present for `handed_off` and `terminal`: the state the handoff wrote, or the terminal state Sortie read. `merge_path` and `pull_request` are present for `merged`: `merge_path` is `auto_merge` or `merge_completion`, the `reactions` key that observed the merge, and `pull_request` holds `number` and `repository`. `state` and `repository` are masked like `issue_title`. `status_text` and `status_text_full` are always present: the sentence of how the issue ended, worded from the outcome alone, so a stage hop that was not made appears only in the top-level pair of a `history` response. |

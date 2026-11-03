@@ -214,6 +214,7 @@ func runHistoryEntry(r persistence.RunHistory) server.RunHistoryEntry {
 		ReactionKind:         r.ReactionKind,
 		SessionID:            r.SessionID,
 		SSHHost:              r.SSHHost,
+		Worker:               r.Worker,
 		DispatchID:           r.DispatchID,
 		DeclaredOutcome:      r.DeclaredOutcome,
 		AgentText:            r.AgentText,

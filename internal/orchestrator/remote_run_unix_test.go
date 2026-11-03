@@ -941,6 +941,21 @@ func TestRemoteRunUsage(t *testing.T) {
 	}
 }
 
+// The run history records the worker that held the run's lease, so a
+// client can tell where each past run ran.
+func TestRemoteRunRecordsItsWorker(t *testing.T) {
+	f := newGitFixture(t)
+	run := runRemoteONS30(t, f, nil, nil)
+	if run.result.ExitKind != WorkerExitNormal || run.result.Worker != "taichi" {
+		t.Fatalf("result %v %v, worker %q; want a normal exit on taichi", run.result.ExitKind, run.result.Error, run.result.Worker)
+	}
+	var sequence []string
+	_, store, _ := handOff(t, run.result, &sequence)
+	if len(store.runHistories) != 1 || store.runHistories[0].Worker != "taichi" {
+		t.Errorf("run history %+v, want one run on taichi", store.runHistories)
+	}
+}
+
 // remote-runs: A tool call from taichi. The agent of ONS-30 calls a
 // Sortie tool through the mcp flow, and the call acts on ONS-30's
 // session: it reaches the tool server Sortie started for that session.

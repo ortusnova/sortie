@@ -820,6 +820,7 @@ export interface RunResponse {
   reaction_config_key: string | null;
   session_id: string | null;
   ssh_host: string | null;
+  worker: string | null;
   dispatch_id: string | null;
   model_usage: ModelUsageResponse[] | null;
   skills?: SkillCall[];
@@ -1040,6 +1041,7 @@ export interface ShapeRepository {
   name: string;
   dispatch: boolean;
   default: boolean;
+  requires: Requires | null;
 }
 
 export interface ShapeReviewComments {

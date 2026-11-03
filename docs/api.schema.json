@@ -3952,6 +3952,16 @@
             }
           ]
         },
+        "worker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "workflow_file": {
           "type": "string"
         }
@@ -3983,6 +3993,7 @@
         "reaction_config_key",
         "session_id",
         "ssh_host",
+        "worker",
         "dispatch_id",
         "model_usage",
         "stage_chain",
@@ -5059,12 +5070,23 @@
         },
         "name": {
           "type": "string"
+        },
+        "requires": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Requires"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "name",
         "dispatch",
-        "default"
+        "default",
+        "requires"
       ],
       "type": "object"
     },
