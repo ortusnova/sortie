@@ -1,11 +1,13 @@
 package agentcore
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -13,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1379,23 +1382,106 @@ func TestForkPerTurnSession_ResumeFailureAfterTheDeadline(t *testing.T) {
 	}
 }
 
-type timedLine struct {
-	Delay time.Duration
-	Line  string
+type relayParams struct {
+	Addr string
 }
 
-func timedLinesScenario(_ []string, steps []timedLine) int {
-	for _, step := range steps {
-		time.Sleep(step.Delay)
-		if step.Line != "" {
-			fmt.Println(step.Line)
-		}
+// relayLinesScenario prints each line the test sends over a connection to
+// Addr, and exits once the test closes it, so the test decides when each
+// line reaches the session.
+func relayLinesScenario(_ []string, p relayParams) int {
+	conn, err := net.Dial("tcp", p.Addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer conn.Close() //nolint:errcheck // test
+	sc := bufio.NewScanner(conn)
+	for sc.Scan() {
+		fmt.Println(sc.Text())
+	}
+	if err := sc.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	return 0
 }
 
 func init() {
-	scenarios["timedLines"] = agenttest.Typed(timedLinesScenario)
+	scenarios["relayLines"] = agenttest.Typed(relayLinesScenario)
+}
+
+// fakeTurnTimer is a first-event timer on the test's clock: it fires only
+// when advance passes its deadline, and reports each start, reset and stop
+// on ops.
+type fakeTurnTimer struct {
+	t   *testing.T
+	c   chan time.Time
+	ops chan string
+
+	mu       sync.Mutex
+	now      time.Duration
+	deadline time.Duration
+	armed    bool
+}
+
+func newFakeTurnTimer(t *testing.T) *fakeTurnTimer {
+	return &fakeTurnTimer{t: t, c: make(chan time.Time), ops: make(chan string, 16)}
+}
+
+func (f *fakeTurnTimer) start(d time.Duration) turnTimer {
+	f.set(d, true)
+	f.ops <- "start"
+	return f
+}
+
+func (f *fakeTurnTimer) C() <-chan time.Time { return f.c }
+
+func (f *fakeTurnTimer) Reset(d time.Duration) {
+	f.set(d, true)
+	f.ops <- "reset"
+}
+
+func (f *fakeTurnTimer) Stop() {
+	f.set(0, false)
+	f.ops <- "stop"
+}
+
+func (f *fakeTurnTimer) set(d time.Duration, armed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deadline, f.armed = f.now+d, armed
+}
+
+// acceptWithin returns the connection of the next client of ln, closed at
+// cleanup, and fails the test when none arrives within the hang guard.
+func acceptWithin(t *testing.T, ln net.Listener) net.Conn {
+	t.Helper()
+	if err := ln.(*net.TCPListener).SetDeadline(time.Now().Add(waittest.HangGuard)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept the scenario's connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// advance moves the clock on by d. A timer whose deadline it reaches fires,
+// and advance returns once the session has taken the fire.
+func (f *fakeTurnTimer) advance(d time.Duration) {
+	f.t.Helper()
+	f.mu.Lock()
+	f.now += d
+	fire := f.armed && f.now >= f.deadline
+	if fire {
+		f.armed = false
+	}
+	f.mu.Unlock()
+	if fire {
+		waittest.Send(f.t, f.c, time.Time{}, "the first-event timer's fire")
+	}
 }
 
 const turnPrompt = "the prompt"
@@ -1514,20 +1600,32 @@ func TestForkPerTurnSession_EndTurn(t *testing.T) {
 func TestForkPerTurnSession_FirstEventTimeout(t *testing.T) {
 	t.Parallel()
 
+	// Each step moves the test's clock on by after, then sends line, if
+	// any, and waits for the timer operation the line causes.
+	type step struct {
+		after  time.Duration
+		line   string
+		wantOp string
+	}
 	const ms = time.Millisecond
 	tests := []struct {
 		name        string
-		steps       []timedLine
+		steps       []step
 		wantTimeout bool
 	}{
-		{"no line", []timedLine{{time.Hour, ""}}, true},
-		{"rejected line restarts the wait", []timedLine{{300 * ms, "bad"}, {350 * ms, "good"}, {700 * ms, ""}}, false},
-		{"accepted line ends the wait", []timedLine{{100 * ms, "good"}, {900 * ms, ""}}, false},
+		{"no line", []step{{after: 500 * ms}}, true},
+		{"rejected line restarts the wait", []step{{300 * ms, "bad", "reset"}, {350 * ms, "good", "stop"}, {after: 700 * ms}}, false},
+		{"accepted line ends the wait", []step{{100 * ms, "good", "stop"}, {after: 900 * ms}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
 			hooks := noopHooks()
 			hooks.FirstEventTimeout = 500 * ms
 			hooks.ParseLine = func(line []byte, _ func(domain.AgentEvent), _ string, _ *TurnSpend) (any, error) {
@@ -1536,10 +1634,36 @@ func TestForkPerTurnSession_FirstEventTimeout(t *testing.T) {
 				}
 				return nil, nil
 			}
-			sess := NewForkPerTurnSession(fakeTarget(t, false, "timedLines", tt.steps), hooks, slog.Default(), 0)
+			sess := NewForkPerTurnSession(fakeTarget(t, false, "relayLines", relayParams{Addr: ln.Addr().String()}), hooks, slog.Default(), 0)
+			clock := newFakeTurnTimer(t)
+			sess.newTimer = clock.start
 
 			emit, _ := sinkEvents()
-			_, err := sess.RunTurn(context.Background(), turnPrompt, emit)
+			done := make(chan error, 1)
+			go func() {
+				_, err := sess.RunTurn(context.Background(), turnPrompt, emit)
+				done <- err
+			}()
+			conn := acceptWithin(t, ln)
+			if op := waittest.Receive(t, clock.ops, "the timer's start"); op != "start" {
+				t.Fatalf("first timer operation = %q, want start", op)
+			}
+			for _, s := range tt.steps {
+				clock.advance(s.after)
+				if s.line == "" {
+					continue
+				}
+				if _, err := fmt.Fprintln(conn, s.line); err != nil {
+					t.Fatal(err)
+				}
+				if op := waittest.Receive(t, clock.ops, "the timer operation of line "+s.line); op != s.wantOp {
+					t.Fatalf("timer operation after line %q = %q, want %q", s.line, op, s.wantOp)
+				}
+			}
+			if !tt.wantTimeout {
+				_ = conn.Close()
+			}
+			err = waittest.Receive(t, done, "the turn's end")
 
 			if tt.wantTimeout {
 				requireAgentError(t, err, domain.ErrResponseTimeout)
