@@ -37,6 +37,10 @@ The stage-0 kit drains a host before a deploy or a host setup change, following 
 
 The workbench unblocks a story the session budget holds, following `agent-platform/run-supervision` ("Unblock from the lane"). It calls `POST /api/v1/{identifier}/sessions` with `{"add": N, "by", "reason"}` and the control token, and the issue runs again without a change to `agent.max_sessions` for every issue. The grant lives in `internal/orchestrator/session_grant.go`, `internal/server/session_grant.go` and `internal/persistence/session_grants.go` (table `session_grants`, migration 1007). Hooks in upstream files count it: the poll tick's budget set in `rebuildBudgetExhausted`, the session gate in `HandleRetryTimer`, the snapshot, the served rows and sentences, and the `cost_budget` tool. Grants are stored, unlike the dispatch pause, because a story granted sessions must not be held again by a restart.
 
+## Later turns of a reaction run
+
+The fork changes the rule of upstream ADR 0037 for later turns. In `BuildReactionTurnPrompt` (`internal/prompt/reaction.go`), a turn after the first gets the operator's branch only when the branch renders differently with `.run.is_continuation` false; otherwise it gets the built-in continuation text, which also says that the earlier turns' commits are in the workspace and that `origin/<branch>` moves only after the run. Seen on 2026-11-02 and 03 in stage-0 fix runs (ONS-50, ONS-51, ONS-55, ONS-83): the fix template had no continuation branch, so each later turn asked again for the merge the agent had already committed, and the agent, seeing `origin/<branch>` unchanged because Sortie pushes after the run, parked to ask why Sortie did not push. The seed and refresh were correct: the next run's refresh moved `origin/<branch>` to the pushed commit.
+
 ## smolvm egress with virtio-net
 
 Answer: smolvm filters egress with `virtio-net`, and does not with TSI. Measured on smolvm 1.32.4 on 2026-11-01, on p1 (Intel, `kvm_intel nested=Y`), with throwaway Alpine 3.22 machines.
