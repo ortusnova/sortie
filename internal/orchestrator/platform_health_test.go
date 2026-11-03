@@ -471,3 +471,48 @@ func TestHandleRetryTimer_HealthCheckHoldsTheRetry(t *testing.T) {
 		}
 	}
 }
+
+// A credential the agent runtime refused at a session's start is a
+// platform fault at once: every later dispatch of that agent kind is
+// held before its session, the health run does not clear it, and it
+// passes once a person signs the runtime in again and marks it done.
+func TestHealth_RefusedAgentCredentialHoldsTheKindUntilSignedIn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-79", "ONS-79"))
+	advance := healthClockAt(h, time.Now())
+
+	h.o.noteAgentCredentialRefused(ctx, WorkerResult{AgentAdapter: "kind-a", Identifier: "ONS-78",
+		StartupError: &domain.AgentError{Kind: domain.ErrCredentialUnverified, Message: "401 invalid bearer token"}})
+	h.o.noteAgentCredentialRefused(ctx, WorkerResult{AgentAdapter: "kind-a", Identifier: "ONS-77",
+		StartupError: &domain.AgentError{Kind: domain.ErrTurnFailed, Message: "the turn failed"}})
+
+	h.o.handleTick(ctx)
+	faults := healthFaults(h)
+	if len(faults) != 1 || faults[0].Class != healthClassCredentials || faults[0].Action == nil ||
+		faults[0].Action.Action != "Sign the kind-a agent runtime in again on taichi, then mark this done" {
+		t.Fatalf("health faults = %+v, want one credentials fault asking to sign kind-a in", faults)
+	}
+	if got := heldStories(faults[0]); !slices.Equal(got, []string{"ONS-79"}) {
+		t.Errorf("held stories = %v, want [ONS-79]", got)
+	}
+	requireNotRunning(t, h, "issue-79")
+
+	advance(HealthCheckInterval)
+	h.o.handleTick(ctx)
+	if len(healthFaults(h)) != 1 {
+		t.Fatal("the health run cleared the refused credential, want it kept for a person")
+	}
+	id := faults[0].ID
+	if err := h.o.runFaultCheck(ctx, checkOf(h.state.PlatformFaults[id])); err == nil {
+		t.Fatal("fault check passed before a person marked it done")
+	}
+	h.state.PlatformFaults[id].ActionDoneAt = time.Now()
+	if _, resolved := h.o.applyFaultCheckOnLoop(ctx, id, h.o.runFaultCheck(ctx, checkOf(h.state.PlatformFaults[id]))); !resolved {
+		t.Fatal("fault check did not pass once marked done")
+	}
+	h.o.handleTick(ctx)
+	if _, running := h.state.Running["issue-79"]; !running {
+		t.Error("ONS-79 not running after the sign-in")
+	}
+}

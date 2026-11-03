@@ -477,7 +477,7 @@ func (o *Orchestrator) applyHealth(ctx context.Context, result healthResult, now
 
 	var passed []string
 	for id, f := range o.state.PlatformFaults {
-		if f.Step != healthStep || f.Class == healthClassTokenScope {
+		if f.Step != healthStep || f.Class == healthClassTokenScope || isAgentCredentialFault(f.Signature) {
 			continue
 		}
 		if _, still := failing[f.Signature]; still && !o.health.dismissed[f.Signature] {
@@ -563,8 +563,9 @@ func platformFaultWithSignature(state *State, signature string) *PlatformFault {
 
 // healthHold runs the health checks again when their last run is older
 // than [healthDispatchFreshness], then holds the issue under the oldest
-// open fault of a check that holds every dispatch, or under the fault of
-// a forge token that lacks a scope the issue's change needs. It returns
+// open fault of a check that holds every dispatch, under the fault of a
+// refused credential of the agent kind the issue would run on, or under
+// the fault of a forge token that lacks a scope the issue's change needs. It returns
 // the fault that holds the issue, or nil when the issue may dispatch;
 // without hold the issue is not added to the fault's holds. Must run on
 // the event loop, before the dispatch starts any session.
@@ -578,6 +579,9 @@ func (o *Orchestrator) healthHold(ctx context.Context, cfg config.ServiceConfig,
 		if f.Step == healthStep && o.health.holding[f.Signature] && (fault == nil || f.RecordedAt.Before(fault.RecordedAt)) {
 			fault = f
 		}
+	}
+	if fault == nil {
+		fault = o.agentCredentialFaultFor(cfg, issue)
 	}
 	if fault == nil {
 		fault = o.changeScopeFault(ctx, cfg, issue, now)
@@ -706,6 +710,12 @@ func (o *Orchestrator) storyChangedPaths(ctx context.Context, cfg config.Service
 // done, as a person may decide to run on as things are; any other fault
 // passes once its check does.
 func (o *Orchestrator) checkHealthFault(ctx context.Context, check PlatformFaultCheck) error {
+	if isAgentCredentialFault(check.Signature) {
+		if check.ActionDone {
+			return nil
+		}
+		return errAwaitingPersonAction
+	}
 	switch check.Class {
 	case healthClassTokenScope:
 		if o.tokenInspector == nil {
@@ -760,4 +770,62 @@ func (o *Orchestrator) noteHealthFaultChecked(f *PlatformFault, resolved bool) {
 	if !f.ActionDoneAt.IsZero() && (f.Class == healthClassDeploy || f.Class == healthClassMachine) {
 		o.health.dismissed[f.Signature] = true
 	}
+}
+
+// healthKeyAgentCredential prefixes the key of the fault of an agent
+// kind whose credential its runtime refused.
+const healthKeyAgentCredential = "agent credential " //nolint:gosec // G101: a check key, not a credential
+
+// isAgentCredentialFault reports whether signature is the fault of an
+// agent kind whose credential its runtime refused. Only a person clears
+// it, so no health run resolves it and it holds dispatch whatever the
+// health run found.
+func isAgentCredentialFault(signature string) bool {
+	return strings.HasPrefix(healthKeyOf(signature), healthKeyAgentCredential)
+}
+
+// noteAgentCredentialRefused records, when the run of result ended
+// because its agent runtime refused or could not confirm its credential
+// at session start, a platform fault that holds every later dispatch of
+// that agent kind before its session, so no other run hits the refused
+// credential. Must run on the event loop.
+func (o *Orchestrator) noteAgentCredentialRefused(ctx context.Context, result WorkerResult) {
+	var agentErr *domain.AgentError
+	if result.AgentAdapter == "" || !errors.As(result.StartupError, &agentErr) || agentErr.Kind != domain.ErrCredentialUnverified {
+		return
+	}
+	finding := healthFinding{
+		Key:   healthKeyAgentCredential + result.AgentAdapter,
+		Class: healthClassCredentials,
+		Cause: fmt.Sprintf("the %s agent runtime refused or could not confirm its credential: %s", result.AgentAdapter, agentErr.Message),
+		Detail: fmt.Sprintf("The credential verification of %s's session failed. No session of the %s agent kind is dispatched until a person signs it in again and marks this done.",
+			result.Identifier, result.AgentAdapter),
+		Action: &failcause.PersonAction{
+			Action: fmt.Sprintf("Sign the %s agent runtime in again on %s, then mark this done", result.AgentAdapter, o.hostName),
+			Where:  fmt.Sprintf("%s, as the user Sortie runs as", o.hostName),
+		},
+		Holds: true,
+	}
+	if o.recordHealthFault(ctx, finding.signature(), finding, o.healthClock()) {
+		o.notifyObservers()
+	}
+}
+
+// agentCredentialFaultFor returns the oldest open fault of a refused
+// credential of the agent kind the issue would dispatch on, or nil.
+func (o *Orchestrator) agentCredentialFaultFor(cfg config.ServiceConfig, issue domain.Issue) *PlatformFault {
+	var fault *PlatformFault
+	kind := ""
+	for _, f := range o.state.PlatformFaults {
+		if f.Step != healthStep || !isAgentCredentialFault(f.Signature) {
+			continue
+		}
+		if kind == "" {
+			kind = ResolveRule(issue, cfg.Dispatch, hopRouteOf(o.state, issue.ID), cfg.Agent.Kind, "").AgentKind
+		}
+		if healthKeyOf(f.Signature) == healthKeyAgentCredential+kind && (fault == nil || f.RecordedAt.Before(fault.RecordedAt)) {
+			fault = f
+		}
+	}
+	return fault
 }

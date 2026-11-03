@@ -868,6 +868,7 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			LabelFixReactionConfigured:        o.labelFixReactionConfigured,
 			MergeCompletionReactionConfigured: o.mergeCompletionReactionConfigured,
 		})
+		o.noteAgentCredentialRefused(ctx, result)
 		o.recordOutcome(result, outcome)
 	}
 	o.updateGauges(time.Now())
