@@ -1037,6 +1037,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		Rates:                             startupRates,
 		Once:                              br.once,
 	})
+	o.RestoreRemoteRuns(ctx)
 
 	var srv *server.Server
 	if serverEnabled {

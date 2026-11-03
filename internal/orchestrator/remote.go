@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/environment"
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
+	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/worker"
 	"github.com/sortie-ai/sortie/internal/workspace"
 	"github.com/sortie-ai/sortie/internal/workspacekit"
@@ -39,6 +42,22 @@ type remoteWorkers struct {
 	tokens  *jobtoken.Issuer
 	plane   *dataplane.Plane
 	handler http.Handler
+
+	// runs records each running attempt whose job a worker took, so a
+	// restart re-adopts it; nil records nothing.
+	runs remoteRunStore
+
+	mu sync.Mutex
+	// process is the context of the process's event loop; once it ends,
+	// every attempt a worker holds is left with it for the next start.
+	process context.Context
+	// attempts holds the running attempts by issue ID.
+	attempts map[string]*remoteAttempt
+	// kept holds the issues whose attempt was left with its worker;
+	// their exits record nothing.
+	kept map[string]struct{}
+	// adoptions holds the runs restored at start, until adopted.
+	adoptions []*remoteAdoption
 }
 
 func newRemoteWorkers(now func() time.Time) *remoteWorkers {
@@ -47,6 +66,80 @@ func newRemoteWorkers(now func() time.Time) *remoteWorkers {
 	plane := dataplane.New(tokens)
 	return &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(),
 		matcher: worker.NewMatcher(leaser, now, jobTokens{tokens})}
+}
+
+// started records the context of the process's event loop.
+func (r *remoteWorkers) started(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.process = ctx
+}
+
+// stopping reports whether the process is shutting down.
+func (r *remoteWorkers) stopping() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.process != nil && r.process.Err() != nil
+}
+
+func (r *remoteWorkers) keep(issueID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.kept == nil {
+		r.kept = map[string]struct{}{}
+	}
+	r.kept[issueID] = struct{}{}
+}
+
+// wasKept reports whether the attempt of issueID was left with its
+// worker for the next start.
+func (r *remoteWorkers) wasKept(issueID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.kept[issueID]
+	return ok
+}
+
+func (r *remoteWorkers) track(a *remoteAttempt) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.attempts == nil {
+		r.attempts = map[string]*remoteAttempt{}
+	}
+	r.attempts[a.issueID] = a
+}
+
+func (r *remoteWorkers) untrack(a *remoteAttempt) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.attempts[a.issueID] == a {
+		delete(r.attempts, a.issueID)
+	}
+}
+
+func (r *remoteWorkers) attempt(issueID string) *remoteAttempt {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempts[issueID]
+}
+
+// leased reports whether the running attempt of issueID is recorded as
+// held by a worker.
+func (r *remoteWorkers) leased(issueID string) bool {
+	a := r.attempt(issueID)
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.recorded && (!a.finished || a.detached)
+}
+
+// detach leaves the running attempt of issueID with its worker for the
+// next start; see [remoteAttempt.detach].
+func (r *remoteWorkers) detach(issueID string) bool {
+	a := r.attempt(issueID)
+	return a != nil && a.detach()
 }
 
 // jobTokens gives the matcher the issuer's tokens: one per flow of the
@@ -233,6 +326,15 @@ type RemoteAttemptParams struct {
 	// the turn as it ends a stalled agent's. Nil ignores the break, and
 	// stall detection ends the silent session in its own time.
 	OnStreamBroken func(issueID string)
+
+	// Adopt, when set, is the run a previous process left with the
+	// worker that holds its job: the attempt is not queued again, and
+	// its session resumes where the run was.
+	Adopt *remoteAdoption
+
+	// OnRecord is called with the issue ID when the run's record should
+	// take the running entry: at the lease grant and after each turn.
+	OnRecord func(issueID string)
 }
 
 // RunRemoteAttempt runs one attempt of issue under the remote kind. The
@@ -268,14 +370,26 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 	if issueEnv, _, err := issueRepository(cfg.Environment, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
 		cfg.Environment = issueEnv
 	}
+	job := remoteJob(ctx, cfg, issue, attempt, agentKind, p.DefaultCommand)
+	if p.Adopt != nil {
+		job = p.Adopt.job()
+		deps.Adopted = p.Adopt.adoptedRun()
+	}
+	stateDir := ""
+	if deps.DBPath != "" {
+		stateDir = filepath.Join(filepath.Dir(deps.DBPath), "remote")
+	}
 	ra := &remoteAttempt{
 		workers:  rw,
-		job:      remoteJob(ctx, cfg, issue, attempt, agentKind, p.DefaultCommand),
+		job:      job,
 		issueID:  issue.ID,
 		logger:   logger,
 		cancel:   cancelRun,
 		outcome:  make(chan struct{}),
 		onBroken: p.OnStreamBroken,
+		onRecord: p.OnRecord,
+		adopt:    p.Adopt,
+		stateDir: stateDir,
 		maxBundle: func() int64 {
 			if r := cfg.Environment.Remote.Repository; r != nil && r.MaxBundleMiB > 0 {
 				return int64(r.MaxBundleMiB) << 20
@@ -284,6 +398,12 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 		}(),
 	}
 	ra.bridge, ra.bridgeErr = resolveToolServerBinary(deps.MCPServerBinary)
+	if a := p.Adopt; a != nil {
+		ra.dir, ra.seed, ra.seedPath = a.record.Dir, a.record.Seed, a.record.SeedPath
+		ra.recorded, ra.sessionID, ra.turns = true, a.run.SessionID, a.run.TurnsCompleted
+	}
+	rw.track(ra)
+	defer rw.untrack(ra)
 
 	deps.EnvironmentFunc = func(config.EnvironmentConfig) (environment.Environment, error) { return ra, nil }
 	deps.RepositoryFunc = func(envCfg config.EnvironmentConfig, stateDir string, logger *slog.Logger) (Repository, error) {
@@ -328,6 +448,9 @@ type remoteAttempt struct {
 	logger    *slog.Logger
 	cancel    context.CancelCauseFunc
 	onBroken  func(issueID string)
+	onRecord  func(issueID string)
+	adopt     *remoteAdoption
+	stateDir  string
 	maxBundle int64
 	bridge    string
 	bridgeErr error
@@ -341,6 +464,13 @@ type remoteAttempt struct {
 	ended     *worker.Outcome
 	outcome   chan struct{}
 	finished  bool
+	// recorded reports that the run's record holds the job a worker
+	// took; detached that the attempt was left with it for the next
+	// start.
+	recorded  bool
+	detached  bool
+	sessionID string
+	turns     int
 
 	usageMu sync.Mutex
 	pending []dataplane.Usage
@@ -362,13 +492,24 @@ func (*remoteAttempt) GuestPath(string) string { return remoteWorkspace }
 func (a *remoteAttempt) Prepare(context.Context, environment.Workspace) (environment.PrepareResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.dir == "" {
-		dir, err := os.MkdirTemp("", "sortie-remote-")
-		if err != nil {
+	if a.dir != "" {
+		// An adopted attempt keeps its directory, which may hold the seed
+		// the worker has not fetched yet.
+		if err := os.MkdirAll(a.dir, 0o700); err != nil {
 			return environment.PrepareResult{}, fmt.Errorf("create the remote attempt's directory: %w", err)
 		}
-		a.dir = dir
+		return environment.PrepareResult{CreatedNow: true}, nil
 	}
+	if a.stateDir != "" {
+		if err := os.MkdirAll(a.stateDir, 0o700); err != nil {
+			return environment.PrepareResult{}, fmt.Errorf("create the remote attempts' directory: %w", err)
+		}
+	}
+	dir, err := os.MkdirTemp(a.stateDir, "sortie-remote-")
+	if err != nil {
+		return environment.PrepareResult{}, fmt.Errorf("create the remote attempt's directory: %w", err)
+	}
+	a.dir = dir
 	return environment.PrepareResult{CreatedNow: true}, nil
 }
 
@@ -387,6 +528,7 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 	dp, err := a.workers.plane.Open(a.job.ID, a.job.Attempt, dataplane.Options{
 		Seed: a.seedPath, Dir: a.dir, MaxBundleBytes: a.maxBundle, Logger: a.logger,
 		OnUsage: a.receiveUsage,
+		Keep:    a.leaving,
 		OnStdioBroken: func(error) {
 			if a.onBroken != nil {
 				a.onBroken(a.issueID)
@@ -399,12 +541,31 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 	}
 	a.dp = dp
 	a.submitted = true
+	if a.adopt != nil {
+		ended := a.adopt.ended
+		a.mu.Unlock()
+		go a.watch(ended, dp)
+		a.logger.Info("remote job adopted", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt),
+			slog.String("worker", a.adopt.run.WorkerID))
+		if a.adopt.run.SessionEnded {
+			return nil
+		}
+		return a.waitStdio(ctx, dp)
+	}
 	ended := a.workers.matcher.Submit(a.job)
+	granted := a.workers.matcher.Granted(a.job.ID)
 	a.mu.Unlock()
 	go a.watch(ended, dp)
+	go a.record(context.WithoutCancel(ctx), granted, dp)
 
 	a.logger.Info("remote job queued", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt))
-	err = dp.WaitStdio(ctx)
+	return a.waitStdio(ctx, dp)
+}
+
+// waitStdio waits until the worker that holds the job opened the stdio
+// stream.
+func (a *remoteAttempt) waitStdio(ctx context.Context, dp *dataplane.Attempt) error {
+	err := dp.WaitStdio(ctx)
 	if err == nil {
 		a.logger.Info("remote job stdio stream open", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt))
 		return nil
@@ -432,6 +593,101 @@ func (a *remoteAttempt) watch(ended <-chan worker.Outcome, dp *dataplane.Attempt
 		dp.Close()
 	case <-dp.Done():
 	}
+}
+
+// record writes the run's record when a worker takes the job, so a
+// restart from then on re-adopts the run.
+func (a *remoteAttempt) record(ctx context.Context, granted <-chan string, dp *dataplane.Attempt) {
+	var workerID string
+	select {
+	case workerID = <-granted:
+	case <-a.outcome:
+		return
+	case <-dp.Done():
+		return
+	}
+	if a.workers.runs == nil {
+		return
+	}
+	attempt, digests := a.workers.tokens.Digests(a.job.ID)
+	a.mu.Lock()
+	rec := remoteRunRecord{Job: a.job, Flows: a.job.Flows, Run: a.job.Run, Tokens: digests,
+		Seed: a.seed, SeedPath: a.seedPath, Dir: a.dir}
+	a.mu.Unlock()
+	raw, err := json.Marshal(rec)
+	if err == nil {
+		err = a.workers.runs.SaveRemoteRun(ctx, persistence.RemoteRun{
+			IssueID: a.issueID, JobID: a.job.ID, Attempt: int(attempt), WorkerID: workerID, Record: string(raw), //nolint:gosec // G115: an attempt counts from 1
+		})
+	}
+	if err != nil {
+		a.logger.Warn("remote run not recorded; a restart would not re-adopt it", slog.Any("error", err))
+		return
+	}
+	a.mu.Lock()
+	finished := a.finished
+	a.recorded = !finished
+	a.mu.Unlock()
+	if finished {
+		// The attempt ended while its record was written.
+		_ = a.workers.runs.DeleteRemoteRun(ctx, a.issueID) //nolint:errcheck // a leftover row is dropped at the next start
+		return
+	}
+	if a.onRecord != nil {
+		a.onRecord(a.issueID)
+	}
+}
+
+// recordSession stores the progress of the run's session.
+func (a *remoteAttempt) recordSession(sessionID string, turnDone, ended bool) {
+	a.mu.Lock()
+	if sessionID != "" {
+		a.sessionID = sessionID
+	}
+	if turnDone {
+		a.turns++
+	}
+	recorded, id, turns := a.recorded, a.sessionID, a.turns
+	a.mu.Unlock()
+	if !recorded || a.leaving() || a.workers.runs == nil {
+		return
+	}
+	if err := a.workers.runs.UpdateRemoteRunSession(context.Background(), a.issueID, id, turns, ended); err != nil {
+		a.logger.Warn("remote run session not recorded", slog.Any("error", err))
+	}
+	if a.onRecord != nil {
+		a.onRecord(a.issueID)
+	}
+}
+
+// detach leaves the attempt with its worker for the next start: the data
+// plane drops the worker's stream without telling it that the agent's
+// input closed, the job stays leased, and the record stays. It reports
+// false for an attempt no worker holds.
+func (a *remoteAttempt) detach() bool {
+	a.mu.Lock()
+	if !a.recorded || (a.finished && !a.detached) {
+		a.mu.Unlock()
+		return false
+	}
+	a.detached = true
+	dp := a.dp
+	a.mu.Unlock()
+	if dp != nil {
+		dp.Detach()
+	}
+	return true
+}
+
+// leaving reports whether the attempt is left with its worker for the
+// next start: detached, or recorded while the process stops. The process
+// context ends before any worker sees its run end, so every step that
+// would end the job, its record or its stream asks this first.
+func (a *remoteAttempt) leaving() bool {
+	a.mu.Lock()
+	recorded, detached := a.recorded, a.detached
+	a.mu.Unlock()
+	return detached || (recorded && a.workers.stopping())
 }
 
 func (a *remoteAttempt) endedOutcome() (worker.Outcome, bool) {
@@ -502,14 +758,30 @@ func (*remoteAttempt) Remove(context.Context, environment.Workspace) error { ret
 func (*remoteAttempt) Sweep(context.Context, environment.SweepParams) error { return nil }
 
 func (a *remoteAttempt) finish() {
+	leaving := a.leaving()
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
 		return
 	}
 	a.finished = true
-	dp, submitted, dir := a.dp, a.submitted, a.dir
+	dp, submitted, dir, recorded := a.dp, a.submitted, a.dir, a.recorded
+	if leaving {
+		// The run goes on with its worker; the next start adopts it.
+		a.detached = true
+		a.mu.Unlock()
+		if dp != nil {
+			dp.Detach()
+		}
+		a.workers.keep(a.issueID)
+		return
+	}
 	a.mu.Unlock()
+	if recorded && a.workers.runs != nil {
+		if err := a.workers.runs.DeleteRemoteRun(context.Background(), a.issueID); err != nil {
+			a.logger.Warn("remote run record not deleted; the next start drops it", slog.Any("error", err))
+		}
+	}
 	if submitted {
 		a.workers.matcher.Cancel(a.job.ID)
 	}
@@ -585,8 +857,44 @@ type remoteUsageAdapter struct {
 	attempt *remoteAttempt
 }
 
+// endedSession is the session of an adopted run whose session had
+// already ended: nothing is launched, and what is left of the run is the
+// worker's returned result.
+type endedSession struct{}
+
+// StartSession starts the run's session and records it. An adopted run
+// resumes the recorded session, through the deps' ResumeSessionID, on the
+// agent the worker starts again on the job's machine.
+func (a *remoteUsageAdapter) StartSession(ctx context.Context, params domain.StartSessionParams) (domain.Session, error) {
+	if ad := a.attempt.adopt; ad != nil && ad.run.SessionEnded {
+		return domain.Session{ID: ad.run.SessionID, Internal: endedSession{}}, nil
+	}
+	session, err := a.AgentAdapter.StartSession(ctx, params)
+	if err == nil {
+		a.attempt.recordSession(session.ID, false, false)
+	}
+	return session, err
+}
+
+// StopSession records that the session ended, unless the attempt was
+// left for the next start, and stops it.
+func (a *remoteUsageAdapter) StopSession(ctx context.Context, session domain.Session) error {
+	if _, ok := session.Internal.(endedSession); ok {
+		return nil
+	}
+	if a.attempt.leaving() {
+		a.attempt.detach()
+	} else {
+		a.attempt.recordSession(session.ID, false, true)
+	}
+	return a.AgentAdapter.StopSession(ctx, session)
+}
+
 func (a *remoteUsageAdapter) RunTurn(ctx context.Context, session domain.Session, params domain.RunTurnParams) (domain.TurnResult, error) {
 	res, err := a.AgentAdapter.RunTurn(ctx, session, params)
+	if err == nil && !a.attempt.leaving() {
+		a.attempt.recordSession(coalesce(res.SessionID, session.ID), true, false)
+	}
 	reports := a.attempt.takeUsage()
 	measured, unknown := false, false
 	for _, u := range reports {
@@ -626,6 +934,11 @@ var _ Repository = (*remoteRepository)(nil)
 // the job is queued.
 func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, ws environment.Workspace) error {
 	a := r.attempt
+	if a.adopt != nil {
+		// The worker's machine was seeded by the run that left it; its
+		// seed is the record's.
+		return nil
+	}
 	a.mu.Lock()
 	dir := a.dir
 	a.mu.Unlock()
