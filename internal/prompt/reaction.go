@@ -49,14 +49,25 @@ var builtinTemplates = func() map[string]*Template {
 // .run.is_continuation. The continuation text sends the agent back to the
 // first-turn instructions it already holds and adds no duty of its own, so
 // it fits whether the first turn came from the operator's branch or from
-// the built-in.
+// the built-in. It also says that the earlier turns' commits are in the
+// workspace and that a branch Sortie pushes moves upstream only after the
+// run, so an agent that sees origin/<branch> unchanged does not repeat a
+// fix it already made.
 func builtinPrompt(task, firstTurn string) string {
 	return "{{ if .run.is_continuation -}}\n" +
 		"Continue with the instructions you received at the start of this session for " + task + ", and start no work they do not ask for.\n" +
+		continuationNote + "\n" +
 		"{{- else -}}\n" +
 		firstTurn + "\n" +
 		"{{- end }}"
 }
+
+// continuationNote is the part of every built-in continuation text that
+// keeps an agent from redoing its work: it names where the earlier turns'
+// commits are and when origin/<branch> moves.
+const continuationNote = "The commits you made in earlier turns of this run are in this workspace. " +
+	"When Sortie pushes the branch for you, it pushes only after the run ends, so origin/<branch> does not move during the run. " +
+	"Do not repeat a fix you already committed; finish only what is still missing, then signal the outcome."
 
 // First-turn texts that say "as described below" rely on the outcome
 // instructions the worker appends to every first turn.
@@ -137,6 +148,11 @@ Push to no other branch and do not start other work.`
 // render that fails without the context counts as differing, because the
 // template then reads the key unguarded.
 //
+// On a later turn the operator's branch must also tell the turns apart: its
+// render must differ when .run.is_continuation is false. A branch that
+// renders the same text on every turn would send the first turn's task
+// again, so the built-in continuation text is sent instead.
+//
 // A continuation holding no registered key, or a turnNumber below 1, behaves
 // as [BuildTurnPrompt]. opts apply to every render. Safe for concurrent use.
 func BuildReactionTurnPrompt(tmpl *Template, issue map[string]any, attempt any, turnNumber, maxTurns int, continuation map[string]any, opts ...RenderOption) (string, error) {
@@ -154,7 +170,14 @@ func BuildReactionTurnPrompt(tmpl *Template, issue map[string]any, attempt any, 
 	}
 	unseeded, unseededErr := tmpl.Render(issue, attempt, run, opts...)
 	if strings.TrimSpace(seeded) != "" && (unseededErr != nil || seeded != unseeded) {
-		return seeded, nil
+		if !run.IsContinuation {
+			return seeded, nil
+		}
+		first := run
+		first.IsContinuation = false
+		if again, err := tmpl.Render(issue, attempt, first, seededOpts...); err != nil || again != seeded {
+			return seeded, nil
+		}
 	}
 	return builtinTemplates[key].Render(issue, attempt, run, seededOpts...)
 }

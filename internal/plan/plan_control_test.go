@@ -4,6 +4,8 @@ import (
 	"context"
 	"slices"
 	"testing"
+
+	"github.com/sortie-ai/sortie/internal/domain"
 )
 
 func v2(g Graph) Graph {
@@ -220,5 +222,46 @@ func TestPlanSync_ApprovalFieldsUnsupported(t *testing.T) {
 	}
 	if len(p.Creates) != 2 {
 		t.Errorf("creates = %d, want the rest of the sync", len(p.Creates))
+	}
+}
+
+// Scenario "A UI story from spec to merge", plan sync part: a draft ui
+// story that covers a requirement is created, labelled sortie-review:ui,
+// and released, with no approver written. One that covers none waits.
+func TestPlanSync_UIStoryReleasedWithoutApproval(t *testing.T) {
+	t.Parallel()
+	f := newFakeTracker()
+	g := v2(newGraph().epic("workbench", ApprovalDraft, "worker-activity-view", "sketch").build())
+	view := story(&g, "workbench/worker-activity-view")
+	view.Review = ReviewUI
+	view.Covers = []string{"agent-platform/run-supervision#A UI story is built before it is approved, and its merge is the approval"}
+	story(&g, "workbench/sketch").Review = ReviewUI
+
+	p := preview(t, g, f.planControlled())
+	if !slices.Equal(p.SkippedDrafts, []string{"workbench/sketch"}) {
+		t.Errorf("skipped = %v, want only the ui story that covers no requirement", p.SkippedDrafts)
+	}
+	if len(p.Approvals) != 0 || len(p.Unsupported) != 0 {
+		t.Errorf("approvals %+v unsupported %v, want none for a ui story", p.Approvals, p.Unsupported)
+	}
+
+	r := apply(t, f.planControlled(), g)
+	if len(r.Released) != 1 || r.Released[0].PlanKey != "workbench/worker-activity-view" {
+		t.Fatalf("released = %+v, want the ui story", r.Released)
+	}
+	var got *domain.PlanIssue
+	for _, i := range f.issues {
+		if i.PlanKey == "workbench/worker-activity-view" {
+			got = i
+		}
+	}
+	if got == nil {
+		t.Fatal("the ui story was not created")
+	}
+	if got.State != "Todo" || !slices.Equal(got.Labels, []string{"sortie-review:ui"}) || got.Approval != nil {
+		t.Errorf("ui story state %q labels %v approval %+v, want Todo, sortie-review:ui, and no approver", got.State, got.Labels, got.Approval)
+	}
+	if p := preview(t, g, f.planControlled()); p.Writes() != 0 {
+		t.Errorf("second preview = %+v, want no writes", p.Counts)
 	}
 }

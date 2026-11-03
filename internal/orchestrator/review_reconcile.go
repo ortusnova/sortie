@@ -71,7 +71,10 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 		rkey := ReactionKey(pending.IssueID, ReactionKindReview)
 
 		// A standing escalation is never aged out; its own facts end it.
-		windowElapsed := ttl > 0 && !pending.escalationStands() && now.Sub(watchWindowStart(pending)) > ttl
+		// A ui story waits for the operator, who takes longer than the
+		// window: the pull request read below ends its watch when the pull
+		// request ends.
+		windowElapsed := ttl > 0 && !pending.escalationStands() && !waitsForOperator(pending) && now.Sub(watchWindowStart(pending)) > ttl
 
 		dropWatch := func() {
 			cancelReactionTriage(pending)
@@ -132,7 +135,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 				continue
 			}
 			read.made = true
-		case awaits(pending.LastCheck):
+		case awaits(pending.LastCheck) || waitsForOperator(pending):
 			read = readPullRequest(ctx, params.SCMAdapter, pending, entryLog)
 			if pullRequestEnded(read.status, read.err) {
 				dropEnded()
@@ -144,6 +147,15 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 
 		// Fetch reviews from SCM.
 		comments, err := params.SCMAdapter.FetchPendingReviews(ctx, reviewData.PRNumber, reviewData.Owner, reviewData.Repo)
+		// A story that waits for the operator takes every comment on its
+		// pull request as feedback, and its watch lasts until the pull
+		// request ends, as a wait for an approval does.
+		operator := false
+		if err == nil && params.OperatorComments != nil {
+			var more []domain.ReviewComment
+			more, operator, err = params.OperatorComments(ctx, pending, reviewData)
+			comments = append(comments, more...)
+		}
 		if err != nil {
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
@@ -196,6 +208,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 			} else {
 				awaiting = decision == domain.ReviewDecisionReviewRequired
 			}
+			awaiting = awaiting || operator
 
 			// A reading written without a pull request read of this pass
 			// would show a merged pull request as waiting on approval.

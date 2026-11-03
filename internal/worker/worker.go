@@ -49,6 +49,12 @@ type Declaration struct {
 	RunSlots int      `json:"run_slots"`
 	Running  int      `json:"running"`
 	Free     Free     `json:"free"`
+	// Used is what the worker's running jobs were promised; nil when the
+	// worker does not say.
+	Used *Free `json:"used,omitempty"`
+	// Unmanaged lists the machines on the worker's host that no Sortie
+	// started; nil when the worker does not say.
+	Unmanaged []Unmanaged `json:"unmanaged,omitzero"`
 }
 
 // has reports whether the declaration includes capability c: its OS,
@@ -335,6 +341,7 @@ type LeaseView struct {
 	Attempt int       `json:"attempt"`
 	Worker  string    `json:"worker"`
 	Expires time.Time `json:"expires"`
+	Step
 }
 
 // Queued is a job waiting for a worker and why it waits.
@@ -364,6 +371,8 @@ type Matcher struct {
 	pending []Job
 	leased  map[string]Job
 	ends    map[string]chan Outcome
+	// steps holds the step each leased job last reported.
+	steps map[string]Step
 }
 
 // NewMatcher returns a matcher using leaser, clock now and token issuer
@@ -373,7 +382,8 @@ func NewMatcher(leaser Leaser, now func() time.Time, tokens Tokens) *Matcher {
 		tokens = NoTokens{}
 	}
 	return &Matcher{leaser: leaser, now: now, tokens: tokens,
-		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{}}
+		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{},
+		steps: map[string]Step{}}
 }
 
 // Timings returns how often a worker should check in and renew, and how
@@ -506,6 +516,7 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 		}
 		m.pending = append(m.pending[:i:i], m.pending[i+1:]...)
 		m.leased[j.ID] = j
+		delete(m.steps, j.ID)
 		w.take(j.Requires)
 		flows := make(map[string]FlowAccess, len(j.Flows))
 		for name, u := range j.Flows {
@@ -534,6 +545,12 @@ func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {
 // Heartbeat renews the caller's lease on the job's attempt, or returns
 // [ErrLeaseLost] when the caller holds no live lease on it.
 func (m *Matcher) Heartbeat(workerID, jobID string, attempt int) (Expiry, error) {
+	return m.HeartbeatStep(workerID, jobID, attempt, Step{})
+}
+
+// HeartbeatStep renews the lease as [Matcher.Heartbeat] does and keeps
+// the step the job reports; an empty step keeps the last one.
+func (m *Matcher) HeartbeatStep(workerID, jobID string, attempt int, step Step) (Expiry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, err := m.held(workerID, jobID, attempt); err != nil {
@@ -542,6 +559,9 @@ func (m *Matcher) Heartbeat(workerID, jobID string, attempt int) (Expiry, error)
 	ls, err := m.leaser.Renew(jobID, workerID, m.now())
 	if err != nil {
 		return Expiry{}, err
+	}
+	if !step.empty() {
+		m.steps[jobID] = step
 	}
 	return Expiry{Expires: ls.Expires.UTC()}, nil
 }
@@ -561,6 +581,7 @@ func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error
 		return ErrLeaseLost
 	}
 	delete(m.leased, jobID)
+	delete(m.steps, jobID)
 	m.tokens.Void(jobID)
 	if w := m.workers[workerID]; w != nil {
 		w.release(j.Requires, out.Machine)
@@ -594,6 +615,7 @@ func (m *Matcher) Cancel(jobID string) {
 			}
 		}
 		delete(m.leased, jobID)
+		delete(m.steps, jobID)
 		m.tokens.Void(jobID)
 	}
 	m.endLocked(jobID, Outcome{Cancelled: true, Reason: "job withdrawn"})
@@ -612,6 +634,7 @@ func (m *Matcher) ExpireLeases() []string {
 			continue
 		}
 		delete(m.leased, ls.JobID)
+		delete(m.steps, ls.JobID)
 		m.tokens.Void(ls.JobID)
 		if w := m.workers[ls.WorkerID]; w != nil {
 			w.release(j.Requires, MachineStopped)
@@ -637,7 +660,8 @@ func (m *Matcher) Snapshot() State {
 	}
 	for _, ls := range m.leaser.Leases() {
 		if j, ok := m.leased[ls.JobID]; ok {
-			s.Leases = append(s.Leases, LeaseView{Job: ls.JobID, Attempt: j.Attempt, Worker: ls.WorkerID, Expires: ls.Expires.UTC()})
+			s.Leases = append(s.Leases, LeaseView{Job: ls.JobID, Attempt: j.Attempt, Worker: ls.WorkerID, Expires: ls.Expires.UTC(),
+				Step: m.steps[ls.JobID]})
 		}
 	}
 	return s

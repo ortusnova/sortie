@@ -856,7 +856,21 @@ type ReviewReactionData struct {
 	// LastEventAt is the timestamp of the most recently detected review
 	// comment, used for debounce gating.
 	LastEventAt time.Time
+
+	// story is what the entry's story is, read from its labels the first
+	// time operator comments are considered.
+	story reviewStory
 }
+
+// reviewStory is the kind of story a review entry watches, as far as the
+// operator's comments on its pull request go.
+type reviewStory int
+
+const (
+	storyUnread reviewStory = iota
+	storyOther
+	storyUI
+)
 
 // ReviewReactionConfig holds validated review-specific configuration from
 // [config.ReactionConfig].
@@ -1606,6 +1620,10 @@ type State struct {
 	// dispatchPause is the pause of dispatch in force; nil when dispatch
 	// runs. Owned by the event loop.
 	dispatchPause *dispatchPauseState
+
+	// sessionGrants is what the store holds of the sessions operators
+	// granted beyond agent.max_sessions. Owned by the event loop.
+	sessionGrants sessionGrantCache
 }
 
 // continuationCtxKey is the context key for reaction continuation data
@@ -2014,6 +2032,7 @@ type SnapshotBudgetEntry struct {
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
+	GrantedSessions    int       `json:"granted_sessions"`
 	UsedTokens         *int64    `json:"used_tokens"`
 	BudgetTokens       int64     `json:"budget_tokens"`
 	UnmeasuredSessions *int      `json:"unmeasured_sessions"`
@@ -2156,6 +2175,10 @@ type RuntimeSnapshotResult struct {
 	// DispatchPause is a copy of the pause of dispatch in force; nil when
 	// dispatch runs.
 	DispatchPause *DispatchPause `json:"-"`
+
+	// SessionGrants is the sessions granted to each issue beyond
+	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
+	SessionGrants map[string]int `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -2446,6 +2469,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.AttentionAcknowledgements = maps.Clone(state.AttentionAcknowledgements)
 	snap.SpendCeilings = slices.Clone(state.SpendCeilings)
 	snap.DispatchPause = state.dispatchPause.snapshot()
+	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
@@ -2463,6 +2487,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			Reason:             entry.Reason,
 			UsedSessions:       entry.UsedSessions,
 			BudgetSessions:     entry.BudgetSessions,
+			GrantedSessions:    state.sessionGrants.totals[id],
 			UsedTokens:         entry.UsedTokens,
 			BudgetTokens:       entry.BudgetTokens,
 			UnmeasuredSessions: entry.UnmeasuredSessions,
@@ -2594,7 +2619,7 @@ func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
 			row.EscalatedAt = &escalatedAt
 			row.EscalationTrigger = string(entry.EscalationTrigger)
 		}
-		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) {
+		if window, ok := state.ReactionWatchWindows[entry.Kind]; ok && entry.EscalatedAt.IsZero() && !awaits(entry.LastCheck) && !waitsForOperator(entry) {
 			watchEndsAt := watchBasis(entry).Add(window)
 			row.WatchEndsAt = &watchEndsAt
 		}

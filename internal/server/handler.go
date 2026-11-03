@@ -57,6 +57,8 @@ type stateResponse struct {
 	// Workers lists the checked-in workers, the queue and the live leases
 	// under environment.kind remote; omitted under any other kind.
 	Workers *worker.State `json:"workers,omitempty"`
+
+	workerView
 }
 
 type stateCounts struct {
@@ -132,6 +134,7 @@ type runningEntryResponse struct {
 	// the token budget.
 	UsedSessions          *int     `json:"used_sessions"`
 	BudgetSessions        *int     `json:"budget_sessions"`
+	GrantedSessions       int      `json:"granted_sessions"`
 	IssueTokensCompleted  *int64   `json:"issue_tokens_completed"`
 	UnmeasuredSessions    *int     `json:"unmeasured_sessions"`
 	UsedTokens            *int64   `json:"used_tokens"`
@@ -160,6 +163,7 @@ type runningEntryResponse struct {
 	StallTextFull *string    `json:"stall_text_full"`
 	StallOffText  *string    `json:"stall_off_text"`
 	holdFields
+	runningWorkerView
 }
 
 // holdFields is a running run's hold as the API reports it. HeldSince is
@@ -574,6 +578,7 @@ type budgetExhaustedResponse struct {
 	Reason             string                 `json:"reason"`
 	UsedSessions       int                    `json:"used_sessions"`
 	BudgetSessions     *int                   `json:"budget_sessions"`
+	GrantedSessions    int                    `json:"granted_sessions"`
 	UsedTokens         *int64                 `json:"used_tokens"`
 	BudgetTokens       *int64                 `json:"budget_tokens"`
 	UsedUSD            *float64               `json:"used_usd"`
@@ -834,9 +839,7 @@ func toServedRunningEntry(e orchestrator.SnapshotRunningEntry, snap orchestrator
 	if snap.MaxCostUSD > 0 {
 		resp.BudgetUSD = new(snap.MaxCostUSD)
 	}
-	if snap.MaxSessions > 0 {
-		resp.BudgetSessions = new(snap.MaxSessions)
-	}
+	resp.GrantedSessions, resp.BudgetSessions = grantedSessionsOf(snap, e.IssueID)
 
 	resp.EstimatedCostUSD, resp.CostStatus = liveCostOf(e)
 	resp.IssueEstimatedCostUSD, resp.IssueCostStatus = issueCost(e.IssueUsage, resp.UsedTokens, resp.UsedTokensComplete, sessionPartOf(e))
@@ -1177,6 +1180,7 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		Reason:             e.Reason,
 		UsedSessions:       e.UsedSessions,
 		BudgetSessions:     budgetSessions,
+		GrantedSessions:    e.GrantedSessions,
 		UsedTokens:         heldUsedTokens(e),
 		BudgetTokens:       budgetTokens,
 		UsedUSD:            e.UsedUSD,
@@ -1435,6 +1439,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Health = toStateHealthResponse(*health, words)
 	}
 	resp.Workers = s.workersState()
+	s.attachWorkerView(r.Context(), &resp, snap)
 	s.attachActivePRLoops(r, &resp, snap, words.Shape)
 	writeJSON(w, s.logger, http.StatusOK, resp)
 
@@ -1535,7 +1540,7 @@ func (s *Server) withIssueHistory(w http.ResponseWriter, r *http.Request, identi
 	}
 	if len(page) == 0 {
 		if detail != nil {
-			detail.situation.Spend = &sentence.Spend{CostUSD: issueCostUSD(nil, detail.situation.Running)}
+			detail.situation.Spend = &sentence.Spend{CostUSD: issueCostUSD(nil, detail.situation.Running), GrantedSessions: snap.SessionGrants[issueID]}
 			if err := s.attachIssuePRLoop(ctx, detail, snap, words.Shape, nil); err != nil {
 				s.historyReadFailed(w, r, err)
 				return nil, false
@@ -1561,9 +1566,10 @@ func (s *Server) withIssueHistory(w http.ResponseWriter, r *http.Request, identi
 		detail.StatusText, detail.StatusTextFull = sentencesOf(sentence.Entry{Finished: finishedOf(newest, outcome, hasOutcome)}, words)
 	}
 	detail.situation.Spend = &sentence.Spend{
-		Sessions: totals.Usage.Sessions,
-		Tokens:   totals.Usage.UncachedTokens,
-		CostUSD:  issueCostUSD(&totals.Usage, detail.situation.Running),
+		Sessions:        totals.Usage.Sessions,
+		Tokens:          totals.Usage.UncachedTokens,
+		CostUSD:         issueCostUSD(&totals.Usage, detail.situation.Running),
+		GrantedSessions: snap.SessionGrants[issueID],
 	}
 	var chains [][]string
 	if words.Shape != nil {

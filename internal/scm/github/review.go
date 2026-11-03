@@ -60,6 +60,7 @@ type GitHubSCMAdapter struct {
 	client        *httpkit.Client
 	graphqlClient *httpkit.Client
 	baseURL       string
+	refusals      checkRunsRefusals
 }
 
 // NewGitHubSCMAdapter creates a [GitHubSCMAdapter] from adapter-specific
