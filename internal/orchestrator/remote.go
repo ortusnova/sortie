@@ -886,7 +886,9 @@ func (a *remoteAttempt) finish() {
 			a.logger.Warn("remote run record not deleted; the next start drops it", slog.Any("error", err))
 		}
 	}
-	if submitted {
+	// An adopted job is the matcher's from the restore on, whether or
+	// not the run got as far as handing it to the data plane.
+	if submitted || a.adopt != nil {
 		a.workers.matcher.Cancel(a.job.ID)
 	}
 	if dp != nil {

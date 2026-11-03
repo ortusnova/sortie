@@ -2265,7 +2265,7 @@ At shutdown, Sortie leaves each such run with its worker: it closes the run's `s
 
 A worker that is gone sends no heartbeat, so the restored lease expires and the attempt fails as for any lost lease: the issue is retried with backoff as a new job attempt. A run whose record cannot be read, or whose agent kind is no longer available, is dropped at start; its lease lapses in the same way, and the next poll dispatches the issue again. A job no worker had taken yet is withdrawn at shutdown and retried, as before.
 
-Until the restored runs are adopted, a heartbeat or report for a job Sortie does not know answers `503` (`recovering`), which the worker retries. From then on, such a job is gone: its heartbeat and report answer `410`.
+Until the restored runs are adopted, a heartbeat or report for a job Sortie does not know answers `503` (`recovering`), which the worker retries. From then on, such a job is gone: its heartbeat and report answer `410`. An adopted run that ends for any reason, even before its session starts, as a run cancelled at its adoption, withdraws its job: the worker's next heartbeat, report or `stdio` dial answers `410`, and the worker releases the machine.
 
 ##### Sortie's tools on a worker
 
