@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -59,4 +60,66 @@ func TestRemoteRunEntryRoundTrip(t *testing.T) {
 	if _, err := decodeRemoteRunEntry(""); err == nil {
 		t.Error("an entry never recorded decoded")
 	}
+}
+
+// An adopted run's stall clock starts at its adoption: the events of a run
+// that went on while no process ran were never seen, so a run older than
+// the stall timeout is not stopped as stalled on the first pass after a
+// restart, and one silent for the timeout after its adoption is.
+func TestAdoptedRunStallClockStartsAtAdoption(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 15 * time.Minute
+	started := time.Now().Add(-time.Hour)
+	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	a := &remoteAdoption{entry: remoteRunEntry{
+		Issue:      domain.Issue{ID: "issue-19", Identifier: "ONS-19", State: "In Progress"},
+		DispatchID: "D19", StartedAt: started, TurnCount: 15,
+	}}
+	done := make(chan struct{})
+	before := time.Now()
+	adoptIssue(t.Context(), state, a, func(ctx context.Context, _ domain.Issue, _ *int) {
+		<-ctx.Done()
+		close(done)
+	})
+	entry := state.Running["issue-19"]
+	if entry == nil {
+		t.Fatal("the adopted run is not running")
+	}
+	if !entry.StartedAt.Equal(started) {
+		t.Errorf("StartedAt = %v, want the run's start %v", entry.StartedAt, started)
+	}
+	if ref := stallReference(entry); ref.Before(before) {
+		t.Errorf("stall reference = %v, before the adoption at %v", ref, before)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		now      time.Time
+		wantStop bool
+	}{
+		{"the first pass after the restart", time.Now(), false},
+		{"silent for the timeout after its adoption", entry.AdoptedAt.Add(timeout + time.Second), true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			params := defaultReconcileParams(t, &mockReconcileStore{}, &mockReconcileTracker{states: map[string]string{"issue-19": "In Progress"}})
+			params.StallTimeoutMS = int(timeout.Milliseconds())
+			params.NowFunc = func() time.Time { return tt.now }
+			s := NewState(5000, 4, 0, nil, AgentTotals{})
+			cc := &cancelCounter{}
+			s.Running["issue-19"] = &RunningEntry{
+				Identifier: "ONS-19", Issue: domain.Issue{ID: "issue-19", State: "In Progress"},
+				StartedAt: started, AdoptedAt: entry.AdoptedAt, CancelFunc: cc.cancel,
+			}
+			s.Claimed["issue-19"] = struct{}{}
+			ReconcileRunningIssues(s, params)
+			if got := cc.count == 1; got != tt.wantStop {
+				t.Errorf("stopped = %v, want %v", got, tt.wantStop)
+			}
+		})
+	}
+
+	entry.CancelFunc()
+	<-done
+	state.WorkerWg.Wait()
 }
