@@ -202,8 +202,10 @@ func (a *resumeAdapter) resumed() []string {
 }
 
 // start starts Sortie as the binary does: the store, the restored remote
-// runs, then the server, then the event loop.
-func (h *restartHarness) start() *sortieProcess {
+// runs, then the server, then the event loop. Each of beforeLoop runs
+// while the server answers and before the first tick, so a worker it
+// checks in is there when that tick reads the issue.
+func (h *restartHarness) start(beforeLoop ...func()) *sortieProcess {
 	h.t.Helper()
 	ctx := context.Background()
 	store, err := persistence.Open(ctx, h.dbPath)
@@ -245,6 +247,9 @@ func (h *restartHarness) start() *sortieProcess {
 	mux.Handle(worker.Prefix, worker.Handler(p.o.Workers(), restartHeader))
 	mux.Handle(dataplane.Prefix, p.o.DataPlane())
 	h.handler.Store(new(http.Handler(mux)))
+	for _, f := range beforeLoop {
+		f()
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
@@ -522,7 +527,7 @@ func TestRestartMidTurnKeepsTheRun(t *testing.T) {
 	h := newRestartHarness(t, 1, time.Minute)
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -561,7 +566,7 @@ func TestRestartBetweenTurnsKeepsTheRun(t *testing.T) {
 	h := newRestartHarness(t, 2, time.Minute)
 	h.tracker.holdRefresh = true
 	w := newRestartWorker(h)
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -615,7 +620,7 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 	}
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -663,7 +668,7 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	w := newRestartWorker(h)
 	w.hold = func(int, string) bool { return true }
 	w.dieOnBreak = true
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
