@@ -52,11 +52,20 @@ func (s *Server) handleSessionGrant(w http.ResponseWriter, r *http.Request) {
 	if req.By == "" {
 		req.By = defaultGrantedBy
 	}
+	capped, limit := s.supervisorGrantCap(r)
+	if capped {
+		req.By = supervisorGrantedBy
+		if limit <= 0 {
+			writeErrorJSON(w, s.logger, http.StatusConflict, "over_cap", overCapMessage(limit))
+			return
+		}
+	}
 	result := s.sessionGrantFn(r.Context(), orchestrator.SessionGrantRequest{
 		Identifier: r.PathValue("identifier"),
 		Add:        *req.Add,
 		By:         req.By,
 		Reason:     req.Reason,
+		Cap:        limit,
 	})
 	status := http.StatusOK
 	switch result.Status {
@@ -75,6 +84,9 @@ func (s *Server) handleSessionGrant(w http.ResponseWriter, r *http.Request) {
 	case orchestrator.SessionGrantUnknownIssue:
 		status = http.StatusNotFound
 		writeErrorJSON(w, s.logger, status, "issue_not_found", result.Message)
+	case orchestrator.SessionGrantOverCap:
+		status = http.StatusConflict
+		writeErrorJSON(w, s.logger, status, "over_cap", result.Message+"; "+overCapMessage(limit))
 	default:
 		status = http.StatusServiceUnavailable
 		message := result.Message

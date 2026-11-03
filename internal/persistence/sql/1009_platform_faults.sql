@@ -1,4 +1,4 @@
--- Migration 1008 (fork range): platform faults and the stories they hold
+-- Migration 1009 (fork range): platform faults and the stories they hold
 --
 -- A platform fault is a stopped failure no session of a story can fix,
 -- such as a push refused for a token scope. It is recorded once, by its

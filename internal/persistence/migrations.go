@@ -180,8 +180,11 @@ var migration1006SQL string
 //go:embed sql/1007_session_grants.sql
 var migration1007SQL string
 
-//go:embed sql/1008_platform_faults.sql
+//go:embed sql/1008_supervisor_actions.sql
 var migration1008SQL string
+
+//go:embed sql/1009_platform_faults.sql
+var migration1009SQL string
 
 // migrations lists upstream's migrations, numbered from 1 in upstream's
 // sequence, then the fork's, numbered from 1001. Upstream merges add lower
@@ -245,5 +248,6 @@ var migrations = []Migration{
 	{Version: 1005, Description: "error_detail column on run_history", SQL: migration1005SQL},
 	{Version: 1006, Description: "failure_signature column on run_history", SQL: migration1006SQL},
 	{Version: 1007, Description: "session_grants: sessions an operator granted an issue", SQL: migration1007SQL},
-	{Version: 1008, Description: "platform faults and the stories they hold", SQL: migration1008SQL},
+	{Version: 1008, Description: "supervisor_actions: what the supervisor token did or tried", SQL: migration1008SQL},
+	{Version: 1009, Description: "platform faults and the stories they hold", SQL: migration1009SQL},
 }

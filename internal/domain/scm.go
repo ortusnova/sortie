@@ -321,6 +321,16 @@ type PullRequestOpener interface {
 	EnsurePullRequest(ctx context.Context, owner, repo, head, base, title, body string) (PullRequest, error)
 }
 
+// PullRequestDrafter is an optional capability of an [SCMAdapter]: an
+// adapter that implements it can turn an open pull request back into a
+// draft. Implementations must be safe for concurrent use.
+type PullRequestDrafter interface {
+	// MarkPullRequestDraft makes the given open PR a draft. A PR that is
+	// already a draft succeeds and changes nothing. Returns a [*SCMError]
+	// on failure.
+	MarkPullRequestDraft(ctx context.Context, prNumber int, owner, repo string) error
+}
+
 // SCMErrorKind enumerates the normalized error categories that SCM
 // adapter implementations map their native errors to. The orchestrator
 // uses these categories for logging and observability; all SCM errors
