@@ -64,8 +64,11 @@ func newRemoteWorkers(now func() time.Time) *remoteWorkers {
 	leaser := worker.NewTTLLeaser(time.Duration(60000) * time.Millisecond)
 	tokens := jobtoken.NewIssuer()
 	plane := dataplane.New(tokens)
-	return &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(),
-		matcher: worker.NewMatcher(leaser, now, jobTokens{tokens})}
+	matcher := worker.NewMatcher(leaser, now, jobTokens{tokens})
+	// A job this process does not know may be one a previous process
+	// left with its worker, until the runs restored at start are adopted.
+	matcher.Recovering()
+	return &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(), matcher: matcher}
 }
 
 // started records the context of the process's event loop.

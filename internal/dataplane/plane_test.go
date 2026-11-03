@@ -101,8 +101,8 @@ func (f *fixture) do(method, path, token, contentType string, body io.Reader) re
 const seedPath = Prefix + "bundles/jobs/ONS-30/attempts/1/seed"
 
 // remote-runs: Seed. The seed is served to the job's live bundles token
-// only; another job's token, another flow's, an ended one, or none
-// answers 401 and serves nothing.
+// only; another job's token, another flow's, or none answers 401, an
+// ended one 410, and none serves anything.
 func TestSeedOnlyForTheJobsBundlesToken(t *testing.T) {
 	f := newFixture(t)
 	seed := filepath.Join(t.TempDir(), "seed.bundle")
@@ -128,8 +128,36 @@ func TestSeedOnlyForTheJobsBundlesToken(t *testing.T) {
 		}
 	}
 	f.issuer.OnLeaseEnd("ONS-30")
-	if resp := f.do(http.MethodGet, seedPath, own["bundles"], "", nil); resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("ended token: %d, want 401", resp.StatusCode)
+	if resp := f.do(http.MethodGet, seedPath, own["bundles"], "", nil); resp.StatusCode != http.StatusGone || bytes.Contains(resp.Body, []byte("bundle bytes")) {
+		t.Errorf("ended token: %d %q, want 410 serving nothing", resp.StatusCode, resp.Body)
+	}
+}
+
+// A worker that dials the stream of an attempt that ended is told the
+// job is gone, not that its token is wrong, so it releases the machine;
+// a token Sortie never minted still answers 401.
+func TestAnEndedAttemptIsGone(t *testing.T) {
+	f := newFixture(t)
+	f.open(1, Options{})
+	own := f.mint("ONS-30", 1)
+	f.issuer.OnLeaseEnd("ONS-30")
+	path := Prefix + "stdio/jobs/ONS-30/attempts/1"
+	resp := f.do(http.MethodGet, path, own["stdio"], "", nil)
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	_ = json.Unmarshal(resp.Body, &body)
+	if resp.StatusCode != http.StatusGone || body.Error.Code != "job_gone" {
+		t.Fatalf("stdio with an ended token: %d %s, want 410 job_gone", resp.StatusCode, resp.Body)
+	}
+	if resp := f.do(http.MethodGet, Prefix+"stdio/jobs/ONS-30/attempts/2", own["stdio"], "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an ended token on another attempt: %d, want 401", resp.StatusCode)
+	}
+	if resp := f.do(http.MethodGet, path, own["usage"], "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an ended token of another flow: %d, want 401", resp.StatusCode)
+	}
+	if resp := f.do(http.MethodGet, path, "never-minted", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a token never minted: %d, want 401", resp.StatusCode)
 	}
 }
 
@@ -373,8 +401,8 @@ const mcpPath = Prefix + "mcp/jobs/ONS-30/attempts/1"
 // remote-runs: A tool call from taichi. A request with the attempt's
 // live mcp token reaches the tool server of the attempt's own session at
 // /mcp, carrying that server's bearer and not the job token; a token of
-// another job, attempt or flow, an ended one, or none answers 401 and
-// reaches nothing.
+// another job, attempt or flow, or none answers 401, an ended one 410,
+// and none reaches anything.
 func TestMCPReachesTheAttemptsOwnToolServer(t *testing.T) {
 	f := newFixture(t)
 	a := f.open(1, Options{})
@@ -406,12 +434,15 @@ func TestMCPReachesTheAttemptsOwnToolServer(t *testing.T) {
 
 	refused := map[string]string{"another job's token": other["mcp"], "another flow's token": own["stdio"], "no token": ""}
 	attempt2 := f.mint("ONS-30", 2)
-	refused["another attempt's token"], refused["an ended token"] = attempt2["mcp"], own["mcp"]
+	refused["another attempt's token"] = attempt2["mcp"]
 	for name, tok := range refused {
 		resp := f.do(http.MethodPost, mcpPath, tok, "application/json", strings.NewReader(call))
 		if resp.StatusCode != http.StatusUnauthorized || bytes.Contains(resp.Body, []byte("session-bearer")) {
 			t.Errorf("%s: %d %s, want 401 reaching nothing", name, resp.StatusCode, resp.Body)
 		}
+	}
+	if resp := f.do(http.MethodPost, mcpPath, own["mcp"], "application/json", strings.NewReader(call)); resp.StatusCode != http.StatusGone || bytes.Contains(resp.Body, []byte("session-bearer")) {
+		t.Errorf("an ended token: %d %s, want 410 reaching nothing", resp.StatusCode, resp.Body)
 	}
 
 	a.Close()

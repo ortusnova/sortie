@@ -368,8 +368,8 @@ func TestHeartbeatAfterExpiry(t *testing.T) {
 	if o := outcome(t, ended); !o.Expired || o.Succeeded {
 		t.Fatalf("outcome %+v", o)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusConflict {
-		t.Fatalf("heartbeat after the sweep: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusGone || !strings.Contains(r.Body.String(), "expired") {
+		t.Fatalf("heartbeat after the sweep: %d %s, want 410 naming the expired lease", r.Code, r.Body)
 	}
 	if s := m.Snapshot(); len(s.Leases) != 0 || len(s.Queue) != 0 {
 		t.Fatalf("attempt revived: %+v", s)
@@ -393,8 +393,8 @@ func TestASucceededRun(t *testing.T) {
 	if s := m.Snapshot(); len(s.Leases) != 0 {
 		t.Fatalf("lease remains: %+v", s.Leases)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusConflict {
-		t.Fatalf("report for an ended attempt: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusGone {
+		t.Fatalf("report for an ended attempt: %d, want 410", r.Code)
 	}
 }
 
@@ -455,8 +455,8 @@ func TestAReportFromTheWrongWorker(t *testing.T) {
 	if r := a.post("p1", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusConflict {
 		t.Fatalf("heartbeat from p1: %d", r.Code)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/heartbeat", ""); r.Code != http.StatusConflict {
-		t.Fatalf("heartbeat for another attempt: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/heartbeat", ""); r.Code != http.StatusGone {
+		t.Fatalf("heartbeat for an attempt never granted: %d, want 410", r.Code)
 	}
 	notEnded(t, ended)
 	if after := m.Snapshot().Leases; !reflect.DeepEqual(after, before) || len(after) != 1 || after[0].Worker != "taichi" {
@@ -675,8 +675,8 @@ func TestTheQuietWorkerComesBack(t *testing.T) {
 	again := m.Submit(job("ONS-7", 2))
 	before := m.Snapshot()
 	for _, id := range []string{"taichi", "p1"} {
-		if r := a.post(id, "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusConflict {
-			t.Fatalf("late report from %s: %d", id, r.Code)
+		if r := a.post(id, "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusGone {
+			t.Fatalf("late report from %s: %d, want 410", id, r.Code)
 		}
 	}
 	notEnded(t, again)
@@ -784,8 +784,11 @@ func TestCancelWithdrawsJob(t *testing.T) {
 	if o := outcome(t, ended); !o.Cancelled {
 		t.Fatalf("%+v", o)
 	}
-	if _, err := m.Heartbeat("a", "j", 1); !errors.Is(err, ErrLeaseLost) {
-		t.Fatal(err)
+	if _, err := m.Heartbeat("a", "j", 1); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("heartbeat of a withdrawn job = %v, want ErrJobGone", err)
+	}
+	if err := m.Report("a", "j", 1, Outcome{Machine: MachineDeleted}); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("report of a withdrawn job = %v, want ErrJobGone", err)
 	}
 	if s := m.Snapshot(); len(s.Leases) != 0 {
 		t.Fatalf("%+v", s)
@@ -985,8 +988,8 @@ func TestAdoptedLeaseKeepsTheWorkersJob(t *testing.T) {
 	if _, err := m.Heartbeat("taichi", "ONS-30", 2); err != nil {
 		t.Fatalf("heartbeat of the adopted job: %v", err)
 	}
-	if _, err := m.Heartbeat("taichi", "ONS-30", 1); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("heartbeat of another attempt = %v, want ErrLeaseLost", err)
+	if _, err := m.Heartbeat("taichi", "ONS-30", 1); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("heartbeat of another attempt = %v, want ErrJobGone", err)
 	}
 	if err := m.Report("taichi", "ONS-30", 2, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
 		t.Fatalf("report: %v", err)
@@ -1326,5 +1329,62 @@ func TestPlaceableSparesTheScarceWorker(t *testing.T) {
 	}
 	if why, ok := m.Placeable(nested, nested); ok {
 		t.Fatalf("Placeable(nested) behind another nested job = placeable, %v", why)
+	}
+}
+
+// A job Sortie withdrew is gone for its worker: the heartbeat and the
+// report answer 410 with why, so the worker releases the machine, and
+// the job's state does not change.
+func TestAWithdrawnJobIsGone(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	m.Submit(job("ONS-19", 1))
+	a.post("taichi", "/api/v1/workers/poll", "")
+	m.Cancel("ONS-19")
+	for _, route := range []string{"heartbeat", "report"} {
+		r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/"+route, `{"outcome":"failed","reason":"x","machine":"running"}`)
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		_ = json.Unmarshal(r.Body.Bytes(), &body)
+		if r.Code != http.StatusGone || body.Error.Code != "job_gone" || !strings.Contains(body.Error.Message, "withdrew") {
+			t.Fatalf("%s of a withdrawn job: %d %s, want 410 job_gone saying Sortie withdrew it", route, r.Code, r.Body)
+		}
+	}
+	if s := m.Snapshot(); len(s.Leases) != 0 || len(s.Queue) != 0 {
+		t.Fatalf("state %+v, want nothing held", s)
+	}
+}
+
+// While a restarted Sortie has not yet adopted the runs it restored, a
+// job it does not know may still be adopted: its heartbeat and report
+// answer 503, which the worker retries. Once the adoption is done, the
+// same job is gone.
+func TestAnUnknownJobDuringRecovery(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	m.Recovering()
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	if _, err := m.Adopt(job("ONS-30", 1), "taichi"); err != nil {
+		t.Fatal(err)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-30/attempts/1/heartbeat", ""); r.Code != http.StatusOK {
+		t.Fatalf("heartbeat of a restored job during recovery: %d %s", r.Code, r.Body)
+	}
+	for _, route := range []string{"heartbeat", "report"} {
+		r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/"+route, `{"outcome":"failed","reason":"x","machine":"running"}`)
+		if r.Code != http.StatusServiceUnavailable || r.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s of an unknown job during recovery: %d %s, want 503 with Retry-After", route, r.Code, r.Body)
+		}
+	}
+	m.Recovered()
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/heartbeat", ""); r.Code != http.StatusGone {
+		t.Fatalf("heartbeat of an unknown job after recovery: %d %s, want 410", r.Code, r.Body)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-30/attempts/1/heartbeat", ""); r.Code != http.StatusOK {
+		t.Fatalf("heartbeat of the adopted job after recovery: %d %s", r.Code, r.Body)
 	}
 }

@@ -110,6 +110,33 @@ func TestTokensEndWithTheAttempt(t *testing.T) {
 	}
 }
 
+// A token of an attempt that ended is known as ended, with its grant,
+// until the job's next attempt ends; one never minted is not.
+func TestEndedTokensAreKnown(t *testing.T) {
+	t.Parallel()
+	i := NewIssuer(flowGit)
+	first := mint(t, i, "job-a")
+	if _, ok := i.Ended(first[flowGit].Reveal()); ok {
+		t.Fatal("a live token is known as ended")
+	}
+	i.OnLeaseEnd("job-a")
+	g, ok := i.Ended(first[flowGit].Reveal())
+	if !ok || g.JobID != "job-a" || g.Attempt != 1 || g.Flow != flowGit {
+		t.Fatalf("ended token: %+v %v, want job-a attempt 1", g, ok)
+	}
+	second := mint(t, i, "job-a")
+	i.OnLeaseEnd("job-a")
+	if _, ok := i.Ended(first[flowGit].Reveal()); ok {
+		t.Error("the first attempt's token is still kept once the second ended")
+	}
+	if g, ok := i.Ended(second[flowGit].Reveal()); !ok || g.Attempt != 2 {
+		t.Errorf("second attempt's token: %+v %v", g, ok)
+	}
+	if _, ok := i.Ended("never-minted"); ok {
+		t.Error("a token never minted is known as ended")
+	}
+}
+
 func TestMintBindsTheCallersAttemptAndFlows(t *testing.T) {
 	t.Parallel()
 	i := NewIssuer(flowGit)

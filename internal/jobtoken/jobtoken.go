@@ -77,6 +77,8 @@ type Issuer struct {
 	grants   map[digest]Grant
 	byJob    map[string][]digest
 	attempts map[string]uint64
+	// ended holds the tokens of each job's last ended attempt, by job.
+	ended map[string]map[digest]Grant
 }
 
 // NewIssuer returns an issuer that mints one token for each of flows.
@@ -86,6 +88,7 @@ func NewIssuer(flows ...Flow) *Issuer {
 		grants:   map[digest]Grant{},
 		byJob:    map[string][]digest{},
 		attempts: map[string]uint64{},
+		ended:    map[string]map[digest]Grant{},
 	}
 }
 
@@ -137,10 +140,19 @@ func (i *Issuer) OnLeaseEnd(jobID string) {
 	i.revokeLocked(jobID)
 }
 
+// revokeLocked ends the live attempt of jobID, if any: its tokens are
+// refused and known as ended in place of the attempt that ended before.
 func (i *Issuer) revokeLocked(jobID string) {
-	for _, d := range i.byJob[jobID] {
+	live := i.byJob[jobID]
+	if len(live) == 0 {
+		return
+	}
+	ended := make(map[digest]Grant, len(live))
+	for _, d := range live {
+		ended[d] = i.grants[d]
 		delete(i.grants, d)
 	}
+	i.ended[jobID] = ended
 	delete(i.byJob, jobID)
 }
 
@@ -198,6 +210,25 @@ func (i *Issuer) Lookup(token string) (Grant, error) {
 		return Grant{}, ErrInvalid
 	}
 	return g, nil
+}
+
+// Ended returns what the token granted when it belongs to its job's last
+// attempt that ended, so the holder can be told that the attempt is
+// over rather than that its token is wrong. A token never minted, or of
+// an earlier attempt, is not known.
+func (i *Issuer) Ended(token string) (Grant, bool) {
+	if token == "" {
+		return Grant{}, false
+	}
+	d := hash(token)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, ended := range i.ended {
+		if g, ok := ended[d]; ok {
+			return g, true
+		}
+	}
+	return Grant{}, false
 }
 
 // Check accepts token only for jobID's live attempt and flow.
