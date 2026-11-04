@@ -83,8 +83,8 @@ func (f *fakeSupervisor) FileIssue(_ context.Context, title, _ string) orchestra
 	return orchestrator.SupervisorResult{Status: orchestrator.SupervisorDone, IssueID: "id-200", Identifier: "ONS-200"}
 }
 
-func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id string) orchestrator.SupervisorResult {
-	f.called("live_proof")
+func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion string) orchestrator.SupervisorResult {
+	f.called("live_proof " + criterion)
 	return f.result(id)
 }
 
@@ -354,7 +354,7 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/ONS-7/draft", `{}`, "mark_draft", "mark_draft"},
 		{"/api/v1/ONS-7/merge", `{}`, "merge", "merge"},
 		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice"}`, "file_issue", "file_issue Flaky seed"},
-		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof"},
+		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof seen in run 4"},
 		{"/api/v1/supervisor/questions", `{"action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
 		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
 		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},

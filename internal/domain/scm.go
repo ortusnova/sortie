@@ -321,6 +321,17 @@ type PullRequestOpener interface {
 	EnsurePullRequest(ctx context.Context, owner, repo, head, base, title, body string) (PullRequest, error)
 }
 
+// PullRequestFinder is an optional capability of an [SCMAdapter]: an
+// adapter that implements it finds the open pull request of a branch
+// without opening one. Implementations must be safe for concurrent use.
+type PullRequestFinder interface {
+	// FindOpenPullRequest returns the open pull request in owner/repo
+	// whose head is the branch head of that same repository, whatever
+	// its base, and false when there is none. Returns a [*SCMError] on
+	// failure.
+	FindOpenPullRequest(ctx context.Context, owner, repo, head string) (PullRequest, bool, error)
+}
+
 // PullRequestDrafter is an optional capability of an [SCMAdapter]: an
 // adapter that implements it can turn an open pull request back into a
 // draft. Implementations must be safe for concurrent use.

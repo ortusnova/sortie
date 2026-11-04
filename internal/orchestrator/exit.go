@@ -1167,8 +1167,10 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 
 		// A fix session leaves the issue in the handoff state and releases
 		// its claim, but its push gives the pull request a new head, so the
-		// watches keyed on that head must start over.
-		fixExit := claimedAtExit && dispatchPostureForReactionKind(entry.ReactionKind) == PostureFix && !blockedSoftStop && !terminalSuppressed
+		// watches keyed on that head must start over. A parked story's
+		// live-proof job seeds none: the park holds the story until the
+		// supervisor acts on the job's result.
+		fixExit := claimedAtExit && dispatchPostureForReactionKind(entry.ReactionKind) == PostureFix && entry.ReactionKind != ReactionKindLiveProof && !blockedSoftStop && !terminalSuppressed
 		headWatchesAllowed := (reactionEnqueueAllowed || fixExit) && !criteriaFailed
 		var seededKinds []string
 

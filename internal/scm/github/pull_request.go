@@ -15,6 +15,8 @@ import (
 
 var _ domain.PullRequestOpener = (*GitHubSCMAdapter)(nil)
 
+var _ domain.PullRequestFinder = (*GitHubSCMAdapter)(nil)
+
 // pullRequestScopeHint names what a token needs to open a pull request.
 const pullRequestScopeHint = "the token needs the classic scope repo, or the fine-grained permission Pull requests: write"
 
@@ -94,6 +96,12 @@ func (a *GitHubSCMAdapter) EnsurePullRequest(ctx context.Context, owner, repo, h
 		}
 	}
 	return domain.PullRequest{Number: created.Number, URL: created.HTMLURL, Created: true}, nil
+}
+
+// FindOpenPullRequest returns the open pull request of owner/repo whose
+// head is its own branch head, and false when there is none.
+func (a *GitHubSCMAdapter) FindOpenPullRequest(ctx context.Context, owner, repo, head string) (domain.PullRequest, bool, error) {
+	return a.findOpenPullRequest(ctx, owner, repo, head)
 }
 
 // findOpenPullRequest returns the open pull request whose head is the

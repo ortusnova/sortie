@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -283,9 +284,10 @@ const (
 	// effects, fresh session.
 	PostureReview
 
-	// PostureFix is the read-write fix dispatch (label-fix): full clone via
-	// operator hooks so the agent can check out the PR head branch and push,
-	// a fresh session, and every issue-work side effect suppressed.
+	// PostureFix is the read-write fix dispatch (label-fix, and a parked
+	// story's live-proof job): full clone via operator hooks so the agent
+	// can check out the PR head branch and push, a fresh session, and every
+	// issue-work side effect suppressed.
 	PostureFix
 )
 
@@ -308,7 +310,7 @@ func dispatchPostureForReactionKind(kind string) DispatchPosture {
 	switch kind {
 	case ReactionKindLabelReview:
 		return PostureReview
-	case ReactionKindLabelFix:
+	case ReactionKindLabelFix, ReactionKindLiveProof:
 		return PostureFix
 	default:
 		return PostureNormal
@@ -1578,6 +1580,11 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		presentedComments = adoptedPresentedComments(deps.ReactionKind, tmpl, issue.ToTemplateMap(), attemptInt, maxTurns, continuation, firstTurnOptions)
 	}
 
+	// A pull request suggestion already in the workspace, as a reused
+	// directory may hold, is not this run's: only one the run writes, or
+	// changes, ends it.
+	suggestionBefore := pullRequestSuggestion(wsResult.Path)
+
 	for !skipTurns {
 		if ctx.Err() != nil {
 			stopSessionBestEffort(ctx, deps.AgentAdapter, session, cfg, logger)
@@ -1784,6 +1791,13 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		// gate instead of sending the same prompt again.
 		if criteriaRecorded(wsResult.Path) {
 			logger.Info("agent recorded its criteria verdict, exiting worker", slog.Int("turns_completed", turnsCompleted))
+			break
+		}
+
+		// The agent writes its pull request suggestion when it has
+		// finished: the turn that wrote it ends the run.
+		if s := pullRequestSuggestion(wsResult.Path); s != nil && !bytes.Equal(s, suggestionBefore) {
+			logger.Info("agent wrote its pull request suggestion, exiting worker", slog.Int("turns_completed", turnsCompleted))
 			break
 		}
 

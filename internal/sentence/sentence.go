@@ -299,6 +299,7 @@ var continuationTemplates = map[string]string{
 	orchestrator.ReactionKindBotReview:     "run_bot_review_fix",
 	orchestrator.ReactionKindLabelReview:   "run_label_review",
 	orchestrator.ReactionKindLabelFix:      "run_label_fix",
+	orchestrator.ReactionKindLiveProof:     "run_live_proof",
 }
 
 // retryTemplates names the retry template of each recorded retry trigger.
