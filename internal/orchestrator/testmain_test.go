@@ -80,6 +80,12 @@ func runFakeAgentProcess(dir, prompts string) int {
 // request in .sortie/pr.json, and reports 12000 input and 3000 output
 // tokens through usage; every turn then ends. It returns when in ends.
 func fakeAgent(in io.Reader, out io.Writer, dir string, usage func(fakeAgentUsage) error, record func(string) error) error {
+	return fakeAgentRun(in, out, dir, true, usage, record)
+}
+
+// fakeAgentRun is [fakeAgent], suggesting no pull request without
+// suggest, as a review or a fix of an open pull request does not.
+func fakeAgentRun(in io.Reader, out io.Writer, dir string, suggest bool, usage func(fakeAgentUsage) error, record func(string) error) error {
 	enc := json.NewEncoder(out)
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
@@ -106,8 +112,10 @@ func fakeAgent(in io.Reader, out io.Writer, dir string, usage func(fakeAgentUsag
 			if err := os.MkdirAll(filepath.Join(dir, ".sortie"), 0o750); err != nil {
 				return err
 			}
-			if err := os.WriteFile(filepath.Join(dir, ".sortie", "pr.json"), []byte(`{"title":"Add one and two","body":"Two changes."}`), 0o600); err != nil {
-				return err
+			if suggest {
+				if err := os.WriteFile(filepath.Join(dir, ".sortie", "pr.json"), []byte(`{"title":"Add one and two","body":"Two changes."}`), 0o600); err != nil {
+					return err
+				}
 			}
 			if err := enc.Encode(fakeAgentLine{Message: "committed two changes"}); err != nil {
 				return err
