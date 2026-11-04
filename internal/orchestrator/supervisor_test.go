@@ -338,9 +338,10 @@ func TestSupervisor_MarkDraft(t *testing.T) {
 		t.Fatalf("draft = %+v with %d drafts, want done once", got, h.forge.drafts)
 	}
 
-	h = newSupervisorHarness(t, stateWithParked("id-13", "ONS-13"))
-	if got := h.o.Supervisor().MarkDraft(t.Context(), "ONS-13"); got.Code != "no_pull_request" {
-		t.Errorf("draft without a pull request = %+v, want no_pull_request", got)
+	h = parkedStoryHarness(t, supervisorFinder{})
+	if got := h.o.Supervisor().MarkDraft(t.Context(), "ONS-39"); got.Code != "no_pull_request" ||
+		!strings.Contains(got.Message, "sortie/ONS-39") || !strings.Contains(got.Message, "o/homelab") || h.forge.drafts != 0 {
+		t.Errorf("draft without a pull request = %+v, want no_pull_request naming the branch and repository", got)
 	}
 	h = newSupervisorHarness(t, stateWithReviewReaction(t, "id-14", 52))
 	h.o.prDrafter = nil
@@ -362,8 +363,12 @@ func TestSupervisor_FixRunCarriesTheMessage(t *testing.T) {
 		t.Fatalf("retry = %+v, want a review fix run", retry)
 	}
 	comments, _ := retry.ContinuationContext[reviewCommentsKey].([]map[string]any)
-	if len(comments) != 1 || comments[0]["body"] != "The worker column is missing." || comments[0]["reviewer"] != "supervisor" {
-		t.Errorf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
+	if len(comments) != 1 || comments[0]["reviewer"] != "supervisor" {
+		t.Fatalf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
+	}
+	body, _ := comments[0]["body"].(string)
+	if !strings.Contains(body, "owner/repo#61") || !strings.HasSuffix(body, "\n\nThe worker column is missing.") {
+		t.Errorf("request body = %q, want the pull request and the message", body)
 	}
 	if again := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "again"); again.Status != SupervisorPrecondition {
 		t.Errorf("second fix run = %+v, want refused", again)
@@ -427,6 +432,14 @@ func parkedStoryHarness(t *testing.T, finder supervisorFinder) *supervisorHarnes
 	state := stateWithParked("id-39", "ONS-39")
 	park := state.Parked["id-39"]
 	park.RuleName, park.AgentKind, park.TemplateID = "review", "agent-client-protocol", "review-template"
+	return routedStoryHarness(t, state, finder)
+}
+
+// routedStoryHarness is a harness over state whose stories route by their
+// label to the homelab repository, with finder as the forge's open pull
+// requests.
+func routedStoryHarness(t *testing.T, state *State, finder supervisorFinder) *supervisorHarness {
+	t.Helper()
 	h := newSupervisorHarness(t, state)
 	cfg := gateConfig()
 	repos := []config.Repository{
