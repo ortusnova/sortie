@@ -1747,6 +1747,19 @@ type State struct {
 	// the handoff_parts table. Only the event loop mutates this map.
 	HandoffParts map[string]*HandoffPart
 
+	// MergeAndProve holds, by issue ID, each story in merge-and-prove's
+	// queue or in flight; at most one is past the queue. The durable mirror
+	// is the merge_and_prove table. Only the event loop mutates this map.
+	MergeAndProve map[string]*MergeAndProveEntry
+
+	// MergeAndProveSeq is the last queue position merge-and-prove gave.
+	MergeAndProveSeq int64
+
+	// RevertScans holds, per repository (owner/repo), when the next scan
+	// for merged reverts starts reading. Runtime-only: the first scan after
+	// a start reads back from the oldest merge record.
+	RevertScans map[string]time.Time
+
 	// EgressHoldNoticed maps the ID of each issue an invalid egress
 	// policy holds, and whose hold was commented on the issue, to the
 	// commit read. A valid read of the policy removes the entry. Only the
@@ -1852,6 +1865,8 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		PlatformFaults:            make(map[string]*PlatformFault),
 		FaultHolds:                make(map[string]string),
 		HandoffParts:              make(map[string]*HandoffPart),
+		MergeAndProve:             make(map[string]*MergeAndProveEntry),
+		RevertScans:               make(map[string]time.Time),
 		EgressHoldNoticed:         make(map[string]string),
 		supervisor:                newSupervisorState(),
 	}
@@ -2354,6 +2369,9 @@ type RuntimeSnapshotResult struct {
 	// an empty slice when there is none.
 	HandoffParts []SnapshotHandoffPart `json:"-"`
 
+	// MergeAndProve is merge-and-prove's story in flight and its queue.
+	MergeAndProve SnapshotMergeAndProve `json:"-"`
+
 	// SessionGrants is the sessions granted to each issue beyond
 	// MaxSessions, keyed by issue ID; an issue without a grant is absent.
 	SessionGrants map[string]int `json:"-"`
@@ -2687,6 +2705,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.DispatchPause = state.dispatchPause.snapshot()
 	snap.PlatformFaults = snapshotPlatformFaults(state)
 	snap.HandoffParts = snapshotHandoffParts(state)
+	snap.MergeAndProve = snapshotMergeAndProve(state)
 	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
 	snap.Supervisor = snapshotSupervisor(state)
 

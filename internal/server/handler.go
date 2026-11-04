@@ -61,6 +61,10 @@ type stateResponse struct {
 	// became. A story with one is kept out of Done.
 	HandoffParts []handoffPartResponse `json:"handoff_parts"`
 
+	// MergeAndProve is the story merge-and-prove has in flight, with its
+	// phase and deadline, and the stories queued behind it.
+	MergeAndProve mergeAndProveResponse `json:"merge_and_prove"`
+
 	// Supervisor is the supervisor session's status, its last trigger, and
 	// its budget use; null while the workflow configures no supervisor.
 	Supervisor *supervisorResponse `json:"supervisor"`
@@ -1458,6 +1462,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 	resp.DispatchPaused = toDispatchPausedResponse(snap.DispatchPause)
 	resp.PlatformFaults = toPlatformFaultResponses(snap.PlatformFaults)
 	resp.HandoffParts = toHandoffPartResponses(snap.HandoffParts)
+	resp.MergeAndProve = toMergeAndProveResponse(snap.MergeAndProve)
 	resp.Supervisor = toSupervisorResponse(snap.Supervisor)
 
 	return resp

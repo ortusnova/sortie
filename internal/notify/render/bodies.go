@@ -330,3 +330,43 @@ func holdExpiredBody(f domain.HoldExpiredFacts) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// storyRevertedBody returns the text of a story.reverted event: which
+// merge was reverted, by which pull request, who reverted it and why, and
+// where the story went.
+func storyRevertedBody(f domain.StoryRevertedFacts) string {
+	merge := "Its merge"
+	if f.PullRequest != "" {
+		merge = "Its merge of " + f.PullRequest
+	}
+	if f.MergeCommit != "" {
+		merge += " (" + shortSHA(f.MergeCommit) + ")"
+	}
+	merge += " was reverted"
+	if f.RevertPullRequest != "" {
+		merge += " by " + f.RevertPullRequest
+	}
+	if f.BySortie {
+		merge += ", which Sortie merged because the change was not proven live in time."
+	} else {
+		merge += ", merged on the forge."
+	}
+	lines := []string{merge}
+	if f.Reason != "" {
+		lines = append(lines, "Reason: "+f.Reason)
+	}
+	if f.State != "" {
+		lines = append(lines, "The story is back in "+f.State+" and is not done; the stories it blocks wait for it again.")
+	} else {
+		lines = append(lines, "The story is not done; the stories it blocks wait for it again.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// shortSHA returns the first twelve characters of a commit.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}

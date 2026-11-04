@@ -27,6 +27,7 @@ type SupervisorActions interface {
 	Merge(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	FileIssue(ctx context.Context, title, body string) orchestrator.SupervisorResult
 	RequestLiveProof(ctx context.Context, identifier, criterion string) orchestrator.SupervisorResult
+	MergeAndProve(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	AskPerson(ctx context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult
 }
 
@@ -70,6 +71,7 @@ const (
 	supervisorActionMerge       = "merge"
 	supervisorActionFileIssue   = "file_issue"
 	supervisorActionLiveProof   = "live_proof"
+	supervisorActionMergeProve  = "merge_and_prove"
 	supervisorActionHold        = "hold"
 	supervisorActionReleaseHold = "release_hold"
 	supervisorActionAsk         = "ask_person"
@@ -147,7 +149,7 @@ func (s *Server) recordSupervised(action string, next http.HandlerFunc) http.Han
 func (s *Server) refuseSupervisor(w http.ResponseWriter, r *http.Request) {
 	evidence, _ := readEvidence(r)
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, or ask a person")
+	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, merge and prove, or ask a person")
 	action := r.Method + " " + r.URL.Path
 	if r.Pattern != "" {
 		action = r.Pattern
@@ -438,6 +440,10 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/{identifier}/live-proof", s.supervisorRoute(supervisorActionLiveProof, s.supervisorHandler(supervisorActionLiveProof,
 		func(ctx context.Context, sup SupervisorActions, id string, req supervisorRequest) orchestrator.SupervisorResult {
 			return sup.RequestLiveProof(ctx, id, req.Evidence)
+		})))
+	mux.HandleFunc("/api/v1/{identifier}/merge-and-prove", s.supervisorRoute(supervisorActionMergeProve, s.supervisorHandler(supervisorActionMergeProve,
+		func(ctx context.Context, sup SupervisorActions, id string, _ supervisorRequest) orchestrator.SupervisorResult {
+			return sup.MergeAndProve(ctx, id)
 		})))
 	mux.HandleFunc("/api/v1/supervisor/questions", s.supervisorRoute(supervisorActionAsk, s.handleSupervisorQuestion))
 	mux.HandleFunc("/api/v1/issues", s.supervisorRoute(supervisorActionFileIssue, s.supervisorHandler(supervisorActionFileIssue,

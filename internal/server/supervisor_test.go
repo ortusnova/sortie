@@ -88,6 +88,15 @@ func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion strin
 	return f.result(id)
 }
 
+func (f *fakeSupervisor) MergeAndProve(_ context.Context, id string) orchestrator.SupervisorResult {
+	f.called("merge_and_prove")
+	r := f.result(id)
+	if r.Status == orchestrator.SupervisorDone {
+		r.PullRequest = "o/r#12"
+	}
+	return r
+}
+
 func (f *fakeSupervisor) AskPerson(_ context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult {
 	f.called("ask_person " + q.Action)
 	if len(q.Stories) == 0 || q.Checked == "" {
@@ -355,6 +364,7 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/ONS-7/merge", `{}`, "merge", "merge"},
 		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice"}`, "file_issue", "file_issue Flaky seed"},
 		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof seen in run 4"},
+		{"/api/v1/ONS-7/merge-and-prove", `{}`, "merge_and_prove", "merge_and_prove"},
 		{"/api/v1/supervisor/questions", `{"action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
 		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
 		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},
@@ -388,8 +398,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].By != "supervisor" || grants[0].Cap != 4 {
 		t.Errorf("grants = %+v, want one by the supervisor capped at 4", grants)
 	}
-	if n := len(h.supervisorActions(t)); n != 24 {
-		t.Errorf("records = %d, want 24: a rejection and an action per route", n)
+	if n := len(h.supervisorActions(t)); n != 26 {
+		t.Errorf("records = %d, want 26: a rejection and an action per route", n)
 	}
 
 	// The control token reaches the same routes, needs no evidence and
@@ -400,8 +410,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/merge", tokenLive1, `{}`); status != http.StatusForbidden {
 		t.Errorf("merge with a session token = %d, want 403", status)
 	}
-	if n := len(h.supervisorActions(t)); n != 24 {
-		t.Errorf("records after operator calls = %d, want still 24", n)
+	if n := len(h.supervisorActions(t)); n != 26 {
+		t.Errorf("records after operator calls = %d, want still 26", n)
 	}
 }
 
