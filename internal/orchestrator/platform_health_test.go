@@ -33,13 +33,12 @@ func healthClockAt(h *runHarness, base time.Time) func(time.Duration) {
 	}
 }
 
-// healthHarness is a run harness whose workflow runs under env with one
-// agent kind, kind-a.
-func healthHarness(t *testing.T, env config.EnvironmentConfig, candidates ...domain.Issue) *runHarness {
+// healthHarness is a run harness whose workflow runs one agent kind,
+// kind-a.
+func healthHarness(t *testing.T, candidates ...domain.Issue) *runHarness {
 	t.Helper()
 	cfg := runConfig(t, map[string]any{"agent": map[string]any{"kind": "kind-a", "command": "a-cmd"}})
 	cfg.Agent.MaxConcurrentAgents = 4
-	cfg.Environment = env
 	h := newRunHarness(t, cfg, "kind-a")
 	h.state.MaxConcurrentAgents = 4
 	h.tracker.candidates = candidates
@@ -97,7 +96,7 @@ func TestHealth_CredentialNearExpiryAsksForTheLoginBeforeAnySession(t *testing.T
 	dir := t.TempDir()
 	expiresFile := filepath.Join(dir, "expires")
 	writeHealthFile(t, expiresFile, now.Add(20*time.Minute).Format(time.RFC3339))
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-70", "ONS-70"))
+	h := healthHarness(t, candidate("issue-70", "ONS-70"))
 	cfg := h.wm.Config()
 	cfg.Health.Credentials = []config.HealthCredential{{
 		Name:           "claude",
@@ -220,7 +219,7 @@ func (f *fakeTokenInspector) grant(scopes ...string) {
 func TestHealth_ForgeTokenWithoutTheScopeAChangeNeedsHoldsTheStory(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-71", "ONS-71"), candidate("issue-72", "ONS-72"))
+	h := healthHarness(t, candidate("issue-71", "ONS-71"), candidate("issue-72", "ONS-72"))
 	inspector := &fakeTokenInspector{scopes: []string{"repo", "read:org"}}
 	h.o.tokenInspector = inspector
 	h.o.scmProvider = "github"
@@ -273,7 +272,7 @@ func TestHealth_ForgeTokenWithoutTheScopeAChangeNeedsHoldsTheStory(t *testing.T)
 func TestHealth_TokenWithoutListedScopesHoldsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-73", "ONS-73"))
+	h := healthHarness(t, candidate("issue-73", "ONS-73"))
 	h.o.tokenInspector = &fakeTokenInspector{}
 	h.o.storyChanges = func(context.Context, config.ServiceConfig, domain.Issue) ([]string, error) {
 		return []string{".github/workflows/ci.yml"}, nil
@@ -294,7 +293,7 @@ func TestHealth_TokenWithoutListedScopesHoldsNothing(t *testing.T) {
 func TestHealth_ForgeTokenRefusedOrExpiringHoldsDispatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-74", "ONS-74"))
+	h := healthHarness(t, candidate("issue-74", "ONS-74"))
 	now := time.Now().UTC()
 	advance := healthClockAt(h, now)
 	inspector := &fakeTokenInspector{err: &domain.SCMError{Kind: domain.ErrSCMAuth, Message: "Bad credentials"}}
@@ -330,7 +329,7 @@ func TestHealth_FailedDeployHoldsDispatchUntilTheKitDeploys(t *testing.T) {
 	now := time.Now().UTC()
 	path := filepath.Join(t.TempDir(), "deploy.json")
 	writeHealthFile(t, path, `{"status":"failed","commit":"aaa","main":"bbb","error":"make build: exit 2","updated_at":"`+now.Format(time.RFC3339)+`"}`)
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-75", "ONS-75"))
+	h := healthHarness(t, candidate("issue-75", "ONS-75"))
 	cfg := h.wm.Config()
 	cfg.Health.DeployState = path
 	h.wm.config = cfg
@@ -456,7 +455,7 @@ func TestHandleRetryTimer_HealthCheckHoldsTheRetry(t *testing.T) {
 func TestHealth_RefusedAgentCredentialHoldsTheKindUntilSignedIn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-79", "ONS-79"))
+	h := healthHarness(t, candidate("issue-79", "ONS-79"))
 	advance := healthClockAt(h, time.Now())
 
 	h.o.noteAgentCredentialRefused(ctx, WorkerResult{AgentAdapter: "kind-a", Identifier: "ONS-78",
