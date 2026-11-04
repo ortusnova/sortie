@@ -814,6 +814,13 @@ type remoteRun struct {
 // worker; drive runs it, the whole job by default.
 func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), drive func(*fakeWorker, context.CancelCauseFunc)) remoteRun {
 	t.Helper()
+	return runRemoteONS30With(t, f, nil, prepare, drive)
+}
+
+// runRemoteONS30With runs ONS-30 as runRemoteONS30 does, with adjust
+// applied to the run's config first.
+func runRemoteONS30With(t *testing.T, f *gitFixture, adjust func(*config.ServiceConfig), prepare func(*fakeWorker), drive func(*fakeWorker, context.CancelCauseFunc)) remoteRun {
+	t.Helper()
 	upstream := f.upstream()
 	rw := newRemoteWorkers(time.Now)
 	const header = "X-Sortie-Worker-Identity"
@@ -826,6 +833,9 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
 		Remote: config.RemoteConfig{IdentityHeader: header, Backend: "smolvm", Image: "ghcr.io/ortusnova/agent:1",
 			Flows: flows, LeaseTTLMS: 60000, Repository: runRepository(upstream)}}
+	if adjust != nil {
+		adjust(&cfg)
+	}
 
 	adapter := &lineAdapter{}
 	run := remoteRun{upstream: upstream, adapter: adapter}

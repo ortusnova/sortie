@@ -20,6 +20,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/dataplane"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/egress"
 	"github.com/sortie-ai/sortie/internal/environment"
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
@@ -370,6 +371,7 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 			StallTimeoutMS: cfg.Agent.StallTimeoutMS,
 			SeedPath:       worker.SeedPath(issue.Identifier, n),
 			Credentials:    creds,
+			Egress:         jobEgress(rc),
 		},
 	}
 }
@@ -557,7 +559,7 @@ func RunRemoteAttempt(ctx context.Context, rw *remoteWorkers, issue domain.Issue
 		if err != nil {
 			return nil, err
 		}
-		return &remoteRepository{syncer: syncer, attempt: ra}, nil
+		return &remoteRepository{syncer: syncer, repo: *repo, attempt: ra}, nil
 	}
 	deps.AgentAdapter = &remoteUsageAdapter{AgentAdapter: deps.AgentAdapter, attempt: ra}
 	onExit := deps.OnExit
@@ -1126,6 +1128,7 @@ func (a *remoteUsageAdapter) RunTurn(ctx context.Context, session domain.Session
 // flow and takes its issue branch back from it.
 type remoteRepository struct {
 	syncer  *gitsync.Syncer
+	repo    config.Repository
 	attempt *remoteAttempt
 }
 
@@ -1157,6 +1160,16 @@ func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, 
 	if err != nil {
 		return err
 	}
+	// The job's egress policy is the base branch's at the seed's base
+	// commit, never the issue branch's: an agent cannot widen its own.
+	f, readErr := r.syncer.FileAt(ctx, seed.Base, egress.File, egress.MaxFileBytes)
+	read, err := egressFromFile(r.repo, f, readErr)
+	if err != nil {
+		return fmt.Errorf("read the repository's %s: %w", egress.File, err)
+	}
+	if read.invalid != nil {
+		return errors.New(read.invalid.Text())
+	}
 	for _, name := range returnedSortieFiles {
 		if err := workspacekit.RemoveSortieFile(ws.HostPath, name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("clear the previous .sortie/%s: %w", name, err)
@@ -1164,6 +1177,7 @@ func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, 
 	}
 	a.mu.Lock()
 	a.seed, a.seedPath = &seed, path
+	a.job.Run.Egress.Source, a.job.Run.Egress.Repository = read.source, read.policy
 	a.mu.Unlock()
 	return nil
 }

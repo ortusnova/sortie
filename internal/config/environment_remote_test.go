@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sortie-ai/sortie/internal/egress"
 )
 
 func remoteFlowsRaw() map[string]any {
@@ -54,6 +56,7 @@ func TestEnvironmentConfig_Remote(t *testing.T) {
 		Credentials:    []RemoteCredential{{Name: "anthropic", Env: "ANTHROPIC_API_KEY", Hosts: []string{"api.anthropic.com"}, Header: "x-api-key"}},
 		Flows:          remoteFlowsWant(),
 		LeaseTTLMS:     30000,
+		Egress:         egress.Empty(),
 	}
 	if cfg.Environment.Kind != EnvironmentKindRemote || !reflect.DeepEqual(cfg.Environment.Remote, want) {
 		t.Fatalf("Environment = %+v, want remote %+v", cfg.Environment, want)
@@ -68,7 +71,7 @@ func TestEnvironmentConfig_RemoteDefaults(t *testing.T) {
 		t.Fatalf("NewServiceConfig() error = %v", err)
 	}
 	want := RemoteConfig{IdentityHeader: "X-Sortie-Worker-Identity", Backend: "smolvm", Image: "ghcr.io/ortusnova/agent:1",
-		Flows: remoteFlowsWant(), LeaseTTLMS: 60000}
+		Flows: remoteFlowsWant(), LeaseTTLMS: 60000, Egress: egress.Empty()}
 	if !reflect.DeepEqual(cfg.Environment.Remote, want) {
 		t.Fatalf("Remote = %+v, want %+v", cfg.Environment.Remote, want)
 	}
@@ -295,5 +298,48 @@ func TestEnvironmentConfig_RemoteRefusesHooks(t *testing.T) {
 	}
 	if _, err := NewServiceConfig(map[string]any{"hooks": map[string]any{"after_create": "make setup"}}); err != nil {
 		t.Errorf("hook under the local kind: error = %v, want none", err)
+	}
+}
+
+// job-egress-policy: The harness's hosts are declared once in the
+// workflow, in the format of the repository's file, and a malformed list
+// is refused naming its entry.
+func TestEnvironmentConfig_RemoteEgress(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{"egress": map[string]any{
+		"version": 1,
+		"hosts":   []any{map[string]any{"host": "models.opencode.ai", "reason": "the agent harness's models"}},
+	}}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	want := egress.Policy{Hosts: []egress.Host{{Host: "models.opencode.ai", Reason: "the agent harness's models"}},
+		UDP: []egress.UDP{}, Private: []egress.Private{}}
+	if !reflect.DeepEqual(cfg.Environment.Remote.Egress, want) {
+		t.Errorf("Egress = %+v, want %+v", cfg.Environment.Remote.Egress, want)
+	}
+
+	for name, tc := range map[string]struct {
+		value any
+		field string
+		msg   string
+	}{
+		"a host with no reason": {map[string]any{"version": 1, "hosts": []any{map[string]any{"host": "models.opencode.ai"}}},
+			"environment.remote.egress.hosts[0].reason", "is required"},
+		"a host with a port": {map[string]any{"version": 1, "hosts": []any{map[string]any{"host": "ghcr.io:443", "reason": "images"}}},
+			"environment.remote.egress.hosts[0].host", "has a port"},
+		"an unknown key": {map[string]any{"version": 1, "hosts": []any{}, "ports": []any{443}},
+			"environment.remote.egress.ports", "unknown key"},
+		"not a mapping": {"models.opencode.ai", "environment.remote.egress", "must be a mapping"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewServiceConfig(remoteRaw(map[string]any{"egress": tc.value}))
+			var cerr *ConfigError
+			if !errors.As(err, &cerr) || cerr.Field != tc.field || !strings.Contains(cerr.Message, tc.msg) {
+				t.Errorf("NewServiceConfig() error = %v, want %s: %s", err, tc.field, tc.msg)
+			}
+		})
 	}
 }

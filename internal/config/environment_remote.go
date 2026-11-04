@@ -1,11 +1,14 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sortie-ai/sortie/internal/egress"
 )
 
 const (
@@ -47,6 +50,7 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "repository", Type: FieldMap},
 	{Name: "repositories", Type: FieldSequence},
 	{Name: "default_repository", Type: FieldString},
+	{Name: "egress", Type: FieldMap},
 }
 
 // remoteRepositoryKeys are the keys of a remote repository entry.
@@ -104,6 +108,11 @@ type RemoteConfig struct {
 	// DefaultRepository names the entry of Repositories an issue that
 	// names no repository runs in.
 	DefaultRepository string
+
+	// Egress is environment.remote.egress: the hosts every job needs for
+	// its agent harness, whatever its repository. Empty, with its lists
+	// not nil, when the workflow declares none.
+	Egress egress.Policy
 }
 
 // JobImage returns the image a job of repo runs in: repo's own, or
@@ -193,6 +202,9 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		return RemoteConfig{}, err
 	}
 	if cfg.Flows, err = parseRemoteFlows(m["flows"]); err != nil {
+		return RemoteConfig{}, err
+	}
+	if cfg.Egress, err = parseRemoteEgress(m["egress"]); err != nil {
 		return RemoteConfig{}, err
 	}
 	if v, exists := m["lease_ttl_ms"]; exists && v != nil {
@@ -495,6 +507,24 @@ func parseRemoteCredentials(value any) ([]RemoteCredential, error) {
 		creds = append(creds, RemoteCredential{Name: name, Env: env, Hosts: hosts, Header: header})
 	}
 	return creds, nil
+}
+
+// parseRemoteEgress reads environment.remote.egress, the harness's
+// egress policy, in the format of a repository's egress file. Absent, it
+// is the empty policy.
+func parseRemoteEgress(value any) (egress.Policy, error) {
+	const field = remoteField + ".egress"
+	if value == nil {
+		return egress.Empty(), nil
+	}
+	p, err := egress.FromValue(value, field)
+	if err != nil {
+		if perr, ok := errors.AsType[*egress.Error](err); ok {
+			return egress.Policy{}, &ConfigError{Field: perr.Entry, Message: perr.Message}
+		}
+		return egress.Policy{}, &ConfigError{Field: field, Message: err.Error()}
+	}
+	return p, nil
 }
 
 // parseRemoteFlows reads environment.remote.flows: a URL for each of

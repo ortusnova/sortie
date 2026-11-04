@@ -429,8 +429,10 @@ func clickProofsRequest(prNumber int, headSHA string) string {
 
 // criteriaCheckFailed reports whether the run was a criteria check, under
 // plan control, that ended blocked or asking for human review: a refusal.
+// A reaction run on the gate rule (a fix, a live proof) is no check, as
+// for [isCriteriaReview].
 func criteriaCheckFailed(params HandleWorkerExitParams, entry *RunningEntry, result WorkerResult) bool {
-	if params.PlanReleaseState == "" || entry == nil || !result.SoftStop {
+	if params.PlanReleaseState == "" || entry == nil || entry.ReactionKind != "" || !result.SoftStop {
 		return false
 	}
 	if result.SoftStopReason != string(workspace.StatusBlocked) && result.SoftStopReason != string(workspace.StatusNeedsHumanReview) {

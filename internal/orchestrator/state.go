@@ -515,6 +515,11 @@ type RetryEntry struct {
 	// while WorkerWait is nil. Runtime-only.
 	WorkerWaitSince time.Time
 
+	// EgressHold is why the retry's remote job was not offered when
+	// HandleRetryTimer last re-armed it for that: its repository's egress
+	// policy is invalid. Nil otherwise. Runtime-only.
+	EgressHold *EgressHold
+
 	// holdRearmed is true when HandleRetryTimer re-armed this entry because a
 	// spend ceiling or a usage-limit hold held it, so a later slot or host
 	// shortage keeps Attempt. Runtime-only.
@@ -1721,6 +1726,12 @@ type State struct {
 	// the handoff_parts table. Only the event loop mutates this map.
 	HandoffParts map[string]*HandoffPart
 
+	// EgressHoldNoticed maps the ID of each issue an invalid egress
+	// policy holds, and whose hold was commented on the issue, to the
+	// commit read. A valid read of the policy removes the entry. Only the
+	// event loop mutates this map.
+	EgressHoldNoticed map[string]string
+
 	// sessionGrants is what the store holds of the sessions operators
 	// granted beyond agent.max_sessions. Owned by the event loop.
 	sessionGrants sessionGrantCache
@@ -1819,6 +1830,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		PlatformFaults:            make(map[string]*PlatformFault),
 		FaultHolds:                make(map[string]string),
 		HandoffParts:              make(map[string]*HandoffPart),
+		EgressHoldNoticed:         make(map[string]string),
 		supervisor:                newSupervisorState(),
 	}
 }
@@ -1894,7 +1906,7 @@ type SnapshotSlotHold struct {
 // SnapshotHold is a read-only view of the hold the latest dispatch pass gave
 // one candidate. Blockers is nil unless Reason is [SkipBlockedBy], Slot is nil
 // unless it is [SkipAgentSlotsFull], Worker is nil unless it is
-// [SkipNoWorker], ResetsAt is zero unless it is a spend reason or
+// [SkipNoWorker], Egress is nil unless it is [SkipEgressInvalid], ResetsAt is zero unless it is a spend reason or
 // [SkipUsageLimit], AgentKind, ModelOnly, and Model are set for
 // [SkipUsageLimit] only, and Holder and Note for [SkipStandingHold] only.
 type SnapshotHold struct {
@@ -1903,6 +1915,7 @@ type SnapshotHold struct {
 	Blockers  []SnapshotBlocker `json:"blockers"`
 	Slot      *SnapshotSlotHold `json:"slot"`
 	Worker    *WorkerHold       `json:"worker,omitempty"`
+	Egress    *EgressHold       `json:"egress,omitempty"`
 	ResetsAt  time.Time         `json:"resets_at"`
 	AgentKind string            `json:"agent_kind,omitempty"`
 	ModelOnly bool              `json:"model_only,omitempty"`
@@ -2086,6 +2099,10 @@ type SnapshotRetryEntry struct {
 	// it was last re-armed for that, since WorkerWaitSince; nil otherwise.
 	WorkerWait      *WorkerHold `json:"worker_wait,omitempty"`
 	WorkerWaitSince time.Time   `json:"worker_wait_since,omitzero"`
+
+	// EgressHold is why the retry's remote job was not offered when it
+	// was last re-armed for that; nil otherwise.
+	EgressHold *EgressHold `json:"egress_hold,omitempty"`
 }
 
 // SnapshotParkedEntry is a read-only view of one parked issue, produced by
@@ -2622,6 +2639,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			Environment:       snapshotEnvironment(state, instance, entry.Identifier),
 			WorkerWait:        cloneWorkerHold(entry.WorkerWait),
 			WorkerWaitSince:   entry.WorkerWaitSince,
+			EgressHold:        cloneEgressHold(entry.EgressHold),
 		})
 	}
 
