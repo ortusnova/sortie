@@ -48,6 +48,15 @@ type PlatformFault struct {
 	// NextCheckAt is when the scheduled check of the fault is due.
 	NextCheckAt time.Time
 
+	// QuestionKind is the action kind of a question raised through the
+	// supervisor's question route, and RaisedBy who raised it
+	// ([QuestionRaisedBySupervisor] or [QuestionRaisedByOperator]); both are
+	// empty for any other fault. Withdrawn is the evidence the supervisor
+	// gave when it withdrew the question.
+	QuestionKind string
+	RaisedBy     string
+	Withdrawn    string
+
 	Holds []PlatformFaultHold
 
 	// checking is set while a check of the fault runs.
@@ -210,6 +219,9 @@ func platformFaultRow(f *PlatformFault, resolvedAt time.Time) persistence.Platfo
 		LastCheckAt:    formatFaultTime(f.LastCheckAt),
 		LastCheckError: f.LastCheckError,
 		ResolvedAt:     formatFaultTime(resolvedAt),
+		QuestionKind:   f.QuestionKind,
+		RaisedBy:       f.RaisedBy,
+		Withdrawn:      f.Withdrawn,
 		Holds:          make([]persistence.PlatformFaultHold, 0, len(f.Holds)),
 	}
 	if f.Action != nil {
@@ -246,6 +258,8 @@ func PopulatePlatformFaults(state *State, rows []persistence.PlatformFault, log 
 			ActionDoneBy:   row.ActionDoneBy,
 			LastCheckAt:    parseFaultTime(row.LastCheckAt),
 			LastCheckError: row.LastCheckError,
+			QuestionKind:   row.QuestionKind,
+			RaisedBy:       row.RaisedBy,
 		}
 		if row.Action != "" {
 			f.Action = &failcause.PersonAction{Action: row.Action, Where: row.ActionWhere}
@@ -372,6 +386,8 @@ type SnapshotPlatformFault struct {
 	LastCheckError string
 	NextCheckAt    time.Time
 	Checking       bool
+	QuestionKind   string
+	RaisedBy       string
 	Holds          []PlatformFaultHold
 }
 
@@ -391,6 +407,8 @@ func snapshotPlatformFault(f *PlatformFault) SnapshotPlatformFault {
 		LastCheckError: redact.Mask(f.LastCheckError),
 		NextCheckAt:    f.NextCheckAt,
 		Checking:       f.checking,
+		QuestionKind:   f.QuestionKind,
+		RaisedBy:       f.RaisedBy,
 		Holds:          make([]PlatformFaultHold, len(f.Holds)),
 	}
 	if f.Action != nil {

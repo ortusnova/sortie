@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -183,7 +184,7 @@ func TestSupervisorQuestion_ServesThePersonAction(t *testing.T) {
 	h := newSupervisorHarness(t, 4)
 
 	status, body := h.do(t, http.MethodPost, "/api/v1/supervisor/questions", testSupervisorToken,
-		`{"evidence": "two pushes refused", "action": "Give taichi's GitHub token \"Workflows: Read and write\"", "where": "GitHub, Settings, Developer settings", "stories": ["ONS-7"], "checked": "the refusal names the workflow scope", "cause": "the push needs the workflow scope"}`)
+		`{"evidence": "two pushes refused", "kind": "credential", "action": "Give taichi's GitHub token \"Workflows: Read and write\"", "where": "GitHub, Settings, Developer settings", "stories": ["ONS-7"], "checked": "the refusal names the workflow scope", "cause": "the push needs the workflow scope"}`)
 	if status != http.StatusOK || body["action"] != "ask_person" || body["existing"] != false {
 		t.Fatalf("question = %d %v, want 200", status, body)
 	}
@@ -198,6 +199,22 @@ func TestSupervisorQuestion_ServesThePersonAction(t *testing.T) {
 	if latest := h.supervisorActions(t)[0]; latest["action"] != "ask_person" || latest["issue_identifier"] != "ONS-7" || latest["result"] != "done" {
 		t.Errorf("record = %v, want the question recorded against ONS-7", latest)
 	}
+	h.sup.mu.Lock()
+	asked := h.sup.lastQuestion
+	h.sup.mu.Unlock()
+	if asked.Kind != "credential" || asked.RaisedBy != "supervisor" || asked.Evidence != "two pushes refused" {
+		t.Errorf("question asked = %+v, want the kind, the evidence, raised by the supervisor", asked)
+	}
+	if status, _ := h.do(t, http.MethodPost, "/api/v1/supervisor/questions", testControlToken,
+		`{"kind": "decision", "action": "a", "where": "w", "stories": ["ONS-7"], "checked": "c"}`); status != http.StatusOK {
+		t.Errorf("question with the control token = %d, want 200", status)
+	}
+	h.sup.mu.Lock()
+	asked = h.sup.lastQuestion
+	h.sup.mu.Unlock()
+	if asked.RaisedBy != "operator" {
+		t.Errorf("question with the control token raised by %q, want operator", asked.RaisedBy)
+	}
 
 	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions", testSupervisorToken,
 		`{"evidence": "e", "action": "a", "where": "w", "stories": ["ONS-7"]}`)
@@ -208,5 +225,73 @@ func TestSupervisorQuestion_ServesThePersonAction(t *testing.T) {
 		`{"evidence": "e", "action": "a", "where": "w", "stories": ["ONS-9"], "checked": "c"}`)
 	if status != http.StatusNotFound {
 		t.Errorf("question for an unknown story = %d, want 404", status)
+	}
+}
+
+// The supervisor withdraws its question with evidence, optionally with a
+// replacement; the withdrawal is recorded, and a question it did not raise
+// is refused with a precondition.
+func TestSupervisorQuestion_Withdraw(t *testing.T) {
+	t.Parallel()
+	h := newSupervisorHarness(t, 4)
+
+	if status, body := h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-q1/withdraw", testSupervisorToken, `{}`); status != http.StatusBadRequest ||
+		body["error"].(map[string]any)["code"] != "evidence_required" {
+		t.Errorf("withdrawal without evidence = %d %v, want 400 evidence_required", status, body)
+	}
+
+	status, body := h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-q1/withdraw", testSupervisorToken,
+		`{"evidence": "the forge shows o/r#12 merged and reverted"}`)
+	if status != http.StatusOK || body["action"] != "withdraw_question" || body["replacement"] != nil {
+		t.Fatalf("withdrawal = %d %v, want 200 with no replacement", status, body)
+	}
+	if fault, _ := body["platform_fault"].(map[string]any); fault["id"] != "pf-q1" || fault["question_kind"] != "live_proof" || fault["raised_by"] != "supervisor" {
+		t.Errorf("platform_fault = %v, want the withdrawn question", fault)
+	}
+	if latest := h.supervisorActions(t)[0]; latest["action"] != "withdraw_question" || latest["issue_identifier"] != "ONS-7" ||
+		latest["result"] != "done" || latest["evidence"] != "the forge shows o/r#12 merged and reverted" {
+		t.Errorf("record = %v, want the withdrawal with its evidence against ONS-7", latest)
+	}
+
+	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-q1/withdraw", testSupervisorToken,
+		`{"evidence": "the revert reopened the story", "replacement": {"kind": "decision", "action": "Decide whether ONS-7 lands again", "where": "the workbench", "stories": ["ONS-7"], "checked": "o/r#12 was reverted"}}`)
+	replacement, _ := body["replacement"].(map[string]any)
+	if status != http.StatusOK || replacement == nil || replacement["existing"] != false {
+		t.Fatalf("withdrawal with a replacement = %d %v, want 200 with the replacement", status, body)
+	}
+	h.sup.mu.Lock()
+	asked := h.sup.lastQuestion
+	h.sup.mu.Unlock()
+	if asked.Kind != "decision" || asked.RaisedBy != "supervisor" || asked.Evidence != "the revert reopened the story" {
+		t.Errorf("replacement = %+v, want the decision raised by the supervisor on the withdrawal's evidence", asked)
+	}
+
+	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-agent/withdraw", testSupervisorToken, `{"evidence": "stale"}`)
+	if status != http.StatusConflict || body["error"].(map[string]any)["code"] != "not_supervisor_question" {
+		t.Errorf("withdrawal of an agent's fault = %d %v, want 409 not_supervisor_question", status, body)
+	}
+	if latest := h.supervisorActions(t)[0]; latest["result"] != "rejected" || !strings.HasPrefix(latest["detail"].(string), "not_supervisor_question") {
+		t.Errorf("record = %v, want the refused withdrawal", latest)
+	}
+	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-gone/withdraw", testSupervisorToken, `{"evidence": "stale"}`)
+	if status != http.StatusNotFound || body["error"].(map[string]any)["code"] != "question_not_found" {
+		t.Errorf("withdrawal of an unknown question = %d %v, want 404 question_not_found", status, body)
+	}
+}
+
+// POST /api/v1/issues passes the kind, stories and signature on, and
+// serves whether the filing joined an open issue.
+func TestSupervisorIssue_ServesTheJoin(t *testing.T) {
+	t.Parallel()
+	h := newSupervisorHarness(t, 4)
+
+	status, body := h.do(t, http.MethodPost, "/api/v1/issues", testSupervisorToken,
+		`{"evidence": "deploy.json is an hour old", "title": "Deploy state is stale", "kind": "platform_defect", "signature": "deploy | state | stale"}`)
+	if status != http.StatusOK || body["action"] != "file_issue" || body["issue_identifier"] != "ONS-200" || body["existing"] != true {
+		t.Errorf("filing = %d %v, want 200 joined to ONS-200", status, body)
+	}
+	if status, body := h.do(t, http.MethodPost, "/api/v1/issues", testSupervisorToken,
+		`{"evidence": "e", "title": "t", "stories": ["ONS-7"]}`); status != http.StatusBadRequest || body["error"].(map[string]any)["code"] != "invalid_request" {
+		t.Errorf("filing without a kind = %d %v, want 400 invalid_request", status, body)
 	}
 }

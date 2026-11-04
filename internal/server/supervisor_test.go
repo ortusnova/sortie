@@ -23,8 +23,9 @@ const testSupervisorToken = "supervisor-token-5678"
 // fakeSupervisor answers every supervisor action as done for ONS-7, whose
 // pull request is o/r#12 merged at abc123, and records each call.
 type fakeSupervisor struct {
-	mu    sync.Mutex
-	calls []string
+	mu           sync.Mutex
+	calls        []string
+	lastQuestion orchestrator.SupervisorQuestion
 }
 
 func (f *fakeSupervisor) called(name string) {
@@ -78,9 +79,17 @@ func (f *fakeSupervisor) Merge(_ context.Context, id string) orchestrator.Superv
 	return f.result(id)
 }
 
-func (f *fakeSupervisor) FileIssue(_ context.Context, title, _ string) orchestrator.SupervisorResult {
-	f.called("file_issue " + title)
-	return orchestrator.SupervisorResult{Status: orchestrator.SupervisorDone, IssueID: "id-200", Identifier: "ONS-200"}
+func (f *fakeSupervisor) FileIssue(_ context.Context, issue orchestrator.SupervisorIssue) orchestrator.SupervisorIssueResult {
+	f.called("file_issue " + issue.Kind + " " + issue.Title)
+	if issue.Kind == "" {
+		return orchestrator.SupervisorIssueResult{SupervisorResult: orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorPrecondition, Code: "invalid_request", Message: "an issue names its kind",
+		}}
+	}
+	return orchestrator.SupervisorIssueResult{
+		SupervisorResult: orchestrator.SupervisorResult{Status: orchestrator.SupervisorDone, IssueID: "id-200", Identifier: "ONS-200"},
+		Existing:         issue.Signature == "deploy | state | stale",
+	}
 }
 
 func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion string) orchestrator.SupervisorResult {
@@ -88,8 +97,39 @@ func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion strin
 	return f.result(id)
 }
 
+// WithdrawQuestion withdraws pf-q1, refuses pf-agent as a question
+// Sortie or a story's agent raised, and knows no other question.
+func (f *fakeSupervisor) WithdrawQuestion(ctx context.Context, w orchestrator.SupervisorWithdrawal) orchestrator.SupervisorWithdrawResult {
+	f.called("withdraw_question " + w.QuestionID)
+	switch w.QuestionID {
+	case "pf-q1":
+	case "pf-agent":
+		return orchestrator.SupervisorWithdrawResult{SupervisorResult: orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorPrecondition, Code: "not_supervisor_question", Message: "platform fault pf-agent is not a question the supervisor raised",
+		}}
+	default:
+		return orchestrator.SupervisorWithdrawResult{SupervisorResult: orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorUnknownIssue, Code: "question_not_found", Message: "no open question has the ID " + w.QuestionID,
+		}}
+	}
+	res := orchestrator.SupervisorWithdrawResult{
+		SupervisorResult: orchestrator.SupervisorResult{Status: orchestrator.SupervisorDone, IssueID: "id-7", Identifier: "ONS-7"},
+		Withdrawn: orchestrator.SnapshotPlatformFault{
+			ID: "pf-q1", Class: orchestrator.PlatformFaultClassSupervisorQuestion, QuestionKind: "live_proof", RaisedBy: "supervisor",
+		},
+	}
+	if w.Replacement != nil {
+		q := f.AskPerson(ctx, *w.Replacement)
+		res.Replacement = &q
+	}
+	return res
+}
+
 func (f *fakeSupervisor) AskPerson(_ context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult {
 	f.called("ask_person " + q.Action)
+	f.mu.Lock()
+	f.lastQuestion = q
+	f.mu.Unlock()
 	if len(q.Stories) == 0 || q.Checked == "" {
 		return orchestrator.SupervisorQuestionResult{SupervisorResult: orchestrator.SupervisorResult{
 			Status: orchestrator.SupervisorPrecondition, Code: "invalid_request", Message: "a question names its stories and what was checked",
@@ -353,11 +393,12 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/ONS-7/fix", `{"message": "rename the column"}`, "fix_run", "fix_run rename the column"},
 		{"/api/v1/ONS-7/draft", `{}`, "mark_draft", "mark_draft"},
 		{"/api/v1/ONS-7/merge", `{}`, "merge", "merge"},
-		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice"}`, "file_issue", "file_issue Flaky seed"},
+		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice", "kind": "platform_defect", "stories": ["ONS-7"]}`, "file_issue", "file_issue platform_defect Flaky seed"},
 		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof seen in run 4"},
-		{"/api/v1/supervisor/questions", `{"action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
+		{"/api/v1/supervisor/questions", `{"kind": "credential", "action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
 		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
 		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},
+		{"/api/v1/supervisor/questions/pf-q1/withdraw", `{}`, "withdraw_question", "withdraw_question pf-q1"},
 	} {
 		without := len(h.sup.callsMade())
 		if status, body := h.do(t, http.MethodPost, tt.path, testSupervisorToken, tt.body); status != http.StatusBadRequest ||
@@ -388,8 +429,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].By != "supervisor" || grants[0].Cap != 4 {
 		t.Errorf("grants = %+v, want one by the supervisor capped at 4", grants)
 	}
-	if n := len(h.supervisorActions(t)); n != 24 {
-		t.Errorf("records = %d, want 24: a rejection and an action per route", n)
+	if n := len(h.supervisorActions(t)); n != 26 {
+		t.Errorf("records = %d, want 26: a rejection and an action per route", n)
 	}
 
 	// The control token reaches the same routes, needs no evidence and
@@ -400,8 +441,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/merge", tokenLive1, `{}`); status != http.StatusForbidden {
 		t.Errorf("merge with a session token = %d, want 403", status)
 	}
-	if n := len(h.supervisorActions(t)); n != 24 {
-		t.Errorf("records after operator calls = %d, want still 24", n)
+	if n := len(h.supervisorActions(t)); n != 26 {
+		t.Errorf("records after operator calls = %d, want still 26", n)
 	}
 }
 
