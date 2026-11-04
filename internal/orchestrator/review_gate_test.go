@@ -199,6 +199,36 @@ func TestCriteriaCheckFailed_OnlyForGateRulesUnderPlanControl(t *testing.T) {
 	if criteriaCheckFailed(f.params, entry, passed) {
 		t.Error("detected for a passing check")
 	}
+
+	// A reaction run on the gate rule, such as a review fix run or a
+	// parked story's live-proof job, is no criteria check: its blocked
+	// stop must not post a criteria failure, escalate, or send the story
+	// back for rework.
+	for _, kind := range []string{ReactionKindReview, ReactionKindLiveProof} {
+		reaction := *entry
+		reaction.ReactionKind = kind
+		if criteriaCheckFailed(f.params, &reaction, f.result) {
+			t.Errorf("detected for a %s run", kind)
+		}
+	}
+}
+
+// A live-proof job on the gate rule that stops blocked leaves the story
+// as it was: no rework label, no transition.
+func TestCriteriaFailure_NotForALiveProofJob(t *testing.T) {
+	t.Parallel()
+	f := criteriaExitFixture(t, "rework")
+	f.state.Running[hopExitIssueID].ReactionKind = ReactionKindLiveProof
+	f.result.SoftStopReason = "blocked"
+	f.exit()
+	if slices.Contains(f.tracker.added, "stage-rework") || len(f.tracker.transitionCalls) != 0 {
+		t.Errorf("labels added %v, transitions %+v, want none", f.tracker.added, f.tracker.transitionCalls)
+	}
+	for _, c := range f.tracker.commentCalls {
+		if strings.Contains(c.Text, "acceptance-criteria check") {
+			t.Errorf("comment %q, want no criteria failure", c.Text)
+		}
+	}
 }
 
 // A criteria story stuck on a review the forge requires is warned about
