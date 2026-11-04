@@ -352,7 +352,7 @@ func TestSupervisor_MarkDraft(t *testing.T) {
 func TestSupervisor_FixRunCarriesTheMessage(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-15", 61))
-	got := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "The worker column is missing.")
+	got := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "The worker column is missing.", "")
 	if got.Status != SupervisorDone || got.PullRequest != "owner/repo#61" {
 		t.Fatalf("fix run = %+v, want done", got)
 	}
@@ -365,10 +365,10 @@ func TestSupervisor_FixRunCarriesTheMessage(t *testing.T) {
 	if len(comments) != 1 || comments[0]["body"] != "The worker column is missing." || comments[0]["reviewer"] != "supervisor" {
 		t.Errorf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
 	}
-	if again := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "again"); again.Status != SupervisorPrecondition {
+	if again := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "again", ""); again.Status != SupervisorPrecondition {
 		t.Errorf("second fix run = %+v, want refused", again)
 	}
-	if empty := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", " "); empty.Code != "invalid_request" {
+	if empty := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", " ", ""); empty.Code != "invalid_request" {
 		t.Errorf("fix run without a message = %+v, want invalid_request", empty)
 	}
 }
@@ -403,10 +403,10 @@ func TestSupervisor_FileIssueWaitsInTheBacklog(t *testing.T) {
 func TestSupervisor_RequestLiveProof(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-16", 71))
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "id-16-ident", "criterion"); got.Status != SupervisorDone || got.PullRequest != "owner/repo#71" {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "id-16-ident", "criterion", ""); got.Status != SupervisorDone || got.PullRequest != "owner/repo#71" {
 		t.Errorf("live proof = %+v, want done on owner/repo#71", got)
 	}
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-404", "criterion"); got.Status != SupervisorUnknownIssue {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-404", "criterion", ""); got.Status != SupervisorUnknownIssue {
 		t.Errorf("live proof of an unknown issue = %+v, want unknown issue", got)
 	}
 }
@@ -451,7 +451,7 @@ func parkedStoryHarness(t *testing.T, finder supervisorFinder) *supervisorHarnes
 func TestSupervisor_RequestLiveProofOfAParkedStory(t *testing.T) {
 	t.Parallel()
 	h := parkedStoryHarness(t, supervisorFinder{"o/homelab:sortie/ONS-39": {Number: 155}})
-	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "the full vm chain needs Let's Encrypt staging")
+	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "the full vm chain needs Let's Encrypt staging", "")
 	if got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
 		t.Fatalf("live proof = %+v, want done on o/homelab#155", got)
 	}
@@ -485,7 +485,7 @@ func TestSupervisor_RequestLiveProofOfAParkedStory(t *testing.T) {
 		t.Errorf("request body = %q, want it to open with the marker", body)
 	}
 
-	if again := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "again"); again.Status != SupervisorPrecondition || again.Code != "retry_scheduled" {
+	if again := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "again", ""); again.Status != SupervisorPrecondition || again.Code != "retry_scheduled" {
 		t.Errorf("second request while the job waits = %+v, want retry_scheduled", again)
 	}
 }
@@ -503,7 +503,7 @@ func TestSupervisor_RequestLiveProofOfAParkedStoryWithoutAPullRequest(t *testing
 		}
 	}
 	h := parkedStoryHarness(t, supervisorFinder{"o/sortie:sortie/ONS-39": {Number: 9}})
-	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion")
+	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion", "")
 	if got.Status != SupervisorPrecondition || got.Code != "no_pull_request" || !strings.Contains(got.Message, "sortie/ONS-39") || !strings.Contains(got.Message, "o/homelab") {
 		t.Errorf("live proof = %+v, want no_pull_request naming the branch and repository", got)
 	}
@@ -511,13 +511,13 @@ func TestSupervisor_RequestLiveProofOfAParkedStoryWithoutAPullRequest(t *testing
 
 	h = parkedStoryHarness(t, supervisorFinder{"o/homelab:sortie/ONS-39": {Number: 155}})
 	h.forge.status.Closed = true
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion"); got.Code != "pull_request_closed" {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion", ""); got.Code != "pull_request_closed" {
 		t.Errorf("live proof of a closed pull request = %+v, want pull_request_closed", got)
 	}
 	noRun(h)
 
 	h = parkedStoryHarness(t, nil)
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion"); got.Status != SupervisorUnsupported {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion", ""); got.Status != SupervisorUnsupported {
 		t.Errorf("live proof on a forge that cannot find pull requests = %+v, want unsupported", got)
 	}
 	noRun(h)

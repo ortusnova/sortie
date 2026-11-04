@@ -159,9 +159,10 @@ type HandleRetryTimerParams struct {
 	HostPool *HostPool
 
 	// WorkerWait returns why no worker can take the re-fetched issue's
-	// remote job now, and nil when one can. A retry it holds keeps its
-	// attempt and takes no slot. Nil holds none.
-	WorkerWait func(domain.Issue) *WorkerHold
+	// remote job, run with the named job profile or, when it is empty,
+	// its repository's, now, and nil when one can. A retry it holds
+	// keeps its attempt and takes no slot. Nil holds none.
+	WorkerWait func(domain.Issue, string) *WorkerHold
 
 	// HealthHold reports whether a failing health check holds the
 	// re-fetched issue and, with hold set, holds it under the check's
@@ -275,6 +276,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			LastSSHHost:         popped.LastSSHHost,
 			SessionID:           popped.SessionID,
 			ContinuationContext: popped.ContinuationContext,
+			JobProfile:          popped.JobProfile,
 			ReactionKind:        popped.ReactionKind,
 			Continuation:        popped.Continuation,
 			Command:             popped.Command,
@@ -922,7 +924,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 
 	if params.WorkerWait != nil {
-		if wait := params.WorkerWait(issue); wait != nil {
+		if wait := params.WorkerWait(issue, popped.JobProfile); wait != nil {
 			if params.HostPool != nil && host != "" {
 				params.HostPool.ReleaseHost(issueID)
 			}
@@ -1080,6 +1082,9 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	if popped.ContinuationContext != nil {
 		dispatchCtx = WithContinuationContext(ctx, popped.ContinuationContext)
 	}
+	if popped.JobProfile != "" {
+		dispatchCtx = withJobProfile(dispatchCtx, popped.JobProfile)
+	}
 	if popped.UsageLimitNotified {
 		dispatchCtx = withUsageLimitNotified(dispatchCtx)
 	}
@@ -1110,6 +1115,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		entry.ConfiguredEffort = attemptSettings.Settings.Effort
 		entry.TemplateID = templateID
 		entry.ContinuationContext = popped.ContinuationContext
+		entry.JobProfile = popped.JobProfile
 		entry.ReactionKind = popped.ReactionKind
 		entry.Trigger = popped.OriginTrigger
 		entry.UsageLimitNotified = popped.UsageLimitNotified

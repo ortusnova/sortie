@@ -22,11 +22,11 @@ import (
 type SupervisorActions interface {
 	ReleasePark(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	RecordMerge(ctx context.Context, identifier, pullRequest, commit string) orchestrator.SupervisorResult
-	FixRun(ctx context.Context, identifier, message string) orchestrator.SupervisorResult
+	FixRun(ctx context.Context, identifier, message, profile string) orchestrator.SupervisorResult
 	MarkDraft(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	Merge(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	FileIssue(ctx context.Context, title, body string) orchestrator.SupervisorResult
-	RequestLiveProof(ctx context.Context, identifier, criterion string) orchestrator.SupervisorResult
+	RequestLiveProof(ctx context.Context, identifier, criterion, profile string) orchestrator.SupervisorResult
 	AskPerson(ctx context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult
 }
 
@@ -85,6 +85,7 @@ type supervisorNote struct {
 	identifier  string
 	pullRequest string
 	mergeCommit string
+	profile     string
 }
 
 // supervisorCaller reports whether the supervisor token made r.
@@ -104,6 +105,14 @@ func noteSupervised(r *http.Request, identifier, pullRequest, mergeCommit string
 		note.identifier = identifier
 	}
 	note.pullRequest, note.mergeCommit = pullRequest, mergeCommit
+}
+
+// noteProfile adds the job profile the action named to the record of a
+// supervisor request; it does nothing for any other caller.
+func noteProfile(r *http.Request, profile string) {
+	if note, ok := r.Context().Value(supervisorCtxKey{}).(*supervisorNote); ok {
+		note.profile = profile
+	}
 }
 
 // isSupervisorToken reports whether token is the configured supervisor
@@ -170,7 +179,7 @@ func (s *Server) recordSupervisorAction(r *http.Request, action, evidence string
 		ActedAt:  time.Now().UTC(),
 	}
 	if note != nil {
-		a.IssueIdentifier, a.PullRequest, a.MergeCommit = note.identifier, note.pullRequest, note.mergeCommit
+		a.IssueIdentifier, a.PullRequest, a.MergeCommit, a.Profile = note.identifier, note.pullRequest, note.mergeCommit, note.profile
 	}
 	if a.IssueIdentifier == "" {
 		a.IssueIdentifier = r.PathValue("identifier")
@@ -284,6 +293,7 @@ type supervisorActionResponse struct {
 	Detail          *string   `json:"detail"`
 	PullRequest     *string   `json:"pull_request"`
 	MergeCommit     *string   `json:"merge_commit"`
+	Profile         *string   `json:"profile"`
 	At              time.Time `json:"at"`
 }
 
@@ -324,6 +334,7 @@ func (s *Server) attachSupervisorActions(ctx context.Context, resp *stateRespons
 			Detail:          nonEmpty(a.Detail),
 			PullRequest:     nonEmpty(a.PullRequest),
 			MergeCommit:     nonEmpty(a.MergeCommit),
+			Profile:         nonEmpty(a.Profile),
 			At:              a.ActedAt.UTC(),
 		})
 	}
@@ -392,6 +403,7 @@ type supervisorRequest struct {
 	Message     string `json:"message"`
 	Title       string `json:"title"`
 	Body        string `json:"body"`
+	Profile     string `json:"profile"`
 }
 
 // supervisorHandler returns the handler of one supervisor action route,
@@ -408,6 +420,8 @@ func (s *Server) supervisorHandler(action string, do func(ctx context.Context, s
 			writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object")
 			return
 		}
+		req.Profile = strings.TrimSpace(req.Profile)
+		noteProfile(r, req.Profile)
 		s.writeSupervisorResult(w, r, start, action, do(r.Context(), s.supervisor, r.PathValue("identifier"), req))
 	}
 }
@@ -425,7 +439,7 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 		})))
 	mux.HandleFunc("/api/v1/{identifier}/fix", s.supervisorRoute(supervisorActionFixRun, s.supervisorHandler(supervisorActionFixRun,
 		func(ctx context.Context, sup SupervisorActions, id string, req supervisorRequest) orchestrator.SupervisorResult {
-			return sup.FixRun(ctx, id, req.Message)
+			return sup.FixRun(ctx, id, req.Message, req.Profile)
 		})))
 	mux.HandleFunc("/api/v1/{identifier}/draft", s.supervisorRoute(supervisorActionDraft, s.supervisorHandler(supervisorActionDraft,
 		func(ctx context.Context, sup SupervisorActions, id string, _ supervisorRequest) orchestrator.SupervisorResult {
@@ -437,7 +451,7 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 		})))
 	mux.HandleFunc("/api/v1/{identifier}/live-proof", s.supervisorRoute(supervisorActionLiveProof, s.supervisorHandler(supervisorActionLiveProof,
 		func(ctx context.Context, sup SupervisorActions, id string, req supervisorRequest) orchestrator.SupervisorResult {
-			return sup.RequestLiveProof(ctx, id, req.Evidence)
+			return sup.RequestLiveProof(ctx, id, req.Evidence, req.Profile)
 		})))
 	mux.HandleFunc("/api/v1/supervisor/questions", s.supervisorRoute(supervisorActionAsk, s.handleSupervisorQuestion))
 	mux.HandleFunc("/api/v1/issues", s.supervisorRoute(supervisorActionFileIssue, s.supervisorHandler(supervisorActionFileIssue,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -263,21 +264,50 @@ func (s Supervisor) RecordMerge(ctx context.Context, identifier, pullRequest, co
 // the one review comment it answers, as a review comment on the pull
 // request does. The issue needs a watched pull request, no running worker
 // and no scheduled retry, and the review reaction must be configured.
-func (s Supervisor) FixRun(ctx context.Context, identifier, message string) SupervisorResult {
+// A non-empty profile names the environment.remote.profiles entry the
+// run's remote job runs with, in place of its repository's image and
+// requirements.
+func (s Supervisor) FixRun(ctx context.Context, identifier, message, profile string) SupervisorResult {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return SupervisorResult{Status: SupervisorPrecondition, Code: "invalid_request", Message: "message must not be empty"}
 	}
+	if r, ok := s.checkProfile(profile); !ok {
+		return r
+	}
 	var result SupervisorResult
 	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
-		result = s.fixRunOnLoop(loopCtx, identifier, message, time.Now().UTC())
+		result = s.fixRunOnLoop(loopCtx, identifier, message, profile, time.Now().UTC())
 	}); !ok {
 		return r
 	}
 	return result
 }
 
-func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message string, now time.Time) SupervisorResult {
+// checkProfile refuses a job profile the workflow does not declare. The
+// empty profile, the repository's own, is always accepted.
+func (s Supervisor) checkProfile(profile string) (SupervisorResult, bool) {
+	if profile == "" {
+		return SupervisorResult{}, true
+	}
+	env := s.o.workflowManager.Config().Environment
+	if !isRemoteKind(env) {
+		return SupervisorResult{Status: SupervisorPrecondition, Code: "unknown_profile",
+			Message: "job profile " + strconv.Quote(profile) + " needs environment.kind remote"}, false
+	}
+	if _, ok := env.Remote.JobProfile(profile); !ok {
+		names := slices.Sorted(maps.Keys(env.Remote.Profiles))
+		valid := "none"
+		if len(names) > 0 {
+			valid = strings.Join(names, ", ")
+		}
+		return SupervisorResult{Status: SupervisorPrecondition, Code: "unknown_profile",
+			Message: "the workflow declares no job profile " + strconv.Quote(profile) + " in environment.remote.profiles; declared: " + valid}, false
+	}
+	return SupervisorResult{}, true
+}
+
+func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message, profile string, now time.Time) SupervisorResult {
 	issue, known := lookupSupervised(s.o.state, identifier)
 	switch {
 	case !known:
@@ -313,6 +343,7 @@ func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message string
 		ContinuationContext: map[string]any{
 			reviewCommentsKey: buildReviewTemplateMap([]domain.ReviewComment{comment}),
 		},
+		JobProfile:          profile,
 		ReactionKind:        ReactionKindReview,
 		Continuation:        continuationTargetOf(pending, turn),
 		AgentKind:           pending.AgentKind,
@@ -329,7 +360,7 @@ func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message string
 	if pending.Kind == ReactionKindReview {
 		delete(s.o.state.PendingReactions, ReactionKey(issue.issueID, ReactionKindReview))
 	}
-	log.Info("fix run scheduled by the supervisor", slog.String("pull_request", formatPullRequest(issue.pr)))
+	log.Info("fix run scheduled by the supervisor", slog.String("pull_request", formatPullRequest(issue.pr)), slog.String("job_profile", profile))
 	s.o.notifyObservers()
 	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(issue.pr)}
 }
@@ -562,15 +593,20 @@ const LiveProofRequestMarker = "<!-- live-proof -->"
 // starts no fix run, Sortie finds its open pull request
 // ([Supervisor.pullRequestOf]) and starts the live-proof job on that
 // branch's head itself; the park stays in place while the job runs, and
-// the supervisor decides on the job's result.
-func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion string) SupervisorResult {
+// the supervisor decides on the job's result. A non-empty profile names
+// the environment.remote.profiles entry the job runs with; the workflow
+// must declare it, whether Sortie or the workbench starts the job.
+func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion, profile string) SupervisorResult {
+	if r, ok := s.checkProfile(profile); !ok {
+		return r
+	}
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
 		return r
 	}
 	log := logging.WithIssue(s.o.logger, issue.issueID, identifier)
 	if !issue.parked {
-		log.Info("live proof requested by the supervisor")
+		log.Info("live proof requested by the supervisor", slog.String("job_profile", profile))
 		res := SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier}
 		if issue.watch != nil {
 			res.PullRequest = formatPullRequest(issue.pr)
@@ -601,7 +637,7 @@ func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion 
 	pr.HeadSHA = status.HeadSHA
 	var result SupervisorResult
 	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
-		result = s.startLiveProofOnLoop(loopCtx, identifier, pr, criterion, time.Now().UTC())
+		result = s.startLiveProofOnLoop(loopCtx, identifier, pr, criterion, profile, time.Now().UTC())
 	}); !ok {
 		return r
 	}
@@ -622,7 +658,7 @@ func liveProofRequest(identifier string, pr pullRequestRef, criterion string) st
 // startLiveProofOnLoop schedules the live-proof job of the parked issue
 // named by identifier on pr, unless the issue left its park or has a run
 // going or scheduled meanwhile.
-func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string, pr pullRequestRef, criterion string, now time.Time) SupervisorResult {
+func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string, pr pullRequestRef, criterion, profile string, now time.Time) SupervisorResult {
 	issue, known := lookupSupervised(s.o.state, identifier)
 	switch {
 	case !known:
@@ -650,6 +686,7 @@ func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string,
 		ContinuationContext: map[string]any{
 			reviewCommentsKey: buildReviewTemplateMap([]domain.ReviewComment{comment}),
 		},
+		JobProfile:      profile,
 		ReactionKind:    ReactionKindLiveProof,
 		Continuation:    ContinuationTarget{PRNumber: pr.Number, Owner: pr.Owner, Repo: pr.Repo},
 		AgentKind:       park.AgentKind,
@@ -662,7 +699,8 @@ func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string,
 		IssueIdentity: park.IssueIdentity,
 	}, s.o.onRetryFire, now)
 	log.Info("live-proof job of the parked story scheduled by the supervisor",
-		slog.String("pull_request", formatPullRequest(pr)), slog.String("branch", pr.Branch), slog.String("head", pr.HeadSHA))
+		slog.String("pull_request", formatPullRequest(pr)), slog.String("branch", pr.Branch), slog.String("head", pr.HeadSHA),
+		slog.String("job_profile", profile))
 	s.o.notifyObservers()
 	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(pr)}
 }

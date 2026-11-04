@@ -6484,6 +6484,16 @@
             }
           ]
         },
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "pull_request": {
           "anyOf": [
             {
@@ -6515,6 +6525,7 @@
         "detail",
         "pull_request",
         "merge_commit",
+        "profile",
         "at"
       ],
       "type": "object"

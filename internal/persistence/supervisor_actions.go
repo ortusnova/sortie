@@ -35,6 +35,7 @@ type SupervisorAction struct {
 	Detail          string // the error code and message Sortie answered, empty on success
 	PullRequest     string // owner/repo#number, when the action named one
 	MergeCommit     string // the merge commit the forge gave, when the action named one
+	Profile         string // the job profile a fix run or live-proof request named; empty for none
 	ActedAt         time.Time
 }
 
@@ -48,9 +49,9 @@ func (s *Store) InsertSupervisorAction(ctx context.Context, a SupervisorAction) 
 		at = time.Now()
 	}
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO supervisor_actions (action, route, issue_identifier, evidence, result, status, detail, pull_request, merge_commit, acted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.Action, a.Route, a.IssueIdentifier, a.Evidence, a.Result, a.Status, a.Detail, a.PullRequest, a.MergeCommit,
+		INSERT INTO supervisor_actions (action, route, issue_identifier, evidence, result, status, detail, pull_request, merge_commit, profile, acted_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.Action, a.Route, a.IssueIdentifier, a.Evidence, a.Result, a.Status, a.Detail, a.PullRequest, a.MergeCommit, a.Profile,
 		at.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -70,7 +71,7 @@ func (s *Store) RecentSupervisorActions(ctx context.Context, limit int) ([]Super
 		return []SupervisorAction{}, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, action, route, issue_identifier, evidence, result, status, detail, pull_request, merge_commit, acted_at
+		SELECT id, action, route, issue_identifier, evidence, result, status, detail, pull_request, merge_commit, profile, acted_at
 		FROM supervisor_actions ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query supervisor actions: %w", err)
@@ -81,7 +82,7 @@ func (s *Store) RecentSupervisorActions(ctx context.Context, limit int) ([]Super
 		var a SupervisorAction
 		var at string
 		if err := rows.Scan(&a.ID, &a.Action, &a.Route, &a.IssueIdentifier, &a.Evidence, &a.Result, &a.Status,
-			&a.Detail, &a.PullRequest, &a.MergeCommit, &at); err != nil {
+			&a.Detail, &a.PullRequest, &a.MergeCommit, &a.Profile, &at); err != nil {
 			return nil, fmt.Errorf("scan supervisor action: %w", err)
 		}
 		if a.ActedAt, err = time.Parse(time.RFC3339Nano, at); err != nil {
