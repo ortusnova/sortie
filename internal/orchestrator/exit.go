@@ -1557,6 +1557,17 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				)
 				delete(state.Claimed, workerResult.IssueID)
 
+			case entry.ReactionKind == ReactionKindLiveProof && openPlatformFault(state, failureSignature) != nil:
+				// A parked story's live-proof job would only fail the same
+				// way again; the park holds the story, and the supervisor
+				// requests the proof again once the fault is fixed.
+				log.Warn("live-proof job stopped on an open platform fault, not retrying",
+					slog.Any("error", workerResult.Error),
+					slog.String("platform_fault_id", openPlatformFault(state, failureSignature).ID),
+				)
+				CancelRetry(state, workerResult.IssueID)
+				delete(state.Claimed, workerResult.IssueID)
+
 			case heldByFault != nil:
 				log.Warn("worker run stopped on an open platform fault, holding the issue",
 					slog.Any("error", workerResult.Error),
