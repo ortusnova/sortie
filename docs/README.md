@@ -52,7 +52,7 @@ These pages are for working on Sortie itself. To install, configure, and run Sor
     - [Implementation checklist](architecture/23-implementation-checklist.md) - the definition of done: conformance requirements and operational validation
     - [Persistence schema](architecture/24-persistence-schema.md) - the SQLite schema, table definitions, and migration strategy
     - [Webhook support](architecture/25-webhook-support.md) - the webhook-ingress design held as a future extension
-    - [Agent-authored workspace files](architecture/26-agent-authored-workspace-files.md) - the `.sortie/status`, `.sortie/review_verdict.json`, and `.sortie/pr.json` files the agent leaves
+    - [Agent-authored workspace files](architecture/26-agent-authored-workspace-files.md) - the `.sortie/status`, `.sortie/review_verdict.json`, `.sortie/pr.json`, and `.sortie/handoff.json` files the agent leaves
     - [SSH worker extension](architecture/27-appendix-a-ssh-worker-extension.md) - the optional remote-execution model for workers over SSH
     - [Label command and read-only review contract](architecture/28-label-command-and-read-only-review-contract.md) - PR label-command detection and the read-only review and read-write fix dispatches
     - [Merge completion reaction contract](architecture/29-merge-completion-reaction-contract.md) - the post-merge continuation trigger, the review wait, and terminal-target selection

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -19,6 +20,8 @@ const (
 	MaxStep = 200
 	// MaxUnmanaged bounds the machines kept from one declaration.
 	MaxUnmanaged = 64
+	// MaxCapabilities bounds the capabilities kept from one declaration.
+	MaxCapabilities = 64
 	// maxBeatBytes bounds the heartbeat body read.
 	maxBeatBytes = 16 << 10
 )
@@ -66,9 +69,19 @@ func decodeStep(r io.Reader) Step {
 	return s
 }
 
-// decodeActivity reads the optional used and unmanaged members of a
-// check-in into d.
+// decodeActivity reads the optional used, unmanaged and capabilities
+// members of a check-in into d.
 func decodeActivity(raw map[string]json.RawMessage, d *Declaration) {
+	if v, ok := raw["capabilities"]; ok && !isNull(v) {
+		var listed []string
+		if json.Unmarshal(v, &listed) == nil {
+			for _, c := range listed {
+				if c = cleanText(c); c != "" && !slices.Contains(d.Capabilities, c) && len(d.Capabilities) < MaxCapabilities {
+					d.Capabilities = append(d.Capabilities, c)
+				}
+			}
+		}
+	}
 	if v, ok := raw["used"]; ok && !isNull(v) {
 		var used Free
 		if json.Unmarshal(v, &used) == nil && used.CPU >= 0 && used.MemGiB >= 0 && used.DiskGiB >= 0 {

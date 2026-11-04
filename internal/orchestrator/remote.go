@@ -1190,7 +1190,8 @@ func (r *remoteRepository) Refresh(ctx context.Context, env environment.Environm
 // Export waits for the bundle the worker returns when the session ended,
 // checks that it holds only the issue branch on top of the seed, and
 // pushes it. The .sortie/pr.json the worker returned with it becomes the
-// workspace's pull request suggestion.
+// workspace's pull request suggestion, and the .sortie/handoff.json its
+// hand-off.
 func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment, ws environment.Workspace) (gitsync.ExportResult, error) {
 	a := r.attempt
 	branch := r.syncer.IssueBranch(ws.Key)
@@ -1205,7 +1206,7 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 	if err != nil {
 		return none, err
 	}
-	for name, data := range map[string][]byte{pullRequestSuggestionFile: res.PR, statusFileName: res.Status, CriteriaFile: res.Criteria} {
+	for name, data := range map[string][]byte{pullRequestSuggestionFile: res.PR, statusFileName: res.Status, CriteriaFile: res.Criteria, handoffPartsFile: res.Handoff} {
 		if data == nil {
 			continue
 		}

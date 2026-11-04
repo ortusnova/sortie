@@ -286,6 +286,17 @@ func processMergeCompletionEntry(
 		return
 	}
 
+	if open := openHandoffParts(state, pending.IssueID); len(open) > 0 {
+		pending.PendingRetryAt = now.Add(pollInterval)
+		requeueReaction(state, key, pending, waitHandoffParts)
+		entryLog.Debug("merge_completion deferred: a hand-off part is open",
+			slog.Int("pr_number", data.PRNumber),
+			slog.String("handoff_part", open[0].ID),
+			slog.Int("open_parts", len(open)),
+		)
+		return
+	}
+
 	transitionErr := params.TrackerAdapter.TransitionIssue(ctx, pending.IssueID, params.MergeCompletionConfig.TargetState)
 	state.ReactionAttempts[rkey]++
 	recordReactionActivity(ctx, params.Store, pending.IssueID, pending.StageLineage,

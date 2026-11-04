@@ -1185,6 +1185,70 @@ func TestAGoneWorkerKeepsItsLease(t *testing.T) {
 	notEnded(t, ch)
 }
 
+// A worker declares what else it offers a job, such as a host it
+// reaches, and only a worker that declares it takes a job that requires
+// it. A malformed list is dropped, not refused.
+func TestDeclaredCapabilities(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	withReach := strings.TrimSuffix(completeCheckIn, "}") + `,"capabilities":["reach:homelab"," reach:homelab ","","gpu"]}`
+	if r := a.post("near", "/api/v1/workers/checkin", withReach); r.Code != http.StatusOK {
+		t.Fatalf("check-in with capabilities: %d %s", r.Code, r.Body)
+	}
+	malformed := strings.TrimSuffix(completeCheckIn, "}") + `,"capabilities":"reach:homelab"}`
+	if r := a.post("far", "/api/v1/workers/checkin", malformed); r.Code != http.StatusOK {
+		t.Fatalf("check-in with a malformed list: %d %s", r.Code, r.Body)
+	}
+	snap := m.Snapshot()
+	if got := snap.Workers[1].Declaration.Capabilities; !reflect.DeepEqual(got, []string{"reach:homelab", "gpu"}) {
+		t.Fatalf("capabilities of near = %v", got)
+	}
+	if got := snap.Workers[0].Declaration.Capabilities; got != nil {
+		t.Fatalf("capabilities of far = %v, want none", got)
+	}
+	if !m.Capable([]string{"smolvm", "reach:homelab"}) || m.Capable([]string{"reach:office"}) {
+		t.Fatal("Capable does not follow the declared capabilities")
+	}
+
+	j := job("handoff-ONS-77-live-chain", 1)
+	j.Kind = JobKindCheck
+	j.Requires = Requires{Capabilities: []string{"reach:homelab"}}
+	j.Run = Run{Command: "sh", Args: []string{"-c", "curl https://gitea.homelab.lan"}}
+	m.Submit(j)
+	if r := a.post("far", "/api/v1/workers/poll", ""); r.Code != http.StatusNoContent {
+		t.Fatalf("far poll = %d, want nothing", r.Code)
+	}
+	r := a.post("near", "/api/v1/workers/poll", "")
+	if r.Code != http.StatusOK {
+		t.Fatalf("near poll = %d", r.Code)
+	}
+	offer, raw := decodeOffer(t, r)
+	var jobRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["job"], &jobRaw); err != nil {
+		t.Fatal(err)
+	}
+	if offer.Job.Kind != JobKindCheck || string(jobRaw["kind"]) != `"check"` || offer.Run.Command != "sh" {
+		t.Fatalf("offer = %+v, want the check job", offer)
+	}
+}
+
+// A gone worker is capable of nothing.
+func TestCapableNeedsALiveWorker(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	d := host()
+	d.Capabilities = []string{"reach:homelab"}
+	m.CheckIn("w", d)
+	if !m.Capable([]string{"reach:homelab"}) {
+		t.Fatal("a live worker that declares it is not capable")
+	}
+	c.add(time.Hour)
+	if m.Capable([]string{"reach:homelab"}) {
+		t.Fatal("a gone worker is capable")
+	}
+}
+
 // scarce returns taichi, the one nested worker, and p1, which is not,
 // each with two free run slots and the smolvm backend.
 func scarce() (taichi, p1 Declaration) {
@@ -1239,6 +1303,26 @@ func TestScarceCapabilityIsSpared(t *testing.T) {
 	}
 	if q := m.Snapshot().Queue; len(q) != 0 {
 		t.Fatalf("queue %+v, want empty", q)
+	}
+}
+
+// A capability a worker declares at check-in is spared as its built-in
+// ones are: a job that does not need reach:homelab goes to the worker
+// without it, which keeps its slots for the hand-off check that does.
+func TestDeclaredCapabilityIsSpared(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	near, far := scarce()
+	near.Nested, near.Capabilities = false, []string{"reach:homelab"}
+	m.CheckIn("near", near)
+	m.CheckIn("far", far)
+	m.Submit(smolvmJob("ONS-72", 1))
+	m.Submit(smolvmJob("ONS-77", 2, "reach:homelab"))
+	if got := polls(t, m, "near"); !reflect.DeepEqual(got, []string{"ONS-77"}) {
+		t.Fatalf("near took %v, want [ONS-77]: far can take ONS-72 now", got)
+	}
+	if got := polls(t, m, "far"); !reflect.DeepEqual(got, []string{"ONS-72"}) {
+		t.Fatalf("far took %v, want [ONS-72]", got)
 	}
 }
 

@@ -90,3 +90,21 @@ Two other entries in a `remote` workspace are written by Sortie, not by the agen
 - `.sortie/environment` records the execution environment kind and instance that created the workspace (Section 9.7.1). It sits in `.sortie`, which an agent may be able to write. Sortie therefore lets it move workspace removal only to a recorded kind other than `local` (Invariant 11).
 - `.sortie-host/scm.json` is the trusted SCM record Sortie writes after a push (Section 9.7.2). It is a sibling of `.sortie` on the host, so the agent cannot read or write it. Under `remote` with a repository, an agent-written `.sortie/scm.json` is ignored.
 
+
+### 21.5 `.sortie/handoff.json`
+
+A build or review session that cannot do part of its story records each part in `.sortie/handoff.json`, with what it needs and how to check it, so the part becomes work instead of prose in a pull request:
+
+```json
+{"parts": [{"id": "live-chain", "kind": "job", "capabilities": ["reach:homelab"],
+            "need": "the live chain reaches gitea.homelab.lan", "check": "curl -fsS https://gitea.homelab.lan/api/healthz"}]}
+```
+
+- Each part has `need` and `check`, an optional `id` (derived from `kind` and `need` when absent), and a `kind`: `job` with `capabilities`, `pull_request` with `repository` and an optional `patch`, or `person` with an optional `action` and `where`. A part without `kind` is a `pull_request` when it names a repository, a `job` when it names capabilities, and a `person` otherwise.
+- Read timing: after every run that ends normally, once the run's work left its environment. Under the `remote` kind the worker returns the file beside the bundle on the `bundles` flow.
+- Safety rules: the read goes through the workspace directory and `.sortie/` under Invariant 7, with the same link refusal as the other files here, and reads at most 65536 bytes (64 KiB). A malformed file is ignored with a warn record; a malformed part is dropped with a warn record and the others are kept. Control characters other than newline and tab are removed, text members are cut to 4096 characters, and at most 16 parts are taken.
+- Each part becomes work: a `job` a check job on a worker whose declared capabilities match, a `pull_request` an issue filed in the tracker that runs in the named repository, so a run of the same loop opens the change as a pull request there, and a `person` a platform fault with that person action (Section 14). A `job` no worker can run, a failed check, and a change in a repository the workflow does not open are platform faults with a person action. Marking a part's person action done closes the part.
+- The story is not Done while a part is open: auto-merge, the merge-completion transition, the move of a merged story to the done state, and the supervisor's merge wait for every part to close.
+- A part is keyed by its story and ID; a later run that records the same ID changes nothing. Parts are stored in `handoff_parts` (Section 19.2) and survive a restart; a check job does not, and is queued again.
+
+The full format and the work each kind becomes are in the [workflow reference](../workflow-reference.md#sortiehandoffjson--work-a-session-could-not-do).

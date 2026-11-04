@@ -76,6 +76,10 @@ const MaxStatusFile = 4 << 10
 // carries.
 const MaxCriteriaFile = 64 << 10
 
+// MaxHandoffFile bounds the .sortie/handoff.json a returned result
+// carries.
+const MaxHandoffFile = 64 << 10
+
 // ErrClosed reports an attempt that ended before what was waited for
 // arrived.
 var ErrClosed = errors.New("dataplane: the attempt ended")
@@ -109,6 +113,10 @@ type Result struct {
 	// Criteria is the agent's .sortie/criteria.json, the verdict of a
 	// criteria review, nil when the worker returned none.
 	Criteria []byte
+
+	// Handoff is the agent's .sortie/handoff.json, nil when the worker
+	// returned none.
+	Handoff []byte
 }
 
 // Options configures one attempt.
@@ -533,7 +541,7 @@ func (a *Attempt) broken(err error) {
 // Handler serves the data-plane routes:
 //
 //	GET  /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/seed    the workspace seed
-//	POST /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/result  multipart: bundle, pr; 204
+//	POST /api/v1/flows/bundles/jobs/{job}/attempts/{attempt}/result  multipart: bundle, pr, handoff; 204
 //	GET  /api/v1/flows/stdio/jobs/{job}/attempts/{attempt}           Upgrade: sortie-stdio/1; 101
 //	POST /api/v1/flows/usage/jobs/{job}/attempts/{attempt}           body Usage; 204
 //	*    /api/v1/flows/mcp/jobs/{job}/attempts/{attempt}             the session's tool server, as at /mcp
@@ -628,10 +636,10 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	unbounded(w)
-	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxStatusFile+MaxCriteriaFile+(64<<10))
+	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxStatusFile+MaxCriteriaFile+MaxHandoffFile+(64<<10))
 	parts, err := r.MultipartReader()
 	if err != nil {
-		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr, status and criteria")
+		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr, status, criteria and handoff")
 		return
 	}
 	var res Result
@@ -664,13 +672,15 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			res.Bundle = path
-		case "pr", "status", "criteria":
+		case "pr", "status", "criteria", "handoff":
 			name, limit, dst := part.FormName(), int64(MaxPRFile), &res.PR
 			switch name {
 			case "status":
 				limit, dst = MaxStatusFile, &res.Status
 			case "criteria":
 				limit, dst = MaxCriteriaFile, &res.Criteria
+			case "handoff":
+				limit, dst = MaxHandoffFile, &res.Handoff
 			}
 			body, err := io.ReadAll(io.LimitReader(part, limit+1))
 			if err != nil || int64(len(body)) > limit {
@@ -681,7 +691,7 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 			*dst = body
 		default:
 			cleanup()
-			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, status, criteria", part.FormName()))
+			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, status, criteria, handoff", part.FormName()))
 			return
 		}
 	}

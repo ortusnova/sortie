@@ -194,6 +194,11 @@ type WorkerResult struct {
 	// that produced SoftStopReason, zero whenever SoftStop is false.
 	SoftStopStatement workspace.StatusStatement
 
+	// HandoffParts are the parts of the story the session recorded in
+	// .sortie/handoff.json because it could not do them, read once the
+	// run's work left the environment. Nil when it recorded none.
+	HandoffParts []HandoffPartSpec
+
 	// ReviewMetadata summarizes the self-review outcome. Nil when self-review
 	// is disabled or the worker exited before the phase.
 	ReviewMetadata *domain.ReviewMetadata
@@ -2135,6 +2140,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		HandedOffComments:            presentedComments,
 		ExportedCommit:               exportedCommit,
 		CriteriaFile:                 criteriaFile,
+		HandoffParts:                 readHandoffParts(wsResult.Path, logger),
 	})
 }
 

@@ -133,6 +133,17 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 		}
 		retryEscalationSave(ctx, state, params.Store, pending, entryLog)
 
+		if open := openHandoffParts(state, pending.IssueID); len(open) > 0 && !pending.escalationStands() {
+			pending.PendingRetryAt = now.Add(pollInterval)
+			requeueReaction(state, key, pending, waitHandoffParts)
+			entryLog.Debug("auto_merge deferred: a hand-off part is open",
+				slog.Int("pr_number", autoMergeData.PRNumber),
+				slog.String("handoff_part", open[0].ID),
+				slog.Int("open_parts", len(open)),
+			)
+			continue
+		}
+
 		rkey := ReactionKey(pending.IssueID, ReactionKindAutoMerge)
 		turnCount := state.ReactionAttempts[rkey]
 		// A ceiling of 0 means no bound, so it never counts the tries as spent.

@@ -120,6 +120,9 @@ func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string
 	now := time.Now()
 	f, resolved := applyFaultCheck(ctx, o.state, o.store, faultID, checkErr, now, o.logger)
 	o.noteHealthFaultChecked(f, resolved)
+	if resolved {
+		o.handoffFaultResolved(ctx, f, now.UTC())
+	}
 	switch {
 	case resolved:
 		o.RefreshFunc()()
