@@ -172,7 +172,7 @@ func TestCriteriaReview_EveryCriterionMetSeedsTheMerge(t *testing.T) {
 
 // A criterion only a live proof settles keeps the pull request open for
 // the live-proof job, with no park, and says so on the story; the gate
-// does not let auto-merge merge it.
+// lets auto-merge merge it only with the live-proof record at its head.
 func TestCriteriaReview_LiveProofHoldsTheMerge(t *testing.T) {
 	t.Parallel()
 	f, store := reviewExitFixture(t, `{"criteria": [
@@ -193,8 +193,17 @@ func TestCriteriaReview_LiveProofHoldsTheMerge(t *testing.T) {
 		t.Errorf("comments = %+v, want the live-proof hold naming the criterion", f.tracker.commentCalls)
 	}
 	gate := planReviewGate(gateConfig(), &labelTracker{labels: []string{config.ReviewCriteriaLabel}}, store)
-	if ok, why, err := gate(context.Background(), &PendingReaction{IssueID: hopExitIssueID, RuleName: "check"}); ok || err != nil {
-		t.Errorf("gate = %v (%s), %v; want the merge refused", ok, why, err)
+	data := &AutoMergeReactionData{PRNumber: 42}
+	if ok, why, err := gate(context.Background(), &PendingReaction{IssueID: hopExitIssueID, RuleName: "check", KindData: data}); !ok || err != nil || !data.liveProof {
+		t.Fatalf("gate = %v (%s), %v with live proof %v; want it let through, waiting for the live-proof record", ok, why, err, data.liveProof)
+	}
+	check := planClickProofs(gateConfig(), &commentForge{conversation: []domain.ReviewComment{clickProofsComment(uiHeadSHA)}})
+	if ok, missing, err := check(context.Background(), &PendingReaction{}, data, uiHeadSHA); ok || missing != LiveProofMarker || err != nil {
+		t.Errorf("record check = %v, %q, %v; want the live-proof record missing", ok, missing, err)
+	}
+	check = planClickProofs(gateConfig(), &commentForge{conversation: []domain.ReviewComment{{ID: "c1", Body: LiveProofMarker + " " + uiHeadSHA[:9]}}})
+	if ok, _, err := check(context.Background(), &PendingReaction{}, data, uiHeadSHA); !ok || err != nil {
+		t.Errorf("record check = %v, %v; want the live-proof record found at the head", ok, err)
 	}
 }
 

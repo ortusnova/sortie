@@ -212,10 +212,10 @@ func applyCriteriaVerdict(ctx context.Context, params HandleWorkerExitParams, en
 	case CriteriaOutcomeMet:
 		log.Info("criteria review passed: every criterion is met")
 	case CriteriaOutcomeLiveProof:
-		log.Info("criteria review waits for a live proof; auto-merge will not merge")
+		log.Info("criteria review waits for a live proof; auto-merge waits for its record at the head")
 		if params.TrackerAdapter != nil {
-			comment := "Sortie does not merge this story's pull request: its review settles these criteria only by a live proof:\n\n" +
-				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once a comment on the pull request records it proven at its head (`" + LiveProofMarker + " <head sha>`), the supervisor merges it."
+			comment := "Sortie does not merge this story's pull request yet: its review settles these criteria only by a live proof:\n\n" +
+				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once a comment on the pull request records it proven at its head (`" + LiveProofMarker + " <head sha>`), Sortie merges it once its CI passes and it does not conflict."
 			if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 				log.Warn("live-proof hold comment failed", slog.Any("error", err))
 			}
@@ -265,25 +265,30 @@ func recordCriteriaVerdict(ctx context.Context, store any, issueID, dispatchID s
 }
 
 // criteriaMergeAllowed reports whether the story's latest criteria verdict
-// lets auto-merge merge its pull request, and why not.
-func criteriaMergeAllowed(ctx context.Context, store any, issueID string) (bool, string, error) {
+// lets auto-merge merge its pull request, and why not. A verdict that
+// leaves criteria to a live proof lets it merge only once a pull request
+// comment records them proven at its head: liveProof reports that the
+// merge waits for that record too.
+func criteriaMergeAllowed(ctx context.Context, store any, issueID string) (allowed, liveProof bool, why string, err error) {
 	loader, ok := store.(CriteriaVerdictLoader)
 	if !ok {
-		return false, "no criteria verdict store", nil
+		return false, false, "no criteria verdict store", nil
 	}
 	v, found, err := loader.LoadCriteriaVerdict(ctx, issueID)
 	if err != nil {
-		return false, "", err
+		return false, false, "", err
 	}
 	switch {
 	case !found:
-		return false, "the story's review recorded no verdict per criterion", nil
+		return false, false, "the story's review recorded no verdict per criterion", nil
+	case v.Outcome == CriteriaOutcomeLiveProof:
+		return true, true, "", nil
 	case v.Outcome != CriteriaOutcomeMet:
 		why := "the story's review found criteria not met (" + v.Outcome + ")"
 		if v.Problem != "" {
 			why += ": " + v.Problem
 		}
-		return false, why, nil
+		return false, false, why, nil
 	}
-	return true, "", nil
+	return true, false, "", nil
 }

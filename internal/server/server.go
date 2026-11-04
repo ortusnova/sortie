@@ -243,6 +243,12 @@ type IssueOutcome struct {
 	PRNumber int
 	// PRRepository is the merged pull request's owner/repo, unmasked.
 	PRRepository string
+	// ReleaseHead and ReleaseComment name the pull request record that
+	// released the issue's park: the head commit it names and the ID of
+	// each comment holding one, comma-separated. PRNumber and PRRepository
+	// then name its pull request. Both are empty for every other outcome.
+	ReleaseHead    string
+	ReleaseComment string
 }
 
 // PassRef names one pass of one issue and when its first run was dispatched.

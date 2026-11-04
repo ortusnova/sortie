@@ -304,8 +304,11 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			continue
 		}
 
-		if params.ClickProofs != nil {
-			recorded, proofErr := params.ClickProofs(ctx, pending, autoMergeData, mergeStatus.HeadSHA)
+		if params.ClickProofs != nil || autoMergeData.liveProof {
+			recorded, missing, proofErr := false, LiveProofMarker, error(nil)
+			if params.ClickProofs != nil {
+				recorded, missing, proofErr = params.ClickProofs(ctx, pending, autoMergeData, mergeStatus.HeadSHA)
+			}
 			if proofErr != nil {
 				delay := applyAutoMergeBackoff(state, key, pending, now, pollInterval)
 				entryLog.Warn("auto_merge click-proofs read failed",
@@ -319,10 +322,13 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			if !recorded {
 				pending.PendingRetryAt = now.Add(pollInterval)
 				requeueReaction(state, key, pending, waitPollInterval)
-				askForClickProofs(state, params, pending, autoMergeData.PRNumber, mergeStatus.HeadSHA, entryLog, ctx)
-				entryLog.Debug("auto_merge deferred: click-proofs not recorded",
+				if missing == ClickProofsMarker {
+					askForClickProofs(state, params, pending, autoMergeData.PRNumber, mergeStatus.HeadSHA, entryLog, ctx)
+				}
+				entryLog.Debug("auto_merge deferred: a record is missing at the head",
 					slog.Int("pr_number", autoMergeData.PRNumber),
 					slog.String("head_sha", mergeStatus.HeadSHA),
+					slog.String("record", missing),
 				)
 				continue
 			}

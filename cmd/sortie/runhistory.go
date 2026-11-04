@@ -138,6 +138,8 @@ func (r runHistoryReader) IssueOutcomes(ctx context.Context, issueIDs []string) 
 			MergeReactionKind: o.MergeReactionKind,
 			PRNumber:          o.PRNumber,
 			PRRepository:      o.PRRepository,
+			ReleaseHead:       o.ReleaseHead,
+			ReleaseComment:    o.ReleaseComment,
 		}
 	}
 	return out, nil

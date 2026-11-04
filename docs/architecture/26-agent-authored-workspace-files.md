@@ -79,7 +79,7 @@ A run of a `gate: criteria` rule under plan control records its verdict on each 
 {"criteria": [{"criterion": "make test passes", "verdict": "met", "evidence": "make test: 4846 passed"}]}
 ```
 
-- `verdict` is `met`, `not-met`, `live-proof` or `unsettled`. Only a file whose every criterion is `met` with non-empty `evidence` passes the check. A missing, malformed or empty file, or any other verdict, fails it: the run ends as if the agent wrote `blocked`, with a statement naming the criteria not met. A file whose only criteria not met are `live-proof` holds the merge for a live proof.
+- `verdict` is `met`, `not-met`, `live-proof` or `unsettled`. Only a file whose every criterion is `met` with non-empty `evidence` passes the check. A missing, malformed or empty file, or any other verdict, fails it: the run ends as if the agent wrote `blocked`, with a statement naming the criteria not met. A file whose only criteria not met are `live-proof` holds the merge until a pull request comment records the live proof at its head.
 - The latest check's verdict is kept per story, and auto-merge reads it before every merge, including after a restart.
 - Each run removes a file an earlier run left before it starts. The read takes at most 65536 bytes, with the same link refusal as the other files here. Under the remote kind the worker returns the file, and `.sortie/status`, with the issue branch (`criteria` and `status` result parts).
 

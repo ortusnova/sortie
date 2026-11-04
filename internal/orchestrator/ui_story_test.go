@@ -194,16 +194,16 @@ func TestPlanClickProofs_OnlyUIStories(t *testing.T) {
 	t.Parallel()
 	forge := &commentForge{}
 	check := planClickProofs(gateConfig(), forge)
-	ok, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyOther}, uiHeadSHA)
+	ok, _, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyOther}, uiHeadSHA)
 	if !ok || err != nil || forge.commentCalls != 0 {
 		t.Errorf("other story = %v, %v after %d reads, want allowed without a read", ok, err, forge.commentCalls)
 	}
-	ok, _ = planClickProofs(gateConfig(), nil)(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA)
+	ok, _, _ = planClickProofs(gateConfig(), nil)(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA)
 	if ok {
 		t.Error("ui story allowed on a forge that cannot read its record")
 	}
 	forge.commentErr = &domain.SCMError{Kind: domain.ErrSCMTransport, Message: "down"}
-	if _, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA); err == nil {
+	if _, _, err := check(context.Background(), &PendingReaction{}, &AutoMergeReactionData{story: storyUI}, uiHeadSHA); err == nil {
 		t.Error("failed read reported no error")
 	}
 	if planClickProofs(config.ServiceConfig{}, forge) != nil {

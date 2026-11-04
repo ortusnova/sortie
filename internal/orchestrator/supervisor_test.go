@@ -206,16 +206,24 @@ func TestSupervisor_ReleasePark(t *testing.T) {
 	}
 }
 
+// supervisorHead is the head commit of the fake forge's pull request in
+// TestSupervisor_Merge.
+const supervisorHead = "9f1c2b3a4d5e6f708192a3b4c5d6e7f809182736"
+
 func TestSupervisor_Merge(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name   string
-		labels []string
-		change func(f *supervisorForge)
-		code   string
+		name     string
+		labels   []string
+		change   func(f *supervisorForge)
+		comments supervisorComments
+		code     string
 	}{
 		{name: "review and CI passed", labels: []string{config.ReviewCriteriaLabel}},
-		{name: "a ui story waits for the operator", labels: []string{config.ReviewUILabel}, code: "ui_story"},
+		{name: "a ui story without its click-proofs record", labels: []string{config.ReviewUILabel}, code: "click_proofs_missing"},
+		{name: "a ui story whose click-proofs record names an older head", labels: []string{config.ReviewUILabel}, comments: supervisorComments{{ID: "c1", Body: ClickProofsMarker + " 0123456789abcdef"}}, code: "click_proofs_missing"},
+		{name: "a ui story with only a live-proof record", labels: []string{config.ReviewUILabel}, comments: supervisorComments{{ID: "c1", Body: LiveProofMarker + " " + supervisorHead}}, code: "click_proofs_missing"},
+		{name: "a ui story whose click-proofs passed at its head", labels: []string{config.ReviewUILabel}, comments: supervisorComments{{ID: "c1", Body: ClickProofsMarker + " " + supervisorHead}}},
 		{name: "review not passed", change: func(f *supervisorForge) { f.decision = domain.ReviewDecisionChangesRequested }, code: "review_not_passed"},
 		{name: "review required", change: func(f *supervisorForge) { f.decision = domain.ReviewDecisionReviewRequired }, code: "review_not_passed"},
 		{name: "CI failing", change: func(f *supervisorForge) { f.ci = "failure" }, code: "ci_not_passed"},
@@ -229,6 +237,8 @@ func TestSupervisor_Merge(t *testing.T) {
 			t.Parallel()
 			h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-11", 41))
 			h.tracker.labels = tt.labels
+			h.forge.status.HeadSHA = supervisorHead
+			h.o.prCommentReader = tt.comments
 			if tt.change != nil {
 				tt.change(h.forge)
 			}
@@ -246,8 +256,8 @@ func TestSupervisor_Merge(t *testing.T) {
 			if got != want {
 				t.Fatalf("merge = %+v, want %+v", got, want)
 			}
-			if len(h.forge.merges) != 1 || h.forge.merges[0] != "head-1" {
-				t.Errorf("merges = %v, want one at head-1", h.forge.merges)
+			if len(h.forge.merges) != 1 || h.forge.merges[0] != supervisorHead {
+				t.Errorf("merges = %v, want one at the head", h.forge.merges)
 			}
 			rows, err := h.store.LoadPlanSatisfaction(t.Context(), []string{"id-11"})
 			if err != nil || len(rows["id-11"]) != 1 || rows["id-11"][0].Ref != "merge-1" {

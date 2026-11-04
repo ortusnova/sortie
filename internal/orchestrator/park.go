@@ -24,6 +24,7 @@ const (
 	unparkTriggerEvidenceObserved = "evidence_observed"
 	unparkTriggerAnswered         = "answered"
 	unparkTriggerReleased         = "released"
+	unparkTriggerRecord           = "record"
 )
 
 // ParkStore is the persistence contract [parkIssue] and [unparkIssue] need.
@@ -216,11 +217,12 @@ func parkIssue(state *State, params parkIssueParams) {
 	})
 }
 
-// isReleaseGesture reports whether trigger is a person's release, as opposed
-// to a worker exit that observed work.
+// isReleaseGesture reports whether trigger is a person's release, or the
+// pull request record that stands for one, as opposed to a worker exit that
+// observed work.
 func isReleaseGesture(trigger string) bool {
 	return trigger == unparkTriggerLabelRemoved || trigger == unparkTriggerStateChanged || trigger == unparkTriggerAnswered ||
-		trigger == unparkTriggerReleased
+		trigger == unparkTriggerReleased || trigger == unparkTriggerRecord
 }
 
 // unparkIssue lifts the park, resets the absence sequence and the issue's
@@ -362,6 +364,7 @@ func PopulateParked(state *State, rows []persistence.ParkedIssue, log *slog.Logg
 		}
 		entry.ReleasedAt, _ = time.Parse(time.RFC3339, row.ReleasedAt)
 		entry.ReleaseGesture = row.ReleaseGesture
+		entry.Record = parkRecordOfRow(row)
 		state.ParkReleases[row.IssueID] = entry
 	}
 }
@@ -427,7 +430,7 @@ func labelsWithout(labels []string, drop string) []string {
 
 // parkedIssueRow builds the persisted row for the given runtime park entry.
 func parkedIssueRow(issueID string, entry *ParkedEntry) persistence.ParkedIssue {
-	return persistence.ParkedIssue{
+	row := persistence.ParkedIssue{
 		IssueID:      issueID,
 		Identifier:   entry.Identifier,
 		DisplayID:    entry.DisplayID,
@@ -455,4 +458,21 @@ func parkedIssueRow(issueID string, entry *ParkedEntry) persistence.ParkedIssue 
 		ReleasedAt:     formatWholeSecondUTC(entry.ReleasedAt),
 		ReleaseGesture: entry.ReleaseGesture,
 	}
+	if r := entry.Record; r != nil {
+		row.ReleasePullRequest, row.ReleaseHead, row.ReleaseComment = r.PullRequest, r.Head, strings.Join(r.Comments, ",")
+	}
+	return row
+}
+
+// parkRecordOfRow returns the pull request record row names as its
+// release, nil when it names none.
+func parkRecordOfRow(row persistence.ParkedIssue) *ParkRecord {
+	if row.ReleasePullRequest == "" && row.ReleaseHead == "" {
+		return nil
+	}
+	r := &ParkRecord{PullRequest: row.ReleasePullRequest, Head: row.ReleaseHead}
+	if row.ReleaseComment != "" {
+		r.Comments = strings.Split(row.ReleaseComment, ",")
+	}
+	return r
 }

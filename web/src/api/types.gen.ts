@@ -465,6 +465,7 @@ export interface IssueOutcomeResponse {
   state?: string;
   merge_path?: string;
   pull_request?: PullRequestResponse;
+  park_release?: ParkRecordResponse;
   status_text: string;
   status_text_full: string;
 }
@@ -540,6 +541,23 @@ export interface NextOutcomeResponse {
 export interface NoHopReason {
   reason: string;
   passes: number;
+}
+
+export interface ParkRecordResponse {
+  gesture: string;
+  head?: string;
+  comments?: string[];
+}
+
+export interface ParkReleaseResponse {
+  issue_id: string;
+  issue_identifier: string;
+  display_identifier?: string;
+  reason: string;
+  parked_at: string;
+  released_at: string;
+  release: ParkRecordResponse;
+  pull_request: PullRequestResponse | null;
 }
 
 export interface ParkedEntryResponse {
@@ -1262,6 +1280,7 @@ export interface StateResponse {
   retrying: RetryEntryResponse[] | null;
   budget_exhausted: BudgetExhaustedResponse[] | null;
   parked: ParkedEntryResponse[] | null;
+  park_releases: ParkReleaseResponse[] | null;
   pending_reactions: PendingReactionResponse[] | null;
   between_stages: StageHopResponse[] | null;
   active: ActiveIssueResponse[] | null;

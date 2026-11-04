@@ -123,6 +123,9 @@ func TestMigrate_ForkDatabaseTakesLaterUpstreamMigrations(t *testing.T) {
 			t.Errorf("run_history lacks %s after the upgrade", column)
 		}
 	}
+	if !hasColumn(t, s, "park_record_releases", "head") || !hasColumn(t, s, "parked_issues", "release_head") {
+		t.Error("the park record release columns lost after the upgrade")
+	}
 	if !hasColumn(t, s, "plan_satisfaction", "issue_id") {
 		t.Error("plan_satisfaction lost after the upgrade")
 	}
