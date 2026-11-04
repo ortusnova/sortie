@@ -8422,6 +8422,63 @@ func TestHandleWorkerExit_LabelFixExit_ErrorStillRetries(t *testing.T) {
 	}
 }
 
+// A parked story's live-proof job ends with the park in place: it hands
+// nothing off, schedules no further run and seeds no watch, whether it
+// stops normally or blocked, so the supervisor decides on its result.
+func TestHandleWorkerExit_LiveProofExitKeepsThePark(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		result WorkerResult
+	}{
+		{name: "normal", result: WorkerResult{ExitKind: WorkerExitNormal}},
+		{name: "blocked", result: WorkerResult{ExitKind: WorkerExitNormal, SoftStop: true, SoftStopReason: string(workspace.StatusBlocked)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wsPath := t.TempDir()
+			writePRSCMMetadata(t, wsPath, 69, "corp", "api", "sortie/LP-1", "c0ffee")
+
+			store := &mockExitStore{}
+			tracker := &mockTrackerAdapter{}
+			state := exitStateWithIssue(t, "LP-1", "In Progress")
+			state.Running["LP-1"].ReactionKind = ReactionKindLiveProof
+			park := &ParkedEntry{Identifier: "LP-1-ident", Reason: parkReasonAgentBlocked, Label: "needs-human", ParkedAt: time.Now().Add(-time.Hour)}
+			state.Parked["LP-1"] = park
+
+			params := defaultExitParams(t, store)
+			params.TrackerAdapter = tracker
+			params.HandoffState = "Human Review"
+			params.ActiveStates = []string{"In Progress"}
+			params.CIProvider = &ciProviderStubExit{}
+			params.SCMAdapter = &scmAdapterStubExit{}
+			params.ReviewReactionConfigured = true
+			params.AutoMergeReactionConfigured = true
+			params.MergeCompletionReactionConfigured = true
+
+			result := tt.result
+			result.IssueID, result.Identifier, result.AgentAdapter, result.WorkspacePath = "LP-1", "LP-1-ident", "mock", wsPath
+			HandleWorkerExit(state, result, params)
+
+			if state.Parked["LP-1"] != park {
+				t.Errorf("park = %+v, want the park kept", state.Parked["LP-1"])
+			}
+			if len(tracker.transitionCalls) != 0 {
+				t.Errorf("TransitionIssue calls = %d, want none", len(tracker.transitionCalls))
+			}
+			if retry, ok := state.RetryAttempts["LP-1"]; ok {
+				t.Errorf("retry = %+v, want none", retry)
+			}
+			if _, claimed := state.Claimed["LP-1"]; claimed {
+				t.Error("claim still held, want released")
+			}
+			if len(state.PendingReactions) != 0 {
+				t.Errorf("pending reactions = %v, want none seeded on a parked story", state.PendingReactions)
+			}
+		})
+	}
+}
+
 // TestHandleWorkerExit_MergeCompletionEnqueue covers the merge-completion
 // seeding block. The clause imposes no branch requirement, unlike the
 // checkout-bearing kinds; the fixtures carry one only as the common case.

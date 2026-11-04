@@ -553,6 +553,13 @@ const ReactionKindLabelReview = "label-review"
 // reactions.label_commands.
 const ReactionKindLabelFix = "label-fix"
 
+// ReactionKindLiveProof is the reaction kind of a live-proof job on a
+// parked story: a fix run on the story's pull request branch that the
+// supervisor's live-proof request starts while the park holds. It drives
+// no issue state, so the park outlives it. Like a review fix run it needs
+// the review_comments reaction.
+const ReactionKindLiveProof = "live-proof"
+
 // ReactionKindMergeCompletion is the reaction kind for the
 // merge-completion reaction. The YAML key is reactions.merge_completion.
 const ReactionKindMergeCompletion = "merge-completion"
@@ -623,6 +630,7 @@ var reactionKinds = map[string]reactionKindSpec{
 	ReactionKindMergeConflict:   {"merge_conflicts", true, countsAttempts, escalates},
 	ReactionKindLabelReview:     {"label_commands", false, countsNoAttempts, neverEscalates},
 	ReactionKindLabelFix:        {"label_commands", false, countsNoAttempts, neverEscalates},
+	ReactionKindLiveProof:       {"review_comments", false, countsNoAttempts, neverEscalates},
 	ReactionKindMergeCompletion: {"merge_completion", false, countsAttempts, escalates},
 }
 

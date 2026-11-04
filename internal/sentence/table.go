@@ -133,6 +133,10 @@ var table = map[string]parts{
 		short: "Fixing #{{.PR}}{{if .Label}} for `{{.Label}}`{{end}}",
 		long:  "Fixing PR #{{.PR}}{{if .Label}}, as the `{{.Label}}` label asked{{end}}.",
 	},
+	"run_live_proof": {
+		short: "Live-proving #{{.PR}} while parked",
+		long:  "Running the live-proof job of PR #{{.PR}}, as the supervisor asked; the park stays in place.",
+	},
 
 	"retry_paused": {
 		short: "Retry {{count .Attempt}} paused: {{.Reason}}",
@@ -674,6 +678,7 @@ var runPhrases = map[string]runPhrase{
 	orchestrator.ReactionKindMergeConflict: {"Rebase run", "rebase run"},
 	orchestrator.ReactionKindLabelReview:   {"Label review run", "label review run"},
 	orchestrator.ReactionKindLabelFix:      {"Label fix run", "label fix run"},
+	orchestrator.ReactionKindLiveProof:     {"Live-proof job", "live-proof job"},
 }
 
 // kindWords names a reaction kind sentence-initial and inline, and holds the

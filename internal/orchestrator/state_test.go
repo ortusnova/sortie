@@ -2007,6 +2007,9 @@ func TestReactionKindPins(t *testing.T) {
 			{ReactionKindLabelReview, &LabelReviewReactionData{PRNumber: 6}, 6},
 			{ReactionKindLabelFix, &LabelFixReactionData{PRNumber: 7}, 7},
 			{ReactionKindMergeCompletion, &MergeCompletionReactionData{PRNumber: 8}, 8},
+			// A live-proof job has no pending reaction of its own: it runs
+			// on the review watch's pull request when there is one.
+			{ReactionKindLiveProof, &ReviewReactionData{PRNumber: 9}, 9},
 		}
 
 		covered := make(map[string]bool, len(tests))
