@@ -567,6 +567,29 @@ The event loop writes a row when a session starts, and the session's goroutine r
 
 The event loop writes the row when a run's exit records the part and at each change of its status. At startup every row is loaded before the first tick, so a story stays out of Done across a restart and a part recorded again by a later run is recognized; a `job` part that was `working` is loaded as `pending`, because its check job did not outlive the process, and is queued again. Rows are never deleted.
 
+**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1017)
+
+| Column                | Type             | Notes |
+| --------------------- | ---------------- | ----- |
+| `issue_id`            | TEXT PRIMARY KEY | Tracker-internal ID of the story |
+| `identifier`          | TEXT NOT NULL    | Human-readable ticket key |
+| `seq`                 | INTEGER NOT NULL | Queue order |
+| `phase`               | TEXT NOT NULL    | `queued`, `merging`, `deploying`, `proving`, or `reverting` |
+| `pull_request`        | TEXT NOT NULL    | `owner/repo#number` |
+| `branch`              | TEXT NOT NULL    | Its head branch |
+| `head`                | TEXT NOT NULL    | The head whose CI passed when the story was accepted, which the merge requires |
+| `criteria`            | TEXT NOT NULL    | The criteria left to the proof after deploy, one per line |
+| `merge_commit`        | TEXT NOT NULL    | Set once the pull request merged |
+| `deployed`            | TEXT NOT NULL    | `host=commit` pairs, comma-separated, once every host deployed the merge |
+| `queued_at`           | TEXT NOT NULL    | RFC 3339 UTC |
+| `phase_at`            | TEXT NOT NULL    | RFC 3339 UTC of the phase's start |
+| `deadline`            | TEXT NOT NULL    | RFC 3339 UTC; empty in the queue and while merging |
+| `revert_pull_request` | INTEGER NOT NULL | The revert Sortie opened; `0` before |
+| `reason`              | TEXT NOT NULL    | Why the story is being reverted |
+| `agent_kind`, `configured_model`, `rule_name`, `template_id` | TEXT NOT NULL | What the live-proof job runs with |
+
+The event loop writes the row when the route accepts a story and at each phase change, and deletes it when the story is proven, reverted, or given up. At startup the rows are loaded before the first tick, so the story in flight goes on from its phase with its deadline. A `merged` row of `plan_satisfaction` is written for such a story only once it is proven, and a `merged` row is deleted, the only deletion of that table, when the forge shows a merged pull request that reverts it.
+
 ### 19.3 Migration Strategy
 
 - Migrations are numbered sequentially and applied in order at startup.
