@@ -975,6 +975,40 @@
       ],
       "type": "object"
     },
+    "EgressHoldResponse": {
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "commit",
+        "file",
+        "error",
+        "text"
+      ],
+      "type": "object"
+    },
     "EnvironmentInfo": {
       "properties": {
         "kept_dirs": {
@@ -1476,6 +1510,9 @@
             }
           ]
         },
+        "egress": {
+          "$ref": "#/$defs/EgressHoldResponse"
+        },
         "held_since": {
           "format": "date-time",
           "type": "string"
@@ -1490,6 +1527,7 @@
           "enum": [
             "agent_slots_full",
             "ssh_hosts_full",
+            "egress_invalid",
             "no_worker",
             "blockers_not_read",
             "blockers_unresolved",
@@ -3422,6 +3460,9 @@
         "due_at": {
           "format": "date-time",
           "type": "string"
+        },
+        "egress_hold": {
+          "$ref": "#/$defs/EgressHoldResponse"
         },
         "environment": {
           "$ref": "#/$defs/EnvironmentInfo"

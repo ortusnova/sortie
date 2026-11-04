@@ -219,6 +219,16 @@ export interface Duration {
   samples: number;
 }
 
+export interface EgressHoldResponse {
+  repository: string;
+  branch: string;
+  commit: string;
+  file: string;
+  entry?: string;
+  error: string;
+  text: string;
+}
+
 export interface EnvironmentInfo {
   kind: string;
   name: string;
@@ -334,11 +344,12 @@ export interface HoldBlockerResponse {
 }
 
 export interface HoldResponse {
-  reason: "agent_slots_full" | "ssh_hosts_full" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
+  reason: "agent_slots_full" | "ssh_hosts_full" | "egress_invalid" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
   held_since: string;
   blockers: HoldBlockerResponse[] | null;
   slot: HoldSlotResponse | null;
   worker?: WorkerWaitResponse;
+  egress?: EgressHoldResponse;
   resets_at: string | null;
   agent_kind?: string;
   model_only?: boolean;
@@ -732,6 +743,7 @@ export interface RetryEntryResponse {
   paused: boolean;
   worker_wait?: WorkerWaitResponse;
   worker_wait_since?: string;
+  egress_hold?: EgressHoldResponse;
   status_text: string;
   status_text_full: string;
 }

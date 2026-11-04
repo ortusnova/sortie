@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -401,4 +402,45 @@ func (l *Locked) isAncestorOf(ctx context.Context, commit, rev string) (bool, er
 		return false, nil
 	}
 	return false, err
+}
+
+// ErrFileTooLarge reports a file larger than the bound its reader set.
+var ErrFileTooLarge = errors.New("file too large")
+
+// FileAt returns the content of the file at path, relative to the
+// repository root, in the tree of commit, and false when that tree holds
+// no file there. A file larger than maxBytes is not read: the error wraps
+// [ErrFileTooLarge] and names its size. commit must be a full
+// hexadecimal object id.
+func (l *Locked) FileAt(ctx context.Context, commit, path string, maxBytes int64) ([]byte, bool, error) {
+	if !isObjectID(commit) {
+		return nil, false, fmt.Errorf("%q is not an object id", commit)
+	}
+	object := commit + ":" + path
+	out, err := l.m.git.run(ctx, "cat-file", "-t", object)
+	if exitedWith(err, 128) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s at %s in the mirror: %w", path, commit, err)
+	}
+	if typ := strings.TrimSpace(string(out)); typ != "blob" {
+		return nil, true, fmt.Errorf("%s at %s is a %s, not a file", path, commit, typ)
+	}
+	out, err = l.m.git.run(ctx, "cat-file", "-s", object)
+	if err != nil {
+		return nil, true, fmt.Errorf("read the size of %s at %s in the mirror: %w", path, commit, err)
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return nil, true, fmt.Errorf("read the size of %s at %s in the mirror: %w", path, commit, err)
+	}
+	if size > maxBytes {
+		return nil, true, fmt.Errorf("%s at %s is %d bytes, over the limit of %d: %w", path, commit, size, maxBytes, ErrFileTooLarge)
+	}
+	data, err := l.m.git.run(ctx, "cat-file", "blob", object)
+	if err != nil {
+		return nil, true, fmt.Errorf("read %s at %s in the mirror: %w", path, commit, err)
+	}
+	return data, true, nil
 }
