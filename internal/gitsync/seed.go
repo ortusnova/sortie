@@ -22,6 +22,10 @@ type Seed struct {
 	// holds it. A seed without it is pushed with the lease on Sortie's
 	// last push.
 	Upstream bool `json:",omitempty"`
+
+	// Base is the base branch's commit the seed carries as
+	// refs/remotes/origin/<base>.
+	Base string `json:",omitempty"`
 }
 
 // BuildSeed writes the workspace seed of the workspace key to dst, a
@@ -94,7 +98,7 @@ func (s *Syncer) BuildSeed(ctx context.Context, key, dst string) (Seed, error) {
 			return Seed{}, fmt.Errorf("build the seed of %s: %w", branch, err)
 		}
 	}
-	return Seed{Branch: branch, Commit: commit, Upstream: upstreamBranch}, nil
+	return Seed{Branch: branch, Commit: commit, Upstream: upstreamBranch, Base: base}, nil
 }
 
 // ImportReturned takes the issue branch of the workspace key back from

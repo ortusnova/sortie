@@ -514,3 +514,59 @@ func TestHandleRetryTimer_AFaultHeldIssueReleasesItsRetry(t *testing.T) {
 		t.Errorf("deleted retry rows = %v, want issue-9", store.deletedRetryIDs)
 	}
 }
+
+// A parked story's live-proof job that fails on an open platform fault
+// ends there: a retry would only fail the same way, spending a session
+// and posting a failure on the story each time. The park stays; the
+// supervisor requests the proof again once the fault is fixed. Another
+// failure still retries.
+func TestHandleWorkerExit_ALiveProofJobStopsOnAnOpenPlatformFault(t *testing.T) {
+	t.Parallel()
+	refused := &domain.AgentError{Kind: domain.ErrCredentialUnverified, Message: "the agent runtime refused its credential"}
+	for _, tt := range []struct {
+		name      string
+		fault     bool
+		wantRetry bool
+	}{
+		{name: "an open fault", fault: true},
+		{name: "no fault", wantRetry: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			if tt.fault {
+				state.PlatformFaults["pf-c"] = &PlatformFault{ID: "pf-c", Signature: runFailureSignature(refused).String()}
+			}
+			park := &ParkedEntry{Identifier: "ONS-77", Reason: parkReasonAgentBlocked}
+			state.Parked["issue-77"] = park
+			state.Running["issue-77"] = &RunningEntry{
+				Identifier: "ONS-77", ReactionKind: ReactionKindLiveProof,
+				Issue:     domain.Issue{ID: "issue-77", Identifier: "ONS-77", State: "In Progress"},
+				StartedAt: baseTime,
+			}
+			state.Claimed["issue-77"] = struct{}{}
+			HandleWorkerExit(state, WorkerResult{
+				IssueID: "issue-77", Identifier: "ONS-77", ExitKind: WorkerExitError, Error: refused, AgentAdapter: "mock",
+			}, HandleWorkerExitParams{
+				Store: openRepeatedFailureStore(t), MaxRetryBackoffMS: 300_000, OnRetryFire: noopRetryFire,
+				NowFunc: func() time.Time { return baseTime.Add(time.Minute) }, Logger: discardLogger(), Ctx: context.Background(),
+			})
+			retry, retried := state.RetryAttempts["issue-77"]
+			if retried != tt.wantRetry {
+				t.Errorf("retry = %+v, want retried %v", retry, tt.wantRetry)
+			}
+			if retried && retry.ReactionKind != ReactionKindLiveProof {
+				t.Errorf("retry kind = %q, want the live-proof job again", retry.ReactionKind)
+			}
+			if _, claimed := state.Claimed["issue-77"]; claimed != tt.wantRetry {
+				t.Errorf("claimed = %v, want %v", claimed, tt.wantRetry)
+			}
+			if _, held := state.FaultHolds["issue-77"]; held {
+				t.Error("the parked story was held under the fault, want the park alone")
+			}
+			if state.Parked["issue-77"] != park {
+				t.Error("the park was lifted")
+			}
+		})
+	}
+}

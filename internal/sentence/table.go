@@ -435,6 +435,11 @@ var table = map[string]parts{
 		long:   "No checked-in worker can take the issue's remote job now{{if .Waiting}} ({{.Waiting}}){{end}}, so Sortie holds the issue without an agent slot. It dispatches the issue once a worker that can run the job checks in or frees what the job needs.",
 		clears: "Released when a worker that can run its job checks in or frees what the job needs.",
 	},
+	"hold_egress_invalid": {
+		short:  "Egress policy invalid: {{.Egress.Repository}} at {{.Egress.Commit}}, {{.Egress.File}}{{if .Egress.Entry}} {{.Egress.Entry}}{{end}}: {{.Egress.Error}}",
+		long:   "The egress policy of {{.Egress.Repository}}, {{.Egress.File}} at commit {{.Egress.Commit}} of its {{.Egress.Branch}} branch, is invalid{{if .Egress.Entry}} at {{.Egress.Entry}}{{end}}: {{.Egress.Error}}. Sortie offers none of the repository's jobs, starts no session and uses no attempt, and reads the file again at each poll.",
+		clears: "Released at the next poll once a valid {{.Egress.File}} lands on the {{.Egress.Branch}} branch.",
+	},
 	"hold_spend_daily": {
 		short:  "Daily spend ceiling reached" + resetsIn,
 		long:   "The daily spend ceiling is reached, so Sortie starts no agent session for any issue until the UTC day ends.",

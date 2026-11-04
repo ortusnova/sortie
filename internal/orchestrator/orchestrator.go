@@ -486,6 +486,10 @@ type Orchestrator struct {
 	tokenInspector domain.SCMTokenInspector
 	storyChanges   func(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue) ([]string, error)
 
+	// readEgress reads a repository's egress policy at the tip of its
+	// base branch; nil reads it from the repository's mirror.
+	readEgress EgressReader
+
 	// supervisorToken and supervisorWorkDir are what a supervisor session
 	// runs with; supervisorWg tracks the session's goroutine.
 	supervisorToken   string
@@ -1003,6 +1007,11 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				HealthHold: func(issue domain.Issue, hold bool) bool {
 					return o.healthHold(ctx, cfg, issue, hold) != nil
 				},
+				EgressHold: func(issue domain.Issue) *EgressHold {
+					hold, read := o.egressHold(ctx, cfg, issue, newEgressPass(o.egressReader()))
+					o.holdForEgress(ctx, issue, hold, read)
+					return hold
+				},
 			})
 			if heldReleased && !o.once.hasOutcome(issueID) {
 				o.once.record(issueID, retryIdentifier, RunOutcomeStopped)
@@ -1403,6 +1412,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		}
 	}
 	held := newHeldPass(o.state.Held, passStart, spendHoldEntry(spendHold, o.state.SpendCeilings), usageHold)
+	egressReads := newEgressPass(o.egressReader())
 
 	var dispatched, dispatchedByRule, dispatchedByDefault, dispatchedByFallback int
 	var heldByBlockers, blockersUnresolvedHeld, blockersNotReadHeld, blockersIncompleteHeld int
@@ -1480,6 +1490,13 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 				o.once.declined(issue, SkipUsageLimit)
 				continue
 			}
+		}
+		egressHold, egressRead := o.egressHold(ctx, cfg, issue, egressReads)
+		o.holdForEgress(ctx, issue, egressHold, egressRead)
+		if egressHold != nil {
+			held.hold(issue, HeldEntry{Reason: SkipEgressInvalid, Egress: egressHold})
+			o.once.deferFor(issue.ID, deferTick)
+			continue
 		}
 		if wait := o.workerWait(cfg, issue); wait != nil {
 			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})

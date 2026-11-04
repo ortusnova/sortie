@@ -1906,6 +1906,7 @@ API design notes:
   - `hold.resets_at` is non-null exactly for the spend reasons and `usage_limit`, in UTC: the reset instant of the window or the usage limit that holds.
   - `hold.agent_kind`, `hold.model_only`, and `hold.model` are served for the reason `usage_limit` and omitted otherwise. `agent_kind` is the agent kind the hold stops. `model_only` is true when the hold stops that kind on one configured model alone, and omitted when it stops every model of the kind. `model` is that configured model, omitted for a kind-wide hold and for the runtime's default model.
   - `hold.worker` is served for the reason `no_worker` and omitted otherwise: `capabilities`, what the issue's remote job requires, and `waiting`, per checked-in worker what it lacks; a worker whose last check-in is more than 3 heartbeat intervals old is gone and lacks `no check-in since <time>`, until it checks in again. A `no_worker` candidate takes no agent slot and is not running, so a drain does not wait for it; a retry that finds no worker for its job is re-armed at its attempt every poll interval and serves `worker_wait` instead.
+  - `hold.egress` is served for the reason `egress_invalid` and omitted otherwise: `repository`, `branch` and `commit` where Sortie read the repository's `.sortie/egress.yaml` at the tip of its base branch, `file`, `entry` (the invalid key or entry, omitted when the file as a whole is invalid), `error`, and `text`, the whole reason in one line starting `egress policy invalid:`. An `egress_invalid` candidate takes no agent slot, starts no session and uses no attempt, and the hold is commented once on the issue; a retry its repository's policy holds is re-armed at its attempt every poll interval and serves `egress_hold` instead.
   - `hold.reason_text` is a short operator text without a final period, and `hold.release_text` is one sentence ending with a period that says what releases the hold. On a held row `status_text` equals `reason_text`.
   - A candidate's reason is the first row of this table that matches it on the latest pass. A spend window or a usage-limit hold that holds ranks above the capacity rows, because a freed slot would not dispatch the candidate while the hold stands. A spend hold ranks above a usage-limit hold.
 
@@ -1923,10 +1924,11 @@ API design notes:
     | 9 | spend | A spend window holds | `daily_spend_ceiling`, `weekly_spend_ceiling`, `monthly_spend_ceiling` | `resets_at` |
     | 10 | stage hop | The hop confirmation read did not confirm and the hop record stands | `stage_hop_unconfirmed` | None |
     | 11 | usage limit | A usage-limit hold covers the candidate's agent kind, or that kind on the candidate's configured model | `usage_limit` | `resets_at`, `agent_kind`, `model_only`, `model` |
-    | 12 | remote worker | Under `environment.kind: remote`, no checked-in worker that is not gone can take the candidate's job now, after the queued jobs take what they fit | `no_worker` | `worker` |
-    | 13 | dispatch | The agent kind, prompt template, or attempt settings are refused | None | |
-    | 14 | host acquisition | No SSH host accepts the issue | `ssh_hosts_full` | None; this and every later eligible candidate |
-    | 15 | park release | The issue's park was released by a person and the read of its comments failed | `park_comments_unread` | None |
+    | 12 | egress policy | Under `environment.kind: remote`, the `.sortie/egress.yaml` at the tip of the candidate's repository's base branch is invalid | `egress_invalid` | `egress` |
+    | 13 | remote worker | Under `environment.kind: remote`, no checked-in worker that is not gone can take the candidate's job now, after the queued jobs take what they fit | `no_worker` | `worker` |
+    | 14 | dispatch | The agent kind, prompt template, or attempt settings are refused | None | |
+    | 15 | host acquisition | No SSH host accepts the issue | `ssh_hosts_full` | None; this and every later eligible candidate |
+    | 16 | park release | The issue's park was released by a person and the read of its comments failed | `park_comments_unread` | None |
 
   - A candidate under a lease (`POST /api/v1/<issue_identifier>/hold` on an issue that is not running) that passes the eligibility gates is held with `standing_hold`, or `standing_hold_expired` once the lease expired, ahead of every row of this table, the capacity checks included.
 
