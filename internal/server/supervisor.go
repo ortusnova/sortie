@@ -26,7 +26,7 @@ type SupervisorActions interface {
 	MarkDraft(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	Merge(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	FileIssue(ctx context.Context, title, body string) orchestrator.SupervisorResult
-	RequestLiveProof(ctx context.Context, identifier string) orchestrator.SupervisorResult
+	RequestLiveProof(ctx context.Context, identifier, criterion string) orchestrator.SupervisorResult
 	AskPerson(ctx context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult
 }
 
@@ -436,8 +436,8 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 			return sup.Merge(ctx, id)
 		})))
 	mux.HandleFunc("/api/v1/{identifier}/live-proof", s.supervisorRoute(supervisorActionLiveProof, s.supervisorHandler(supervisorActionLiveProof,
-		func(ctx context.Context, sup SupervisorActions, id string, _ supervisorRequest) orchestrator.SupervisorResult {
-			return sup.RequestLiveProof(ctx, id)
+		func(ctx context.Context, sup SupervisorActions, id string, req supervisorRequest) orchestrator.SupervisorResult {
+			return sup.RequestLiveProof(ctx, id, req.Evidence)
 		})))
 	mux.HandleFunc("/api/v1/supervisor/questions", s.supervisorRoute(supervisorActionAsk, s.handleSupervisorQuestion))
 	mux.HandleFunc("/api/v1/issues", s.supervisorRoute(supervisorActionFileIssue, s.supervisorHandler(supervisorActionFileIssue,

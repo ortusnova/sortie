@@ -2342,6 +2342,7 @@ func TestMakeWorkerFn_DerivesPostureFromReactionKind(t *testing.T) {
 	}{
 		{"label-review reaction kind selects PostureReview", ReactionKindLabelReview, PostureReview},
 		{"label-fix reaction kind selects PostureFix", ReactionKindLabelFix, PostureFix},
+		{"live-proof reaction kind selects PostureFix", ReactionKindLiveProof, PostureFix},
 		{"empty reaction kind selects PostureNormal", "", PostureNormal},
 		{"other known reaction kind selects PostureNormal", ReactionKindReview, PostureNormal},
 	}

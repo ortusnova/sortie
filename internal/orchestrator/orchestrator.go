@@ -412,6 +412,7 @@ type Orchestrator struct {
 	scmAdapter                        domain.SCMAdapter
 	prCommentReader                   domain.PullRequestCommentReader
 	prDrafter                         domain.PullRequestDrafter
+	prFinder                          domain.PullRequestFinder
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
@@ -648,6 +649,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.scmAdapter = observeSCM(params.SCMAdapter, o.scmHealth)
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
+		o.prFinder, _ = params.SCMAdapter.(domain.PullRequestFinder)
 	}
 	if params.CIProvider != nil {
 		o.ciProvider = observeCI(params.CIProvider, o.scmHealth)

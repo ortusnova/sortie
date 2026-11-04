@@ -15,6 +15,8 @@ import (
 
 var _ domain.PullRequestOpener = (*GitLabSCMAdapter)(nil)
 
+var _ domain.PullRequestFinder = (*GitLabSCMAdapter)(nil)
+
 // mergeRequestScopeHint names what a token needs to open a merge
 // request.
 const mergeRequestScopeHint = "the token needs the api scope and at least the Developer role in the project"
@@ -90,6 +92,12 @@ func (a *GitLabSCMAdapter) EnsurePullRequest(ctx context.Context, owner, repo, h
 		}
 	}
 	return domain.PullRequest{Number: created.IID, URL: created.WebURL, Created: true}, nil
+}
+
+// FindOpenPullRequest returns the open merge request of owner/repo whose
+// head is its own branch head, and false when there is none.
+func (a *GitLabSCMAdapter) FindOpenPullRequest(ctx context.Context, owner, repo, head string) (domain.PullRequest, bool, error) {
+	return a.findOpenMergeRequest(ctx, owner, repo, head)
 }
 
 // findOpenMergeRequest returns the open merge request of owner/repo

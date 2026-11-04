@@ -16,6 +16,8 @@ import (
 
 var _ domain.PullRequestOpener = (*GiteaSCMAdapter)(nil)
 
+var _ domain.PullRequestFinder = (*GiteaSCMAdapter)(nil)
+
 // giteaPullRequestSummary is the subset of a Gitea pull request that
 // identifies it and its head.
 type giteaPullRequestSummary struct {
@@ -91,6 +93,12 @@ func (a *GiteaSCMAdapter) EnsurePullRequest(ctx context.Context, owner, repo, he
 		}
 	}
 	return domain.PullRequest{Number: created.Number, URL: created.HTMLURL, Created: true}, nil
+}
+
+// FindOpenPullRequest returns the open pull request of owner/repo whose
+// head is its own branch head, and false when there is none.
+func (a *GiteaSCMAdapter) FindOpenPullRequest(ctx context.Context, owner, repo, head string) (domain.PullRequest, bool, error) {
+	return a.findOpenPullRequest(ctx, owner, repo, head)
 }
 
 // findOpenPullRequest returns the open pull request of owner/repo whose

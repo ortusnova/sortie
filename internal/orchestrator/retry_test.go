@@ -4300,6 +4300,30 @@ func TestHandleRetryTimerParkGate(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("a live-proof job runs on a parked issue and keeps the park", func(t *testing.T) {
+		t.Parallel()
+
+		const issueID = "PARK-LIVE"
+		store := &mockRetryStore{}
+		tracker := &mockRetryTracker{fetchedIssue: candidateIssue(issueID, "PROJ-LIVE", "In Progress")}
+		state := retryState(t, issueID, "PROJ-LIVE", 1)
+		state.RetryAttempts[issueID].ReactionKind = ReactionKindLiveProof
+		park := &ParkedEntry{Identifier: "PROJ-LIVE", Reason: parkReasonAgentBlocked}
+		state.Parked[issueID] = park
+		params := defaultRetryParams(t, store, tracker)
+
+		HandleRetryTimer(state, issueID, params)
+		state.TrackerOpsWg.Wait()
+
+		running := state.Running[issueID]
+		if running == nil || running.ReactionKind != ReactionKindLiveProof {
+			t.Fatalf("running = %+v, want the live-proof job", running)
+		}
+		if state.Parked[issueID] != park {
+			t.Errorf("park = %+v, want it kept while the job runs", state.Parked[issueID])
+		}
+	})
 }
 
 func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {

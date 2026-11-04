@@ -284,9 +284,10 @@ const (
 	// effects, fresh session.
 	PostureReview
 
-	// PostureFix is the read-write fix dispatch (label-fix): full clone via
-	// operator hooks so the agent can check out the PR head branch and push,
-	// a fresh session, and every issue-work side effect suppressed.
+	// PostureFix is the read-write fix dispatch (label-fix, and a parked
+	// story's live-proof job): full clone via operator hooks so the agent
+	// can check out the PR head branch and push, a fresh session, and every
+	// issue-work side effect suppressed.
 	PostureFix
 )
 
@@ -309,7 +310,7 @@ func dispatchPostureForReactionKind(kind string) DispatchPosture {
 	switch kind {
 	case ReactionKindLabelReview:
 		return PostureReview
-	case ReactionKindLabelFix:
+	case ReactionKindLabelFix, ReactionKindLiveProof:
 		return PostureFix
 	default:
 		return PostureNormal
