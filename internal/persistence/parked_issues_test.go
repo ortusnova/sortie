@@ -84,6 +84,12 @@ func TestUpsertParkedIssue_RoundTrip(t *testing.T) {
 		StagePreviousOutcome: "succeeded",
 		ChainID:              "chain-1",
 		DispatchedAt:         "2026-08-16T22:00:00.123456789Z",
+
+		ReleasedAt:         "2026-08-17T01:00:00Z",
+		ReleaseGesture:     "record",
+		ReleasePullRequest: "acme/web#155",
+		ReleaseHead:        "4d2c1aa9e1f0",
+		ReleaseComment:     "c-7,lp-1",
 	}
 	if err := s.UpsertParkedIssue(ctx, entry); err != nil {
 		t.Fatalf("UpsertParkedIssue: %v", err)

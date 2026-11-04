@@ -1264,6 +1264,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.advanceHandoffParts(ctx, time.Now().UTC())
 	o.startDueFaultChecks(ctx, time.Now())
 	o.runDueHealthChecks(ctx, cfg)
+	o.releaseParksByRecord(ctx, cfg, time.Now().UTC())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.

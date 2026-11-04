@@ -27,6 +27,7 @@ type stateResponse struct {
 	Retrying               []retryEntryResponse                 `json:"retrying"`
 	BudgetExhausted        []budgetExhaustedResponse            `json:"budget_exhausted"`
 	Parked                 []parkedEntryResponse                `json:"parked"`
+	ParkReleases           []parkReleaseResponse                `json:"park_releases"`
 	PendingReactions       []pendingReactionResponse            `json:"pending_reactions"`
 	BetweenStages          []stageHopResponse                   `json:"between_stages"`
 	Active                 []activeIssueResponse                `json:"active"`
@@ -1435,6 +1436,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 		Retrying:         retrying,
 		BudgetExhausted:  budgetExhausted,
 		Parked:           parked,
+		ParkReleases:     toParkReleaseResponses(snap.ParkReleases),
 		PendingReactions: pendingReactions,
 		BetweenStages:    betweenStages,
 		Held:             held,

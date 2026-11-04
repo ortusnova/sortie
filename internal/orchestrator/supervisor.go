@@ -369,8 +369,9 @@ func (s Supervisor) MarkDraft(ctx context.Context, identifier string) Supervisor
 // watched one, or a parked issue's open one) when it is open, not a
 // draft, mergeable, its review decision is approved or requires no
 // review, its CI conclusion is success, the story has no open hand-off
-// part, the story is not a ui story, whose merge the operator keeps, and
-// its criteria verdict lets it merge ([Supervisor.criteriaLetMerge]). The
+// part, its criteria verdict lets it merge ([Supervisor.criteriaLetMerge]),
+// and, for a ui story, a comment records its click-proofs passed at the
+// head ([Supervisor.clickProofsLetMerge]). The
 // merge records the plan merge as [Supervisor.RecordMerge] does.
 func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResult {
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
@@ -397,9 +398,7 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 	if err != nil {
 		return upstreamFailed(issue, "the tracker read failed", err)
 	}
-	if slices.ContainsFunc(tracked.Labels, isUIReviewLabel) {
-		return precondition(issue, "ui_story", "a ui story waits for the operator, who merges it")
-	}
+	ui := slices.ContainsFunc(tracked.Labels, isUIReviewLabel)
 	status, err := s.o.scmAdapter.GetMergeability(fctx, pr.Number, pr.Owner, pr.Repo)
 	if err != nil {
 		return upstreamFailed(issue, "the forge read failed", err)
@@ -435,6 +434,11 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 	}
 	if r, ok := s.criteriaLetMerge(fctx, issue, pr, status.HeadSHA); !ok {
 		return r
+	}
+	if ui {
+		if r, ok := s.clickProofsLetMerge(fctx, issue, pr, status.HeadSHA); !ok {
+			return r
+		}
 	}
 	strategy := s.o.autoMergeConfig.Strategy
 	if strategy == "" {
@@ -520,13 +524,30 @@ func (s Supervisor) criteriaLetMerge(ctx context.Context, issue supervisedIssue,
 	if err != nil {
 		return upstreamFailed(issue, "the pull request comments read failed", err), false
 	}
-	h := strings.ToLower(head)
-	for _, c := range comments {
-		if sha, ok := liveProofRecord(c.Body); ok && strings.HasPrefix(h, sha) {
-			return SupervisorResult{}, true
-		}
+	if _, lack := recordsAtHead(comments, head, []string{LiveProofMarker}); lack != "" {
+		return unproven, false
 	}
-	return unproven, false
+	return SupervisorResult{}, true
+}
+
+// clickProofsLetMerge reports whether the pull request of a ui story holds
+// the record of its click-proofs at head ([ClickProofsMarker]), and the
+// refusal naming the missing record when it does not.
+func (s Supervisor) clickProofsLetMerge(ctx context.Context, issue supervisedIssue, pr pullRequestRef, head string) (SupervisorResult, bool) {
+	missing := precondition(issue, "click_proofs_missing", fmt.Sprintf(
+		"%s is a ui story's pull request, and no comment on it records its click-proofs passed at its head %s (%s %s): run the click-proofs on the preview and record them",
+		formatPullRequest(pr), head, ClickProofsMarker, head))
+	if s.o.prCommentReader == nil {
+		return missing, false
+	}
+	comments, err := s.o.prCommentReader.FetchPullRequestComments(ctx, pr.Number, pr.Owner, pr.Repo)
+	if err != nil {
+		return upstreamFailed(issue, "the pull request comments read failed", err), false
+	}
+	if _, lack := recordsAtHead(comments, head, []string{ClickProofsMarker}); lack != "" {
+		return missing, false
+	}
+	return SupervisorResult{}, true
 }
 
 // LiveProofRequestMarker opens the request of a live-proof job, the one

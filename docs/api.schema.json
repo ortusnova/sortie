@@ -2150,6 +2150,9 @@
         "observed_at": {
           "type": "string"
         },
+        "park_release": {
+          "$ref": "#/$defs/ParkRecordResponse"
+        },
         "pull_request": {
           "$ref": "#/$defs/PullRequestResponse"
         },
@@ -2482,6 +2485,73 @@
       "required": [
         "reason",
         "passes"
+      ],
+      "type": "object"
+    },
+    "ParkRecordResponse": {
+      "properties": {
+        "comments": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "gesture": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "gesture"
+      ],
+      "type": "object"
+    },
+    "ParkReleaseResponse": {
+      "properties": {
+        "display_identifier": {
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "parked_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PullRequestResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "release": {
+          "$ref": "#/$defs/ParkRecordResponse"
+        },
+        "released_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id",
+        "issue_identifier",
+        "reason",
+        "parked_at",
+        "released_at",
+        "release",
+        "pull_request"
       ],
       "type": "object"
     },
@@ -6098,6 +6168,19 @@
         "host": {
           "$ref": "#/$defs/Host"
         },
+        "park_releases": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ParkReleaseResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "parked": {
           "anyOf": [
             {
@@ -6234,6 +6317,7 @@
         "retrying",
         "budget_exhausted",
         "parked",
+        "park_releases",
         "pending_reactions",
         "between_stages",
         "active",

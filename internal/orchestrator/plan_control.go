@@ -224,8 +224,10 @@ type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed
 // entry remembers it, so auto-merge also waits for its click-proofs (see
 // [planClickProofs]). Whatever its label, the story's latest criteria
 // review must have recorded every criterion met (store, a
-// [CriteriaVerdictLoader]): a review that found one not met, or that
-// only a live proof settles, or that recorded no verdict, is not merged.
+// [CriteriaVerdictLoader]), or every one met but those only a live proof
+// settles, which the entry remembers so auto-merge also waits for their
+// live-proof record at head: a review that found one not met, or that
+// recorded no verdict, is not merged.
 func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter, store any) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
@@ -260,7 +262,11 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter, sto
 		if !labelled {
 			return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
 		}
-		return criteriaMergeAllowed(ctx, store, pending.IssueID)
+		allowed, liveProof, why, err := criteriaMergeAllowed(ctx, store, pending.IssueID)
+		if data != nil {
+			data.liveProof = liveProof
+		}
+		return allowed, why, err
 	}
 }
 
@@ -321,40 +327,85 @@ const ClickProofsMarker = "sortie:click-proofs passed"
 const minClickProofsSHA = 7
 
 // ClickProofsFunc reports whether the pull request of an auto-merge entry
-// holds what its story needs beyond its criteria review and CI. A story
-// that is not a ui story needs nothing more. A ui story needs a record of
-// its click-proofs on the preview for headSHA, the commit about to merge.
-type ClickProofsFunc func(ctx context.Context, pending *PendingReaction, data *AutoMergeReactionData, headSHA string) (recorded bool, err error)
+// holds what its story needs beyond its criteria review and CI, and the
+// marker of the first record it lacks. A story that is not a ui story and
+// whose verdict is met needs nothing more. A ui story needs a record of its
+// click-proofs on the preview for headSHA, the commit about to merge, and a
+// story whose verdict leaves criteria to a live proof needs a record of
+// them proven at headSHA.
+type ClickProofsFunc func(ctx context.Context, pending *PendingReaction, data *AutoMergeReactionData, headSHA string) (recorded bool, missing string, err error)
 
-// planClickProofs returns the click-proofs check of plan control, or nil
-// when plan control is off. It reads the conversation comments of a ui
-// story's pull request for a record naming its head commit; a record for
-// an earlier commit does not count, so a fix pushed after the click-proofs
-// needs them again. A forge that cannot read conversation comments never
-// shows a record, and a ui story there is not merged by Sortie.
+// planClickProofs returns the record check of plan control, or nil when
+// plan control is off. It reads the conversation comments of the pull
+// request for each record its story needs ([recordsNeeded]) naming its
+// head commit; a record for an earlier commit does not count, so a fix
+// pushed after the click-proofs needs them again. A forge that cannot read
+// conversation comments never shows a record, and a story that needs one
+// is not merged by Sortie there.
 func planClickProofs(cfg config.ServiceConfig, reader domain.PullRequestCommentReader) ClickProofsFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
 	}
-	return func(ctx context.Context, _ *PendingReaction, data *AutoMergeReactionData, headSHA string) (bool, error) {
-		if data.story != storyUI {
-			return true, nil
+	return func(ctx context.Context, _ *PendingReaction, data *AutoMergeReactionData, headSHA string) (bool, string, error) {
+		outcome := CriteriaOutcomeMet
+		if data.liveProof {
+			outcome = CriteriaOutcomeLiveProof
+		}
+		needs := recordsNeeded(data.story == storyUI, outcome)
+		if len(needs) == 0 {
+			return true, "", nil
 		}
 		if reader == nil || headSHA == "" {
-			return false, nil
+			return false, needs[0], nil
 		}
 		comments, err := reader.FetchPullRequestComments(ctx, data.PRNumber, data.Owner, data.Repo)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
-		head := strings.ToLower(headSHA)
+		_, missing := recordsAtHead(comments, headSHA, needs)
+		return missing == "", missing, nil
+	}
+}
+
+// recordsNeeded returns the markers of the pull request records that settle
+// what a story's criteria verdict leaves open, beyond its review and CI: a
+// ui story's click-proofs, and the live proof of a verdict that leaves
+// criteria to one. It is empty for a story that is not a ui story and whose
+// verdict is met, and for every other verdict, which no record settles.
+func recordsNeeded(ui bool, outcome string) []string {
+	var needs []string
+	switch outcome {
+	case CriteriaOutcomeMet:
+	case CriteriaOutcomeLiveProof:
+		needs = append(needs, LiveProofMarker)
+	default:
+		return nil
+	}
+	if ui {
+		needs = append([]string{ClickProofsMarker}, needs...)
+	}
+	return needs
+}
+
+// recordsAtHead returns the ID of the first comment that holds each record
+// of needs naming head (a prefix of it), in the order of needs, and the
+// marker of the first record no comment holds at head, empty when every
+// one is held.
+func recordsAtHead(comments []domain.ReviewComment, head string, needs []string) (ids []string, missing string) {
+	h := strings.ToLower(head)
+	for _, marker := range needs {
+		found := false
 		for _, c := range comments {
-			if sha, ok := clickProofsRecord(c.Body); ok && strings.HasPrefix(head, sha) {
-				return true, nil
+			if sha, ok := recordLine(c.Body, marker); ok && strings.HasPrefix(h, sha) {
+				ids, found = append(ids, c.ID), true
+				break
 			}
 		}
-		return false, nil
+		if !found {
+			return ids, marker
+		}
 	}
+	return ids, ""
 }
 
 // clickProofsRecord reports whether body holds a click-proofs record line
@@ -368,10 +419,6 @@ func clickProofsRecord(body string) (string, bool) { return recordLine(body, Cli
 //
 //	sortie:live-proof proven <head sha>
 const LiveProofMarker = "sortie:live-proof proven"
-
-// liveProofRecord reports whether body holds a live-proof record line
-// and returns the lower-cased commit it names.
-func liveProofRecord(body string) (string, bool) { return recordLine(body, LiveProofMarker) }
 
 // recordLine reports whether body holds a line of marker, two words,
 // followed by a commit of at least seven hex digits, and returns that

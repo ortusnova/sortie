@@ -985,6 +985,9 @@ type AutoMergeReactionData struct {
 
 	// story is what the entry's story is, set by the review gate.
 	story reviewStory
+	// liveProof is set by the review gate when the story's verdict leaves
+	// criteria to a live proof, so the merge also waits for its record.
+	liveProof bool
 }
 
 // AutoMergeReactionConfig holds validated auto-merge-specific
@@ -1201,10 +1204,23 @@ type ParkedEntry struct {
 	TemplateID string
 	Statement  string
 
-	// ReleasedAt and ReleaseGesture record a person's release; both are
+	// ReleasedAt and ReleaseGesture record the park's release; both are
 	// zero while the park holds.
 	ReleasedAt     time.Time
-	ReleaseGesture string // "label_removed", "state_changed", or "answered"
+	ReleaseGesture string // "label_removed", "state_changed", "answered", "released", or "record"
+
+	// Record names the pull request record that released the park, with
+	// the gesture "record"; nil for every other release.
+	Record *ParkRecord
+}
+
+// ParkRecord is the pull request record that released a park: the pull
+// request, the head commit the record names, and the ID of each comment
+// that holds one of the records the story needed.
+type ParkRecord struct {
+	PullRequest string // owner/repo#number
+	Head        string
+	Comments    []string
 }
 
 // IssueIdentity names an issue to a person beside its key: the tracker's
@@ -1423,6 +1439,11 @@ type State struct {
 	// ClickProofsAsked holds, per ui story, the head commit whose
 	// click-proofs the tracker was last asked for.
 	ClickProofsAsked map[string]string
+
+	// ParkRecordChecked holds, per parked story, when Sortie last read its
+	// pull request for a record that releases the park. Runtime-only: a
+	// restart reads each park again on its first pass.
+	ParkRecordChecked map[string]time.Time
 
 	// WorkerWg tracks in-flight worker goroutines spawned by
 	// [DispatchIssue]. Callers dispatching outside the Run() loop can
@@ -1826,6 +1847,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		DispatchBlocks:            make(map[string]DispatchBlock),
 		CriteriaReviewWarned:      make(map[string]struct{}),
 		ClickProofsAsked:          make(map[string]string),
+		ParkRecordChecked:         make(map[string]time.Time),
 		MoneyBudgetIncomplete:     make(map[string]struct{}),
 		PlatformFaults:            make(map[string]*PlatformFault),
 		FaultHolds:                make(map[string]string),
@@ -2285,6 +2307,7 @@ type RuntimeSnapshotResult struct {
 	BudgetExhausted      []SnapshotBudgetEntry           `json:"budget_exhausted"`
 	ParkedCount          int                             `json:"parked_count"`
 	Parked               []SnapshotParkedEntry           `json:"parked"`
+	ParkReleases         []SnapshotParkRelease           `json:"park_releases"`
 
 	// Holds lists every standing hold, live or expired. Never nil.
 	Holds []SnapshotStandingHold `json:"holds"`
@@ -2736,6 +2759,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 		return cmp.Or(cmp.Compare(a.Identifier, b.Identifier), cmp.Compare(a.IssueID, b.IssueID))
 	})
 	snap.Parked = parked
+	snap.ParkReleases = snapshotParkReleases(state)
 	snap.Holds = snapshotStandingHolds(state)
 
 	snap.PendingReactions = snapshotPendingReactions(state)

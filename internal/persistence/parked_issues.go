@@ -44,10 +44,19 @@ type ParkedIssue struct {
 	Statement  string
 
 	// ReleasedAt (RFC 3339 UTC, whole seconds) and ReleaseGesture
-	// ("label_removed", "state_changed", or "answered") record a person's
-	// release; both are empty while the park holds.
+	// ("label_removed", "state_changed", "answered", "released", or
+	// "record") record the park's release; both are empty while the park
+	// holds.
 	ReleasedAt     string
 	ReleaseGesture string
+
+	// ReleasePullRequest (owner/repo#number), ReleaseHead, and
+	// ReleaseComment (the comment ID of each record, comma-separated) name
+	// the pull request record that released the park, gesture "record";
+	// all are empty for every other release.
+	ReleasePullRequest string
+	ReleaseHead        string
+	ReleaseComment     string
 }
 
 // UpsertParkedIssue persists a park record using upsert semantics. If a
@@ -57,8 +66,9 @@ func (s *Store) UpsertParkedIssue(ctx context.Context, entry ParkedIssue) error 
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO parked_issues (issue_id, identifier, display_id, reason, parked_state, label, label_applied, parked_at, issue_title, issue_url,
 			rule_name, agent_kind, configured_model, stage_previous, stage_previous_outcome, chain_id, dispatched_at, issue_type, issue_labels,
-			session_id, template_id, statement, released_at, release_gesture)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			session_id, template_id, statement, released_at, release_gesture,
+			release_pull_request, release_head, release_comment)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (issue_id) DO UPDATE SET
 			identifier             = excluded.identifier,
 			display_id             = excluded.display_id,
@@ -82,13 +92,17 @@ func (s *Store) UpsertParkedIssue(ctx context.Context, entry ParkedIssue) error 
 			template_id            = excluded.template_id,
 			statement              = excluded.statement,
 			released_at            = excluded.released_at,
-			release_gesture        = excluded.release_gesture`,
+			release_gesture        = excluded.release_gesture,
+			release_pull_request   = excluded.release_pull_request,
+			release_head           = excluded.release_head,
+			release_comment        = excluded.release_comment`,
 		entry.IssueID, entry.Identifier, entry.DisplayID, entry.Reason, entry.ParkedState,
 		entry.Label, entry.LabelApplied, entry.ParkedAt, entry.IssueTitle, entry.IssueURL,
 		entry.RuleName, entry.AgentKind, entry.ConfiguredModel, entry.StagePrevious,
 		entry.StagePreviousOutcome, entry.ChainID, entry.DispatchedAt, entry.IssueType,
 		encodeIssueLabels(entry.IssueLabels),
 		entry.SessionID, entry.TemplateID, entry.Statement, entry.ReleasedAt, entry.ReleaseGesture,
+		entry.ReleasePullRequest, entry.ReleaseHead, entry.ReleaseComment,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert parked issue %q: %w", entry.IssueID, err)
@@ -124,7 +138,8 @@ func (s *Store) ListParkedIssues(ctx context.Context) ([]ParkedIssue, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT issue_id, identifier, display_id, reason, parked_state, label, label_applied, parked_at, issue_title, issue_url,
 			rule_name, agent_kind, configured_model, stage_previous, stage_previous_outcome, chain_id, dispatched_at, issue_type, issue_labels,
-			session_id, template_id, statement, released_at, release_gesture
+			session_id, template_id, statement, released_at, release_gesture,
+			release_pull_request, release_head, release_comment
 		FROM parked_issues`)
 	if err != nil {
 		return nil, fmt.Errorf("list parked issues: %w", err)
@@ -140,7 +155,8 @@ func (s *Store) ListParkedIssues(ctx context.Context) ([]ParkedIssue, error) {
 			&e.Label, &e.LabelApplied, &e.ParkedAt, &e.IssueTitle, &e.IssueURL,
 			&e.RuleName, &e.AgentKind, &e.ConfiguredModel, &e.StagePrevious, &e.StagePreviousOutcome,
 			&e.ChainID, &e.DispatchedAt, &e.IssueType, &labels,
-			&e.SessionID, &e.TemplateID, &e.Statement, &e.ReleasedAt, &e.ReleaseGesture); err != nil {
+			&e.SessionID, &e.TemplateID, &e.Statement, &e.ReleasedAt, &e.ReleaseGesture,
+			&e.ReleasePullRequest, &e.ReleaseHead, &e.ReleaseComment); err != nil {
 			return nil, fmt.Errorf("scan parked issue: %w", err)
 		}
 		e.DisplayID = displayID.String

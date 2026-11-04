@@ -122,13 +122,16 @@ type modelUsageResponse struct {
 
 // issueOutcomeResponse is how an issue's latest work ended. State is present
 // for a handed-off or terminal outcome; MergePath and PullRequest are present
-// for a merged one.
+// for a merged one. ParkRelease is present when a pull request record
+// released the issue's park, and PullRequest then names its pull request
+// whatever the kind.
 type issueOutcomeResponse struct {
 	Kind        string               `json:"kind"`
 	ObservedAt  string               `json:"observed_at"`
 	State       *string              `json:"state,omitempty"`
 	MergePath   string               `json:"merge_path,omitempty"`
 	PullRequest *pullRequestResponse `json:"pull_request,omitempty"`
+	ParkRelease *parkRecordResponse  `json:"park_release,omitempty"`
 
 	StatusText     string `json:"status_text"`
 	StatusTextFull string `json:"status_text_full"`
@@ -423,6 +426,12 @@ func toIssueOutcomeResponse(o IssueOutcome, identifier, displayID string) *issue
 		resp.PullRequest = &pullRequestResponse{Number: o.PRNumber, Repository: redact.Mask(o.PRRepository)}
 	} else {
 		resp.State = new(outcome.State)
+	}
+	if o.ReleaseHead != "" {
+		resp.ParkRelease = &parkRecordResponse{Gesture: "record", Head: o.ReleaseHead, Comments: splitComments(o.ReleaseComment)}
+		if resp.PullRequest == nil && o.PRNumber > 0 {
+			resp.PullRequest = &pullRequestResponse{Number: o.PRNumber, Repository: redact.Mask(o.PRRepository)}
+		}
 	}
 	finished := &sentence.Finished{Identifier: identifier, DisplayIdentifier: displayID, Outcome: &outcome}
 	resp.StatusText, resp.StatusTextFull = sentencesOf(sentence.Entry{Finished: finished}, sentence.Context{})

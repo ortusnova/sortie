@@ -339,6 +339,9 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"statement", "TEXT", true, 0},
 				{"released_at", "TEXT", true, 0},
 				{"release_gesture", "TEXT", true, 0},
+				{"release_pull_request", "TEXT", true, 0},
+				{"release_head", "TEXT", true, 0},
+				{"release_comment", "TEXT", true, 0},
 			},
 		},
 		{
