@@ -342,6 +342,60 @@ type PullRequestDrafter interface {
 	MarkPullRequestDraft(ctx context.Context, prNumber int, owner, repo string) error
 }
 
+// PullRequestReverter is an optional capability of an [SCMAdapter]: an
+// adapter that implements it opens a pull request that reverts a merged
+// pull request's merge commit. Implementations must be safe for
+// concurrent use.
+type PullRequestReverter interface {
+	// RevertPullRequest opens a pull request against the merged PR's
+	// base that reverts its merge, with title and body, and returns it.
+	// Returns a [*SCMError] on failure.
+	RevertPullRequest(ctx context.Context, prNumber int, owner, repo, title, body string) (PullRequest, error)
+}
+
+// CommitComparer is an optional capability of an [SCMAdapter]: an adapter
+// that implements it says whether one commit holds another.
+// Implementations must be safe for concurrent use.
+type CommitComparer interface {
+	// CommitContains reports whether ancestor is commit itself or one of
+	// its ancestors in owner/repo. A commit the forge does not know is a
+	// [*SCMError] of Kind [ErrSCMNotFound].
+	CommitContains(ctx context.Context, owner, repo, commit, ancestor string) (bool, error)
+}
+
+// MergedRevert is a merged pull request that reverts earlier work, as
+// [RevertFinder] reports it.
+type MergedRevert struct {
+	// Number is the reverting pull request's number.
+	Number int
+
+	// MergedAt is when it merged.
+	MergedAt time.Time
+
+	// MergeCommitSHA is the commit its merge made, empty when the forge
+	// does not say.
+	MergeCommitSHA string
+
+	// Commits are the commits it says it reverts ("This reverts commit
+	// <sha>"), lower-cased, possibly abbreviated.
+	Commits []string
+
+	// PullRequests are the pull requests of the same repository it says
+	// it reverts ("Reverts owner/repo#<n>").
+	PullRequests []int
+}
+
+// RevertFinder is an optional capability of an [SCMAdapter]: an adapter
+// that implements it lists the merged pull requests of a repository that
+// revert earlier work, whoever merged them. Implementations must be safe
+// for concurrent use.
+type RevertFinder interface {
+	// FindMergedReverts returns the pull requests of owner/repo merged at
+	// or after since that revert a commit or a pull request, newest
+	// first. Returns a [*SCMError] on failure.
+	FindMergedReverts(ctx context.Context, owner, repo string, since time.Time) ([]MergedRevert, error)
+}
+
 // SCMTokenReport is what a forge says of the token an [SCMAdapter] calls
 // it with.
 type SCMTokenReport struct {
