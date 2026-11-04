@@ -368,8 +368,8 @@ func TestHeartbeatAfterExpiry(t *testing.T) {
 	if o := outcome(t, ended); !o.Expired || o.Succeeded {
 		t.Fatalf("outcome %+v", o)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusConflict {
-		t.Fatalf("heartbeat after the sweep: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusGone || !strings.Contains(r.Body.String(), "expired") {
+		t.Fatalf("heartbeat after the sweep: %d %s, want 410 naming the expired lease", r.Code, r.Body)
 	}
 	if s := m.Snapshot(); len(s.Leases) != 0 || len(s.Queue) != 0 {
 		t.Fatalf("attempt revived: %+v", s)
@@ -393,8 +393,8 @@ func TestASucceededRun(t *testing.T) {
 	if s := m.Snapshot(); len(s.Leases) != 0 {
 		t.Fatalf("lease remains: %+v", s.Leases)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusConflict {
-		t.Fatalf("report for an ended attempt: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusGone {
+		t.Fatalf("report for an ended attempt: %d, want 410", r.Code)
 	}
 }
 
@@ -455,8 +455,8 @@ func TestAReportFromTheWrongWorker(t *testing.T) {
 	if r := a.post("p1", "/api/v1/workers/jobs/ONS-7/attempts/1/heartbeat", ""); r.Code != http.StatusConflict {
 		t.Fatalf("heartbeat from p1: %d", r.Code)
 	}
-	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/heartbeat", ""); r.Code != http.StatusConflict {
-		t.Fatalf("heartbeat for another attempt: %d", r.Code)
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/heartbeat", ""); r.Code != http.StatusGone {
+		t.Fatalf("heartbeat for an attempt never granted: %d, want 410", r.Code)
 	}
 	notEnded(t, ended)
 	if after := m.Snapshot().Leases; !reflect.DeepEqual(after, before) || len(after) != 1 || after[0].Worker != "taichi" {
@@ -675,8 +675,8 @@ func TestTheQuietWorkerComesBack(t *testing.T) {
 	again := m.Submit(job("ONS-7", 2))
 	before := m.Snapshot()
 	for _, id := range []string{"taichi", "p1"} {
-		if r := a.post(id, "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusConflict {
-			t.Fatalf("late report from %s: %d", id, r.Code)
+		if r := a.post(id, "/api/v1/workers/jobs/ONS-7/attempts/1/report", `{"outcome":"succeeded","reason":"","machine":"stopped"}`); r.Code != http.StatusGone {
+			t.Fatalf("late report from %s: %d, want 410", id, r.Code)
 		}
 	}
 	notEnded(t, again)
@@ -784,8 +784,11 @@ func TestCancelWithdrawsJob(t *testing.T) {
 	if o := outcome(t, ended); !o.Cancelled {
 		t.Fatalf("%+v", o)
 	}
-	if _, err := m.Heartbeat("a", "j", 1); !errors.Is(err, ErrLeaseLost) {
-		t.Fatal(err)
+	if _, err := m.Heartbeat("a", "j", 1); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("heartbeat of a withdrawn job = %v, want ErrJobGone", err)
+	}
+	if err := m.Report("a", "j", 1, Outcome{Machine: MachineDeleted}); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("report of a withdrawn job = %v, want ErrJobGone", err)
 	}
 	if s := m.Snapshot(); len(s.Leases) != 0 {
 		t.Fatalf("%+v", s)
@@ -805,6 +808,9 @@ func (f *fakeTokens) Mint(j Job) (map[string]string, error) {
 	out := map[string]string{}
 	for fl := range j.Flows {
 		out[fl] = fmt.Sprintf("tok-%s-%d-%s", j.ID, j.Attempt, fl)
+		if n := len(f.minted); n > 1 {
+			out[fl] += fmt.Sprintf("-%d", n)
+		}
 	}
 	return out, nil
 }
@@ -938,6 +944,37 @@ func TestGrantedNamesTheWorker(t *testing.T) {
 	}
 }
 
+// A poll that leases the job before its submitter asks for the grant
+// still names the worker: a submitter's Granted call races the workers'
+// polls.
+func TestGrantedAfterThePollNamesTheWorker(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	m := newM(c)
+	m.CheckIn("taichi", host())
+	m.Submit(job("ONS-30", 1))
+	if _, ok, err := m.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll = %v %v", ok, err)
+	}
+	granted := m.Granted("ONS-30")
+	if granted == nil {
+		t.Fatal("Granted after the poll = nil, want the grant's channel")
+	}
+	select {
+	case id := <-granted:
+		if id != "taichi" {
+			t.Fatalf("granted to %q, want taichi", id)
+		}
+	default:
+		t.Fatal("no worker ID on the grant's channel after the poll")
+	}
+	if err := m.Report("taichi", "ONS-30", 1, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if ch := m.Granted("ONS-30"); ch != nil {
+		t.Error("Granted after the job ended = a channel, want nil")
+	}
+}
+
 // A restarted matcher that adopts a job the worker still runs accepts
 // the worker's heartbeat and report for it, as if it had granted it;
 // unrenewed, the adopted lease expires as any other.
@@ -954,8 +991,8 @@ func TestAdoptedLeaseKeepsTheWorkersJob(t *testing.T) {
 	if _, err := m.Heartbeat("taichi", "ONS-30", 2); err != nil {
 		t.Fatalf("heartbeat of the adopted job: %v", err)
 	}
-	if _, err := m.Heartbeat("taichi", "ONS-30", 1); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("heartbeat of another attempt = %v, want ErrLeaseLost", err)
+	if _, err := m.Heartbeat("taichi", "ONS-30", 1); !errors.Is(err, ErrJobGone) {
+		t.Fatalf("heartbeat of another attempt = %v, want ErrJobGone", err)
 	}
 	if err := m.Report("taichi", "ONS-30", 2, Outcome{Succeeded: true, Machine: MachineDeleted}); err != nil {
 		t.Fatalf("report: %v", err)
@@ -1018,6 +1055,23 @@ func TestPlaceable(t *testing.T) {
 	}
 	if !m.Queued("ONS-54") || !m.Holds("ONS-54") || m.Queued("ONS-55") || m.Holds("ONS-55") {
 		t.Fatal("Queued/Holds do not name ONS-54 alone")
+	}
+}
+
+// A waiting job's reason gives what is free in hundredths, as the worker
+// declared it, not the float noise of the jobs charged against it (live,
+// 2026-11-03: "11.430000000000007 of 20 GiB disk free").
+func TestWaitingRoundsWhatIsFree(t *testing.T) {
+	m := newM(&clock{t: time.Unix(0, 0)})
+	d := host()
+	d.Free.DiskGiB = 71.43
+	m.CheckIn("taichi", d)
+	for _, id := range []string{"ONS-1", "ONS-2", "ONS-3"} {
+		m.Submit(Job{ID: id, Requires: Requires{DiskGiB: 20}})
+	}
+	want := []string{"worker taichi: 11.43 of 20 GiB disk free"}
+	if why, ok := m.Placeable(Requires{DiskGiB: 20}); ok || !reflect.DeepEqual(why, want) {
+		t.Fatalf("Placeable() = %v, %v; want %v", why, ok, want)
 	}
 }
 
@@ -1279,4 +1333,112 @@ func TestPlaceableSparesTheScarceWorker(t *testing.T) {
 	if why, ok := m.Placeable(nested, nested); ok {
 		t.Fatalf("Placeable(nested) behind another nested job = placeable, %v", why)
 	}
+}
+
+// A job Sortie withdrew is gone for its worker: the heartbeat and the
+// report answer 410 with why, so the worker releases the machine, and
+// the job's state does not change.
+func TestAWithdrawnJobIsGone(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	m.Submit(job("ONS-19", 1))
+	a.post("taichi", "/api/v1/workers/poll", "")
+	m.Cancel("ONS-19")
+	for _, route := range []string{"heartbeat", "report"} {
+		r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/"+route, `{"outcome":"failed","reason":"x","machine":"running"}`)
+		var body struct {
+			Error struct{ Code, Message string } `json:"error"`
+		}
+		_ = json.Unmarshal(r.Body.Bytes(), &body)
+		if r.Code != http.StatusGone || body.Error.Code != "job_gone" || !strings.Contains(body.Error.Message, "withdrew") {
+			t.Fatalf("%s of a withdrawn job: %d %s, want 410 job_gone saying Sortie withdrew it", route, r.Code, r.Body)
+		}
+	}
+	if s := m.Snapshot(); len(s.Leases) != 0 || len(s.Queue) != 0 {
+		t.Fatalf("state %+v, want nothing held", s)
+	}
+}
+
+// While a restarted Sortie has not yet adopted the runs it restored, a
+// job it does not know may still be adopted: its heartbeat and report
+// answer 503, which the worker retries. Once the adoption is done, the
+// same job is gone.
+func TestAnUnknownJobDuringRecovery(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	m := newM(c)
+	a := newAPI(t, m)
+	m.Recovering()
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	if _, err := m.Adopt(job("ONS-30", 1), "taichi"); err != nil {
+		t.Fatal(err)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-30/attempts/1/heartbeat", ""); r.Code != http.StatusOK {
+		t.Fatalf("heartbeat of a restored job during recovery: %d %s", r.Code, r.Body)
+	}
+	for _, route := range []string{"heartbeat", "report"} {
+		r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/"+route, `{"outcome":"failed","reason":"x","machine":"running"}`)
+		if r.Code != http.StatusServiceUnavailable || r.Header().Get("Retry-After") == "" {
+			t.Fatalf("%s of an unknown job during recovery: %d %s, want 503 with Retry-After", route, r.Code, r.Body)
+		}
+	}
+	m.Recovered()
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-19/attempts/1/heartbeat", ""); r.Code != http.StatusGone {
+		t.Fatalf("heartbeat of an unknown job after recovery: %d %s, want 410", r.Code, r.Body)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-30/attempts/1/heartbeat", ""); r.Code != http.StatusOK {
+		t.Fatalf("heartbeat of the adopted job after recovery: %d %s", r.Code, r.Body)
+	}
+}
+
+// A worker that restarted and kept the job's machine resumes the
+// attempt: it gets the offer again with new flow tokens, the earlier
+// tokens end, and the lease is renewed. An attempt it does not hold is
+// refused as a heartbeat is.
+func TestResumeHandsNewTokens(t *testing.T) {
+	c := &clock{t: time.Unix(0, 0)}
+	toks := &fakeTokens{}
+	m := NewMatcher(NewTTLLeaser(time.Minute), c.now, toks)
+	a := newAPI(t, m)
+	var resumed []string
+	m.OnResume(func(jobID string) error { resumed = append(resumed, jobID); return nil })
+	a.post("taichi", "/api/v1/workers/checkin", completeCheckIn)
+	j := job("ONS-7", 1)
+	j.Flows = map[string]string{"stdio": "https://sortie/stdio"}
+	m.Submit(j)
+	first := decodeOfferBody(t, a.post("taichi", "/api/v1/workers/poll", ""))
+	c.add(30 * time.Second)
+	r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/1/resume", "")
+	if r.Code != http.StatusOK {
+		t.Fatalf("resume: %d %s", r.Code, r.Body)
+	}
+	again := decodeOfferBody(t, r)
+	if again.Job.ID != "ONS-7" || again.Job.Attempt != 1 || again.Flows["stdio"].URL != "https://sortie/stdio" {
+		t.Fatalf("resumed offer %+v, want ONS-7 attempt 1 with its flows", again)
+	}
+	if again.Flows["stdio"].Token == "" || again.Flows["stdio"].Token == first.Flows["stdio"].Token {
+		t.Errorf("tokens %q then %q, want new ones", first.Flows["stdio"].Token, again.Flows["stdio"].Token)
+	}
+	if !again.Lease.Expires.Equal(c.now().Add(time.Minute)) {
+		t.Errorf("lease expires %v, want renewed from now", again.Lease.Expires)
+	}
+	if len(resumed) != 1 || resumed[0] != "ONS-7" {
+		t.Errorf("resume hook saw %v, want ONS-7", resumed)
+	}
+	if r := a.post("p1", "/api/v1/workers/jobs/ONS-7/attempts/1/resume", ""); r.Code != http.StatusConflict {
+		t.Errorf("resume by another worker: %d, want 409", r.Code)
+	}
+	if r := a.post("taichi", "/api/v1/workers/jobs/ONS-7/attempts/2/resume", ""); r.Code != http.StatusGone {
+		t.Errorf("resume of an attempt never granted: %d, want 410", r.Code)
+	}
+}
+
+func decodeOfferBody(t *testing.T, r *httptest.ResponseRecorder) Offer {
+	t.Helper()
+	var o Offer
+	if err := json.Unmarshal(r.Body.Bytes(), &o); err != nil {
+		t.Fatalf("offer %s: %v", r.Body, err)
+	}
+	return o
 }

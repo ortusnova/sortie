@@ -18,7 +18,6 @@ import (
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/gitsync"
-	"github.com/sortie-ai/sortie/internal/hostview"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/worker"
@@ -36,8 +35,8 @@ const healthDispatchFreshness = time.Minute
 // health check fails, so that a person renews it before a run hits it.
 const CredentialExpiryWarning = 30 * time.Minute
 
-// MachineDownAfter is how long a worker may go without checking in, or a
-// running issue's machine may stay stopped, before its check fails.
+// MachineDownAfter is how long a worker may go without checking in
+// before its check fails.
 const MachineDownAfter = 10 * time.Minute
 
 // healthCheckTimeout bounds one run of the health checks.
@@ -64,7 +63,6 @@ const (
 	healthKeyForgeToken = "forge token"
 	healthKeyDeploy     = "deploy"
 	healthKeyWorker     = "worker "
-	healthKeyMachine    = "machine "
 )
 
 // errHealthRun fails the check of a health fault that only the health
@@ -133,16 +131,12 @@ type healthState struct {
 	// while their check still failed; it is dropped once the check passes.
 	dismissed map[string]bool
 
-	// machineDown maps each machine seen stopped while its issue runs to
-	// when it was first seen so.
-	machineDown map[string]time.Time
-
 	// token is the latest report of the forge token; nil before one.
 	token *domain.SCMTokenReport
 }
 
 func newHealthState() healthState {
-	return healthState{holding: map[string]bool{}, dismissed: map[string]bool{}, machineDown: map[string]time.Time{}}
+	return healthState{holding: map[string]bool{}, dismissed: map[string]bool{}}
 }
 
 // healthClock returns the time the health checks read.
@@ -169,7 +163,7 @@ func (o *Orchestrator) runDueHealthChecks(ctx context.Context, cfg config.Servic
 func (o *Orchestrator) runHealthChecks(ctx context.Context, cfg config.ServiceConfig, now time.Time) {
 	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	result := o.probeHost(checkCtx, cfg, now)
-	o.probeMachines(checkCtx, cfg, now, &result)
+	o.probeMachines(cfg, now, &result)
 	cancel()
 	if ctx.Err() != nil {
 		return
@@ -188,14 +182,12 @@ func (o *Orchestrator) probeHost(ctx context.Context, cfg config.ServiceConfig, 
 	return r
 }
 
-// probeCredentials checks every credential binding a smolvm run is given:
-// its value is present and, when its expiry is known, does not expire
-// within [CredentialExpiryWarning].
+// probeCredentials checks every credential health.credentials lists: its
+// variable is set in Sortie's environment when it names one and, when
+// its expiry is known, it does not expire within
+// [CredentialExpiryWarning].
 func (o *Orchestrator) probeCredentials(ctx context.Context, cfg config.ServiceConfig, now time.Time, r *healthResult) {
-	if cfg.Environment.Kind != config.EnvironmentKindSmolvm {
-		return
-	}
-	for _, cred := range cfg.Environment.Smolvm.Credentials {
+	for _, cred := range cfg.Health.Credentials {
 		finding, failed := credentialFinding(ctx, cred, o.hostName, now)
 		switch {
 		case ctx.Err() != nil:
@@ -207,9 +199,9 @@ func (o *Orchestrator) probeCredentials(ctx context.Context, cfg config.ServiceC
 	}
 }
 
-// credentialFinding checks one credential binding. It reads the source
-// anew, so a credential renewed at its source passes at once.
-func credentialFinding(ctx context.Context, cred config.SmolvmCredential, host string, now time.Time) (healthFinding, bool) {
+// credentialFinding checks one credential. It reads the variable and the
+// expiry anew, so a credential renewed at its source passes at once.
+func credentialFinding(ctx context.Context, cred config.HealthCredential, host string, now time.Time) (healthFinding, bool) {
 	finding := healthFinding{
 		Key:    healthKeyCredential + cred.Name,
 		Class:  healthClassCredentials,
@@ -217,16 +209,11 @@ func credentialFinding(ctx context.Context, cred config.SmolvmCredential, host s
 		Holds:  true,
 	}
 	var value string
-	if cred.Sourced() {
-		v, err := credsource.Read(ctx, credsource.Source{Name: cred.Name, File: cred.File, Command: cred.Command})
-		if err != nil {
-			finding.Cause = err.Error()
+	if cred.Env != "" {
+		if value = os.Getenv(cred.Env); value == "" {
+			finding.Cause = fmt.Sprintf("credential %q: the variable %s is not set in Sortie's environment", cred.Name, cred.Env)
 			return finding, true
 		}
-		value = v
-	} else if value = os.Getenv(cred.Env); value == "" {
-		finding.Cause = fmt.Sprintf("credential %q: the variable %s is not set in Sortie's environment", cred.Name, cred.Env)
-		return finding, true
 	}
 
 	var expires time.Time
@@ -258,18 +245,15 @@ func credentialFinding(ctx context.Context, cred config.SmolvmCredential, host s
 }
 
 // credentialAction is the person action that renews cred: it names the
-// binding's login, or the binding when it names none.
-func credentialAction(cred config.SmolvmCredential, host string) *failcause.PersonAction {
+// credential's login, or the credential when it names none.
+func credentialAction(cred config.HealthCredential, host string) *failcause.PersonAction {
 	login := cred.Login
 	if login == "" {
 		login = fmt.Sprintf("the login behind credential %q", cred.Name)
 	}
-	where := fmt.Sprintf("The variable %s in the environment of Sortie on %s", cred.Env, host)
-	switch {
-	case cred.File != "":
-		where = fmt.Sprintf("%s, where Sortie reads credential %q from %s", host, cred.Name, cred.File)
-	case cred.Command != "":
-		where = fmt.Sprintf("%s, where Sortie reads credential %q from its command", host, cred.Name)
+	where := fmt.Sprintf("%s, where Sortie reads the expiry of credential %q with its expires_command", host, cred.Name)
+	if cred.Env != "" {
+		where = fmt.Sprintf("The variable %s in the environment of Sortie on %s", cred.Env, host)
 	}
 	return &failcause.PersonAction{Action: fmt.Sprintf("Renew %s on %s", login, host), Where: where}
 }
@@ -360,89 +344,28 @@ func probeDeploy(cfg config.ServiceConfig, host string, now time.Time, r *health
 }
 
 // probeMachines checks the machines runs go to: under remote, each
-// worker checked in within [MachineDownAfter]; under smolvm, no running
-// issue's machine stayed stopped that long. Must run on the event loop.
-func (o *Orchestrator) probeMachines(ctx context.Context, cfg config.ServiceConfig, now time.Time, r *healthResult) {
-	switch cfg.Environment.Kind {
-	case config.EnvironmentKindRemote:
-		if o.remote == nil || o.remote.matcher == nil {
-			return
-		}
-		heartbeat, _ := o.remote.matcher.Timings()
-		bound := max(MachineDownAfter, time.Duration(worker.GoneHeartbeats)*heartbeat)
-		for _, w := range o.remote.matcher.Snapshot().Workers {
-			if now.Sub(w.LastCheckIn) < bound {
-				continue
-			}
-			r.findings = append(r.findings, healthFinding{
-				Key:   healthKeyWorker + w.ID,
-				Class: healthClassMachine,
-				Cause: fmt.Sprintf("worker %q has not checked in since %s", w.ID, w.LastCheckIn.UTC().Format(time.RFC3339)),
-				Action: &failcause.PersonAction{
-					Action: fmt.Sprintf("Start worker %q again, or mark this done when it is out of service", w.ID),
-					Where:  fmt.Sprintf("The host worker %q runs on", w.ID),
-				},
-			})
-		}
-	case config.EnvironmentKindSmolvm:
-		if o.machineLister == nil {
-			return
-		}
-		listed, err := o.machineLister(ctx)
-		if err != nil {
-			r.unknown = append(r.unknown, healthKeyMachine)
-			return
-		}
-		o.machineFindings(cfg, listed, now, r)
+// worker checked in within [MachineDownAfter]. Must run on the event
+// loop.
+func (o *Orchestrator) probeMachines(cfg config.ServiceConfig, now time.Time, r *healthResult) {
+	if cfg.Environment.Kind != config.EnvironmentKindRemote || o.remote == nil || o.remote.matcher == nil {
+		return
 	}
-}
-
-// machineFindings adds a finding for each running issue whose machine
-// listed shows stopped for [MachineDownAfter].
-func (o *Orchestrator) machineFindings(cfg config.ServiceConfig, listed []hostview.Listed, now time.Time, r *healthResult) {
-	byKey := make(map[string]hostview.Listed, len(listed))
-	for _, m := range listed {
-		if key := m.Labels["sortie.workspace"]; key != "" && m.Labels[hostview.LabelSortieManaged] != "" {
-			byKey[key] = m
-		}
-	}
-	down := make(map[string]time.Time, len(o.health.machineDown))
-	for _, entry := range o.state.Running {
-		path, err := workspace.ComputePath(cfg.Workspace.Root, entry.Identifier)
-		if err != nil {
-			continue
-		}
-		m, ok := byKey[path.Key]
-		if !ok || m.State == "running" || now.Sub(entry.StartedAt) < MachineDownAfter {
-			continue
-		}
-		since, seen := o.health.machineDown[m.Name]
-		if !seen {
-			since = now
-		}
-		down[m.Name] = since
-		if now.Sub(since) < MachineDownAfter {
+	heartbeat, _ := o.remote.matcher.Timings()
+	bound := max(MachineDownAfter, time.Duration(worker.GoneHeartbeats)*heartbeat)
+	for _, w := range o.remote.matcher.Snapshot().Workers {
+		if now.Sub(w.LastCheckIn) < bound {
 			continue
 		}
 		r.findings = append(r.findings, healthFinding{
-			Key:   healthKeyMachine + m.Name,
+			Key:   healthKeyWorker + w.ID,
 			Class: healthClassMachine,
-			Cause: fmt.Sprintf("machine %q of %s has been %s since %s while its run goes on", m.Name, entry.Identifier, machineState(m.State),
-				since.UTC().Format(time.RFC3339)),
+			Cause: fmt.Sprintf("worker %q has not checked in since %s", w.ID, w.LastCheckIn.UTC().Format(time.RFC3339)),
 			Action: &failcause.PersonAction{
-				Action: fmt.Sprintf("Start machine %q again on %s, or mark this done", m.Name, o.hostName),
-				Where:  fmt.Sprintf("%s, with smolvm", o.hostName),
+				Action: fmt.Sprintf("Start worker %q again, or mark this done when it is out of service", w.ID),
+				Where:  fmt.Sprintf("The host worker %q runs on", w.ID),
 			},
 		})
 	}
-	o.health.machineDown = down
-}
-
-func machineState(state string) string {
-	if state == "" {
-		return "not running"
-	}
-	return state
 }
 
 // applyHealth records each failing check as an open platform fault, or

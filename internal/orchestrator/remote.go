@@ -58,14 +58,30 @@ type remoteWorkers struct {
 	kept map[string]struct{}
 	// adoptions holds the runs restored at start, until adopted.
 	adoptions []*remoteAdoption
+	// rehomes holds, by issue ID, the outcome channel of each attempt
+	// whose worker broke its stdio stream while it held the job, until
+	// the attempt's exit adopts the run again.
+	rehomes map[string]rehome
+}
+
+// rehome is an attempt left with its worker for this process to adopt
+// again: its job and the channel the job's outcome arrives on.
+type rehome struct {
+	jobID string
+	ended <-chan worker.Outcome
 }
 
 func newRemoteWorkers(now func() time.Time) *remoteWorkers {
 	leaser := worker.NewTTLLeaser(time.Duration(60000) * time.Millisecond)
 	tokens := jobtoken.NewIssuer()
 	plane := dataplane.New(tokens)
-	return &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(),
-		matcher: worker.NewMatcher(leaser, now, jobTokens{tokens})}
+	matcher := worker.NewMatcher(leaser, now, jobTokens{tokens})
+	// A job this process does not know may be one a previous process
+	// left with its worker, until the runs restored at start are adopted.
+	matcher.Recovering()
+	r := &remoteWorkers{leaser: leaser, tokens: tokens, plane: plane, handler: plane.Handler(), matcher: matcher}
+	matcher.OnResume(r.resumed)
+	return r
 }
 
 // started records the context of the process's event loop.
@@ -98,6 +114,35 @@ func (r *remoteWorkers) wasKept(issueID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.kept[issueID]
 	return ok
+}
+
+// unkeep ends the keep of issueID: its next exit records as any other.
+func (r *remoteWorkers) unkeep(issueID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.kept, issueID)
+}
+
+// rehoming records that the attempt of issueID is left with its worker
+// for this process to adopt again, with the channel its job's outcome
+// arrives on.
+func (r *remoteWorkers) rehoming(issueID string, h rehome) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rehomes == nil {
+		r.rehomes = map[string]rehome{}
+	}
+	r.rehomes[issueID] = h
+}
+
+// takeRehome returns and forgets an attempt left with its worker for
+// this process to adopt again.
+func (r *remoteWorkers) takeRehome(issueID string) (rehome, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	h, ok := r.rehomes[issueID]
+	delete(r.rehomes, issueID)
+	return h, ok
 }
 
 func (r *remoteWorkers) track(a *remoteAttempt) {
@@ -146,6 +191,32 @@ func (r *remoteWorkers) leased(issueID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.recorded && (!a.finished || a.detached)
+}
+
+// leaseCurrent reports whether a worker holds the job of the running
+// attempt of issueID under a lease that has not expired at now: the
+// worker's heartbeats renew it while the worker shows the job alive.
+func (r *remoteWorkers) leaseCurrent(issueID string, now time.Time) bool {
+	a := r.attempt(issueID)
+	if a == nil {
+		return false
+	}
+	for _, ls := range r.leaser.Leases() {
+		if ls.JobID == a.job.ID {
+			return now.Before(ls.Expires)
+		}
+	}
+	return false
+}
+
+// workerLive returns the State.WorkerLive of cfg: under the remote kind,
+// whether the run's job lease is current, and nil, every worker live,
+// under any other kind, whose worker is this process.
+func (o *Orchestrator) workerLive(cfg config.ServiceConfig) func(issueID string, now time.Time) bool {
+	if o.remote == nil || !isRemoteKind(cfg.Environment) {
+		return nil
+	}
+	return o.remote.leaseCurrent
 }
 
 // detach leaves the running attempt of issueID with its worker for the
@@ -392,8 +463,9 @@ type RemoteAttemptParams struct {
 	DefaultCommand string
 
 	// OnStreamBroken is called with the issue ID when the job's stdio
-	// stream breaks before the agent's exit, so the orchestrator ends
-	// the turn as it ends a stalled agent's. Nil ignores the break, and
+	// stream breaks before the agent's exit and the attempt has no record
+	// to adopt it again from, so the orchestrator ends the turn as it
+	// ends a stalled agent's. Nil ignores the break, and
 	// stall detection ends the silent session in its own time.
 	OnStreamBroken func(issueID string)
 
@@ -543,6 +615,8 @@ type remoteAttempt struct {
 	detached  bool
 	sessionID string
 	turns     int
+	// endedCh is the channel the job's outcome arrives on.
+	endedCh <-chan worker.Outcome
 
 	usageMu sync.Mutex
 	pending []dataplane.Usage
@@ -602,6 +676,9 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 		OnUsage: a.receiveUsage,
 		Keep:    a.leaving,
 		OnStdioBroken: func(error) {
+			if a.rehome() {
+				return
+			}
 			if a.onBroken != nil {
 				a.onBroken(a.issueID)
 			}
@@ -615,6 +692,7 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 	a.submitted = true
 	if a.adopt != nil {
 		ended := a.adopt.ended
+		a.endedCh = ended
 		a.mu.Unlock()
 		go a.watch(ended, dp)
 		a.logger.Info("remote job adopted", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt),
@@ -625,6 +703,7 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 		return a.waitStdio(ctx, dp)
 	}
 	ended := a.workers.matcher.Submit(a.job)
+	a.endedCh = ended
 	granted := a.workers.matcher.Granted(a.job.ID)
 	a.mu.Unlock()
 	go a.watch(ended, dp)
@@ -754,6 +833,37 @@ func (a *remoteAttempt) detach() bool {
 	return true
 }
 
+// errRemoteRehome is the cause a remote run is cancelled with when its
+// worker broke the stdio stream while it held the job: the run is
+// adopted again, as after a restart.
+var errRemoteRehome = errors.New("the worker broke the stdio stream while it held the job; the run is adopted again")
+
+// rehome takes a stdio stream the worker broke while it held the job, as
+// a worker daemon that restarts breaks it: the attempt is left with its
+// worker, as at shutdown, its run is cancelled with [errRemoteRehome],
+// and its exit adopts the run again in this process, so the worker dials
+// the stream again and the session resumes. It reports false for an
+// attempt with no record to adopt it from, or while the process stops.
+func (a *remoteAttempt) rehome() bool {
+	a.mu.Lock()
+	if !a.recorded || a.finished || a.detached || a.workers.runs == nil || a.workers.stopping() || a.endedCh == nil {
+		a.mu.Unlock()
+		return false
+	}
+	a.detached = true
+	dp, ended := a.dp, a.endedCh
+	a.mu.Unlock()
+	a.workers.keep(a.issueID)
+	a.workers.rehoming(a.issueID, rehome{jobID: a.job.ID, ended: ended})
+	a.logger.Info("remote job stdio stream broken by its worker; the run is kept and adopted again",
+		slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt))
+	if dp != nil {
+		dp.Detach()
+	}
+	a.cancel(errRemoteRehome)
+	return true
+}
+
 // leaving reports whether the attempt is left with its worker for the
 // next start: detached, or recorded while the process stops. The process
 // context ends before any worker sees its run end, so every step that
@@ -857,7 +967,9 @@ func (a *remoteAttempt) finish() {
 			a.logger.Warn("remote run record not deleted; the next start drops it", slog.Any("error", err))
 		}
 	}
-	if submitted {
+	// An adopted job is the matcher's from the restore on, whether or
+	// not the run got as far as handing it to the data plane.
+	if submitted || a.adopt != nil {
 		a.workers.matcher.Cancel(a.job.ID)
 	}
 	if dp != nil {
@@ -1019,6 +1131,14 @@ type remoteRepository struct {
 
 var _ Repository = (*remoteRepository)(nil)
 
+// statusFileName is the agent's status file in .sortie.
+const statusFileName = "status"
+
+// returnedSortieFiles are the files of the agent's .sortie directory a
+// worker returns with the issue branch: the pull request suggestion, the
+// status and a review's criteria verdict.
+var returnedSortieFiles = []string{pullRequestSuggestionFile, statusFileName, CriteriaFile}
+
 // Seed builds the job's workspace seed, served on the bundles flow once
 // the job is queued.
 func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, ws environment.Workspace) error {
@@ -1037,8 +1157,10 @@ func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, 
 	if err != nil {
 		return err
 	}
-	if err := workspacekit.RemoveSortieFile(ws.HostPath, pullRequestSuggestionFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clear the previous pull request suggestion: %w", err)
+	for _, name := range returnedSortieFiles {
+		if err := workspacekit.RemoveSortieFile(ws.HostPath, name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("clear the previous .sortie/%s: %w", name, err)
+		}
 	}
 	a.mu.Lock()
 	a.seed, a.seedPath = &seed, path
@@ -1069,9 +1191,12 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 	if err != nil {
 		return none, err
 	}
-	if res.PR != nil {
-		if err := workspacekit.WriteSortieFile(ws.HostPath, pullRequestSuggestionFile, res.PR); err != nil {
-			return none, fmt.Errorf("store the returned pull request suggestion: %w", err)
+	for name, data := range map[string][]byte{pullRequestSuggestionFile: res.PR, statusFileName: res.Status, CriteriaFile: res.Criteria} {
+		if data == nil {
+			continue
+		}
+		if err := workspacekit.WriteSortieFile(ws.HostPath, name, data); err != nil {
+			return none, fmt.Errorf("store the returned .sortie/%s: %w", name, err)
 		}
 	}
 	if res.Bundle == "" {
@@ -1079,6 +1204,48 @@ func (r *remoteRepository) Export(ctx context.Context, _ environment.Environment
 		return none, nil
 	}
 	return r.syncer.ImportReturned(ctx, ws.Key, res.Bundle, *seed)
+}
+
+// sortieFilesBound bounds the wait for the worker's .sortie files after
+// a turn.
+const sortieFilesBound = 30 * time.Second
+
+// syncSortieFiles brings the agent's .sortie files from the worker's
+// machine into the workspace at hostPath after a turn, so the turn loop
+// reads the agent's status and criteria verdict as a co-located run
+// does: each returned file is written, and one the agent has not written
+// is removed. A worker that cannot return them before the session ends
+// leaves the workspace as it is; its files come back with the result.
+func (r *remoteRepository) syncSortieFiles(ctx context.Context, hostPath string) {
+	a := r.attempt
+	a.mu.Lock()
+	dp := a.dp
+	a.mu.Unlock()
+	if dp == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(ctx, sortieFilesBound)
+	defer cancel()
+	files, err := dp.SortieFiles(wctx)
+	if errors.Is(err, dataplane.ErrNoSortieFiles) {
+		return
+	}
+	if err != nil {
+		a.logger.Warn("the agent's .sortie files did not come back after the turn", slog.Any("error", err))
+		return
+	}
+	for _, name := range returnedSortieFiles {
+		data, ok := files[name]
+		if !ok {
+			if err := workspacekit.RemoveSortieFile(hostPath, name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				a.logger.Warn("stale .sortie file not removed", slog.String("file", name), slog.Any("error", err))
+			}
+			continue
+		}
+		if err := workspacekit.WriteSortieFile(hostPath, name, data); err != nil {
+			a.logger.Warn("returned .sortie file not stored", slog.String("file", name), slog.Any("error", err))
+		}
+	}
 }
 
 // awaitResult waits for the worker's returned result. A worker that

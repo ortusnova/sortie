@@ -149,6 +149,15 @@ func (s *reviewReconcileStore) GetReactionFingerprint(_ context.Context, _, _ st
 	return s.getFingerprintResult, s.getFingerprintDispatched, s.getFingerprintErr
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *reviewReconcileStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *reviewReconcileStore) MarkReactionDispatched(_ context.Context, _, _ string) error {
 	s.markDispatchedCalls++
 	return s.markDispatchedErr
@@ -456,6 +465,15 @@ func (s *fingerprintModelStore) GetReactionFingerprint(ctx context.Context, issu
 		return "", false, nil
 	}
 	return current.value, current.dispatched, nil
+}
+
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *fingerprintModelStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
 }
 
 func (s *fingerprintModelStore) MarkReactionDispatched(ctx context.Context, issueID, kind string) error {
@@ -3918,5 +3936,9 @@ func (s *reviewReconcileStore) RecordStageHop(context.Context, persistence.Stage
 }
 
 func (s *reviewReconcileStore) RecordRunStageResult(context.Context, int64, string, string) error {
+	return nil
+}
+
+func (*fingerprintModelStore) ReturnReactionDispatch(context.Context, string, string) error {
 	return nil
 }

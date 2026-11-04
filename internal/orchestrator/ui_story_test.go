@@ -99,7 +99,7 @@ func uiMergeRun(t *testing.T, state *State, rule string, conversation []domain.R
 	t.Helper()
 	state.PendingReactions[ReactionKey("AM-UI", ReactionKindAutoMerge)].RuleName = rule
 	params := autoMergeParams(&reviewReconcileStore{}, uiMergeForge(&merges), tracker)
-	params.ReviewGate = planReviewGate(gateConfig(), tracker)
+	params.ReviewGate = planReviewGate(gateConfig(), tracker, allMet{})
 	params.ClickProofs = planClickProofs(gateConfig(), &commentForge{conversation: conversation})
 	params.AutoMergePendingTTL = time.Minute
 	params.NowFunc = func() time.Time { return now }
@@ -376,7 +376,7 @@ func TestUIStory_MergeIsDone(t *testing.T) {
 	tracker := &mgcTrackerFake{states: map[string]string{"UI-5": "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) { return mergedStatus("sha-ui"), nil }}
 	params := mgcParams(newMGCStore(), scm, tracker)
-	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{config.ReviewUILabel}})
+	params.ReviewGate = planReviewGate(gateConfig(), &labelTracker{labels: []string{config.ReviewUILabel}}, allMet{})
 
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 
@@ -398,7 +398,7 @@ func TestUIStory_ClosedPullRequestEndsTheWatch(t *testing.T) {
 		return domain.PRMergeStatus{Closed: true, Mergeability: domain.MergeabilityUnknown, HeadSHA: uiHeadSHA}, nil
 	}
 	params := autoMergeParams(&reviewReconcileStore{}, forge, tracker)
-	params.ReviewGate = planReviewGate(gateConfig(), tracker)
+	params.ReviewGate = planReviewGate(gateConfig(), tracker, allMet{})
 	params.ClickProofs = planClickProofs(gateConfig(), &commentForge{})
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), newAutoMergeMetricsSpy())
 	state.TrackerOpsWg.Wait()

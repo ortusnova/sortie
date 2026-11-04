@@ -255,8 +255,8 @@ func TestToolCallLifecycleSurvivesMalformedName(t *testing.T) {
 			if !found {
 				t.Fatalf("parseSessionUpdate(%s) found = false, want true", beginRaw)
 			}
-			if got := applySessionUpdate(tracker, beginEvent); got.hasEvent {
-				t.Fatalf("applySessionUpdate(tool_call) = %+v, want hasEvent=false", got)
+			if got := applySessionUpdate(tracker, beginEvent); !got.hasEvent || got.event.Type != domain.EventToolStarted {
+				t.Fatalf("applySessionUpdate(tool_call) = %+v, want a tool_started event", got)
 			}
 
 			updateRaw := toolCallUpdateJSON(tt.toolCallUpdateName)

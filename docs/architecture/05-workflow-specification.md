@@ -200,6 +200,9 @@ Fields:
 - `stall_timeout_ms` (integer)
   - Default: `300000` (5 minutes)
   - If `<= 0`, stall detection is disabled.
+- `tool_call_timeout_ms` (integer)
+  - Default: `5400000` (90 minutes)
+  - The stall timeout while the agent has a tool call open and the run's worker shows the run alive (Section 8.5), when longer than `stall_timeout_ms`. `0` gives tool calls no longer bound; a negative value is rejected.
 - `max_concurrent_agents` (integer or string integer)
   - Default: `10`
   - Changes should be re-applied at runtime and affect subsequent dispatch decisions.
@@ -428,7 +431,7 @@ The kind reads no `debounce_ms` field: bot comments arrive in bulk on push and d
 
 **Reaction kind: `merge_conflicts`**
 
-Merge-conflict detection and resolution. When configured, the orchestrator polls mergeability on Sortie-created open PRs each reconcile cycle. Mergeability is evaluated on every due tick, and while a PR remains conflicted the orchestrator dispatches one rebase-and-resolve continuation turn per distinct conflicting head commit, subject to the retry budget; re-observing the same head dispatches nothing further. A return to no-conflict is not required between attempts. See Section 11E for the full contract. (Runtime kind value: `merge-conflict`.)
+Merge-conflict detection and resolution. When configured, the orchestrator polls mergeability on Sortie-created open PRs each reconcile cycle. Mergeability is evaluated on every due tick, and while a PR remains conflicted the orchestrator dispatches one rebase-and-resolve continuation turn per distinct conflicting head commit, subject to the retry budget; re-observing the same head dispatches nothing further while a run of the issue is in flight, and another run, at most 3 per head, once the earlier runs ended and left the head conflicting. A return to no-conflict is not required between attempts. See Section 11E for the full contract. (Runtime kind value: `merge-conflict`.)
 
 `max_retries` defaults to `1` for this kind rather than the common default of `2`, because merge-conflict resolution by a coding agent is less likely to succeed on a second attempt.
 
@@ -754,18 +757,17 @@ The execution environment: where the code of an issue's workspace runs. Every op
 Fields:
 
 - `kind` (string)
-  - Default: `local`. Accepted values: `local` and `smolvm`. An unknown value fails validation with an error that names `environment.kind` and the value.
+  - Default: `local`. Accepted values: `local` and `remote`. An unknown value fails validation with an error that names `environment.kind` and the value. `smolvm`, removed, fails validation with an error on `environment.kind` that names `smolvm` and `remote`.
   - `local` runs everything on Sortie's host, in the host workspace directory, exactly as without the block.
-  - `smolvm` runs each issue workspace in its own smolvm microVM. It requires Linux and smolvm `1.32.4` or later, and it excludes `worker.ssh_hosts`: validation fails with an error that names both settings.
+  - `remote` hands each run to the worker matcher, to run on a worker that dials Sortie; nothing of the issue runs on Sortie's host. It excludes `worker.ssh_hosts`: validation fails with an error that names both settings.
 - `host_prefix` (list of strings, optional)
   - An argv that stays on Sortie's host in front of the agent session launch and the credential verification launch (Section 10.10). An empty list, or an empty element, fails validation. It never wraps hooks, verification commands, triage, auxiliary commands, or git inspection.
-- `smolvm` (object)
-  - Read and validated only when `kind` is `smolvm`.
-  - `binary` (path, default `smolvm`), `pack` (path, required, a readable regular file), `cpus`, `memory_mib`, `storage_gib` (non-negative integers, `0` for smolvm's default), `allow_hosts` (exact host names or `*.domain` patterns), `credentials` (list of `{name, env, hosts, header, file, command, expires_command, login}` bindings), `repository` (optional object), `pass_env` (list of variable names), `ssh_agent` (boolean, default `false`).
+- `remote` (object)
+  - Read and validated only when `kind` is `remote`. Its fields are listed in Section 6.4.
   - `repository`: `url` and `base` required; `branch_prefix` default `sortie/`; `provider` and `project` optional, with `project` required when `provider` is set; `max_bundle_mib` a positive integer, default `512`.
   - `repositories`: a list of `repository` blocks, each with a unique `name` (`[a-z0-9]+(-[a-z0-9]+)*`), not set together with `repository`; the optional `default_repository` names the entry an issue without a `sortie-repository:<name>` label runs in. An entry may set `dispatch: false`: it stays listed, so plan sync accepts its name, and its issues are not dispatched. Without a default, plan sync refuses a story that names no repository, naming its plan key. The orchestrator dispatches an issue only when the repository it runs in is listed and open to dispatch, so an issue whose label names an unlisted or closed repository, or that names none while no default is set, is left out of the poll: it is not claimed, moved, commented on, held, run, or counted against `max_sessions`. Two Sorties can so share one tracker project, each running the issues of its own repositories. A workspace keeps the repository it was seeded from. Under plan control a blocker in a repository the orchestrator does not dispatch (by its seeded workspace record, else by the same label rule) is judged by its tracker state alone, satisfied in `done_state` and never in `cancel_state`, because its merge record belongs to the Sortie that runs it; a blocker in a dispatched repository keeps the merge rule.
 
-The full field reference, every validation error, and the reload rules are in the [workflow reference](../workflow-reference.md#212-environment--execution-environment). Changes apply to environments created after a reload; a running VM keeps the settings it was created with. A reload that fails validation, the smolvm version check, or the repository provider check keeps the previous configuration.
+The full field reference, every validation error, and the reload rules are in the [workflow reference](../workflow-reference.md#212-environment--execution-environment). A reload that fails validation or the repository provider check keeps the previous configuration.
 
 #### 5.3.12 `supervisor` (object, optional)
 
@@ -782,13 +784,14 @@ The section needs `server.supervisor_token`; startup fails without it. A session
 
 #### 5.3.13 `health` (object, optional)
 
-What Sortie's own health checks (Section 8.4, Health checks before dispatch) read beyond the rest of the configuration. Absent, they check no deploy.
+What Sortie's own health checks (Section 8.4, Health checks before dispatch) read beyond the rest of the configuration. Absent, they check no deploy and watch no credential.
 
 Fields:
 
 - `deploy_state` (path, optional): the deploy state file a deploy kit writes for this Sortie, with `~` and `$VAR` expanded; it must be absolute then. Its format is in the [workflow reference](../workflow-reference.md#deploy-state-file).
+- `credentials` (list of objects, optional): the credentials the runs use that the checks watch, each `{name, env, expires_command, login}`. `name` is required, `[A-Za-z0-9_-]+` and unique in the list; at least one of `env` and `expires_command` is set. `env` names a variable of Sortie's own environment that holds the value, which the check finds set, and whose JSON Web Token `exp` claim gives the expiry when `expires_command` is absent; under `remote`, where the worker's egress proxy holds the value, it is left out. `expires_command` is a shell command run on Sortie's host at each check that prints when the value expires (RFC 3339, or Unix seconds or milliseconds). `login` names the login that renews the value, which the check's person action names. Any other key fails validation.
 
-The section reloads: the next health check reads the new path. The full reference is in the [workflow reference](../workflow-reference.md#214-health--health-checks-before-runs-fail).
+The section reloads: the next health check reads the new path and list. The full reference is in the [workflow reference](../workflow-reference.md#214-health--health-checks-before-runs-fail).
 
 ### 5.4 Prompt Template Contract
 

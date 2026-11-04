@@ -74,3 +74,35 @@ func TestManager_RemoteRefusesUnsupportedKeys(t *testing.T) {
 		})
 	}
 }
+
+// one-sortie: Retired. A workflow that selects the removed smolvm kind is
+// refused at start and at reload, naming environment.kind and the remote
+// kind, and a reload keeps the previous workflow.
+func TestManager_RefusesTheRemovedSmolvmKind(t *testing.T) {
+	t.Parallel()
+
+	smolvm := []byte("---\npolling:\n  interval_ms: 9000\nenvironment:\n  kind: smolvm\n  smolvm:\n    pack: /srv/agent.smolmachine\n---\nDo {{ .issue.title }}.\n")
+	refused := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "environment.kind") &&
+			strings.Contains(err.Error(), `"smolvm"`) && strings.Contains(err.Error(), "remote")
+	}
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	mustWriteFile(t, path, smolvm)
+	if _, err := NewManager(path, testLogger()); !refused(err) {
+		t.Fatalf("NewManager() error = %v, want one naming environment.kind, smolvm and remote", err)
+	}
+
+	mustWriteFile(t, path, remoteWorkflow(5000, "", ""))
+	mgr, err := NewManager(path, testLogger())
+	if err != nil {
+		t.Fatalf("NewManager(remote workflow) error = %v", err)
+	}
+	mustWriteFile(t, path, smolvm)
+	if err := mgr.Reload(); !refused(err) {
+		t.Fatalf("Reload() error = %v, want one naming environment.kind, smolvm and remote", err)
+	}
+	if cfg := mgr.Config(); cfg.Environment.Kind != config.EnvironmentKindRemote || cfg.Polling.IntervalMS != 5000 {
+		t.Errorf("after the refused reload: kind %q, interval %d; want the previous remote workflow", cfg.Environment.Kind, cfg.Polling.IntervalMS)
+	}
+}

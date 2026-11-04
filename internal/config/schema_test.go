@@ -346,8 +346,8 @@ func TestValidateFrontMatter(t *testing.T) {
 			},
 			cfg: ServiceConfig{
 				Tracker: TrackerConfig{Kind: "file"},
-				Environment: EnvironmentConfig{Kind: EnvironmentKindSmolvm, Smolvm: SmolvmConfig{
-					Repository: &SmolvmRepository{URL: "git@example.com:o/r.git", Base: "main", Provider: "github"},
+				Environment: EnvironmentConfig{Kind: EnvironmentKindRemote, Remote: RemoteConfig{
+					Repository: &Repository{URL: "git@example.com:o/r.git", Base: "main", Provider: "github"},
 				}},
 			},
 			wantCount: 0,

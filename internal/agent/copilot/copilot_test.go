@@ -931,6 +931,18 @@ func TestRunTurn_ToolUseEvents(t *testing.T) {
 		t.Errorf("tool_result calls = %+v, want %+v", got, want)
 	}
 
+	started := map[string]bool{}
+	for _, e := range events {
+		switch e.Type {
+		case domain.EventToolStarted:
+			started[e.ToolCallID] = true
+		case domain.EventToolResult:
+			if e.ToolCallID == "" || !started[e.ToolCallID] {
+				t.Errorf("tool_result %+v has ToolCallID %q, want the ID of a tool_started before it", e, e.ToolCallID)
+			}
+		}
+	}
+
 	dispositiontest.AssertWorkEvidenceConsistent(t, events, result, err)
 }
 

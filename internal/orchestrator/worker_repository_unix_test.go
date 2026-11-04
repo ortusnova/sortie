@@ -24,11 +24,11 @@ import (
 func twoRepositoryConfig(t *testing.T) config.ServiceConfig {
 	t.Helper()
 	cfg := exportWorkerConfig(t)
-	repos := []config.SmolvmRepository{
+	repos := []config.Repository{
 		{Name: "sortie", URL: "https://example.com/org/sortie.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/sortie", MaxBundleMiB: 512},
 		{Name: "ao", URL: "https://example.com/org/ao.git", Base: "trunk", BranchPrefix: "sortie/", Provider: "github", Project: "org/ao", MaxBundleMiB: 512},
 	}
-	cfg.Environment.Smolvm = config.SmolvmConfig{Repositories: repos, DefaultRepository: "sortie", Repository: &repos[0]}
+	cfg.Environment.Remote.Repositories, cfg.Environment.Remote.DefaultRepository, cfg.Environment.Remote.Repository = repos, "sortie", &repos[0]
 	return cfg
 }
 
@@ -64,13 +64,13 @@ func runRepositoryWorker(t *testing.T, cfg config.ServiceConfig, issue domain.Is
 		},
 		RepositoryFunc: func(c config.EnvironmentConfig, _ string, _ *slog.Logger) (Repository, error) {
 			mu.Lock()
-			run.url = c.Smolvm.Repository.URL
+			run.url = c.Remote.Repository.URL
 			mu.Unlock()
 			return &fakeRepository{result: gitsync.ExportResult{Branch: "sortie/" + issue.Identifier, Commit: "aaa", Pushed: true}}, nil
 		},
 		PullRequestOpenerFunc: func(c config.ServiceConfig) (domain.PullRequestOpener, error) {
 			mu.Lock()
-			run.project = c.Environment.Smolvm.Repository.Project
+			run.project = c.Environment.Remote.Repository.Project
 			mu.Unlock()
 			return opener, nil
 		},
@@ -152,7 +152,7 @@ func TestRunWorkerAttempt_WorkspaceKeepsItsRepository(t *testing.T) {
 	}
 
 	// A workflow that no longer lists it fails the preparation.
-	cfg.Environment.Smolvm.Repositories = cfg.Environment.Smolvm.Repositories[:1]
+	cfg.Environment.Remote.Repositories = cfg.Environment.Remote.Repositories[:1]
 	gone := runRepositoryWorker(t, cfg, repoIssue("i-1", "ONE-1"), nil)
 	if gone.result.Error == nil || !strings.Contains(gone.result.Error.Error(), `seeded from repository "ao"`) {
 		t.Errorf("error = %v, want the seeded repository named", gone.result.Error)
@@ -179,9 +179,9 @@ func TestRepositorySync_OneMirrorPerURL(t *testing.T) {
 	dirs := map[string]bool{}
 	for _, url := range []string{"https://example.com/org/sortie.git", "https://example.com/org/ao.git", "https://example.com/org/sortie.git"} {
 		c := cfg
-		repo := *c.Smolvm.Repository
+		repo := *c.Remote.Repository
 		repo.URL = url
-		c.Smolvm.Repository = &repo
+		c.Remote.Repository = &repo
 		if _, err := repositorySync(c, stateDir, discardLogger()); err != nil {
 			t.Fatalf("repositorySync(%s) error = %v", url, err)
 		}

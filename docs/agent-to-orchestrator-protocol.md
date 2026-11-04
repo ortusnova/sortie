@@ -192,7 +192,7 @@ Under plan control (`tracker.release_state` set), a standing `no-change-needed` 
 
 The file holds exactly one citation and no other field, and is read with the status file's refusals: no links, a plain file, at most 4 KiB. The orchestrator removes it before each dispatch, as it does the status file. The agent's file is untrusted input. When the run ends, the worker confirms the citation on the host:
 
-- A commit counts only when it is on the base branch of the host-owned mirror (`environment.smolvm.repository`), as the mirror last fetched it. Git never runs in the workspace. Without a mirror the claim is unverified (`no_mirror`).
+- A commit counts only when it is on the base branch of the host-owned mirror (`environment.remote.repository`), as the mirror last fetched it. Git never runs in the workspace. Without a mirror the claim is unverified (`no_mirror`).
 - A plan key counts only when it names another story of the same project. The claim then satisfies dependents only while the cited story is satisfied, one level deep. A story that cites itself, or two stories that cite each other, are unverified (`cycle`).
 
 A confirmed claim is recorded in `plan_satisfaction` and survives restarts. An unverified claim is recorded with its reason (`no_evidence`, `evidence_unparsed`, `no_citation`, `no_mirror`, `commit_not_on_base`, `unknown_plan_key`, `cycle`, or `check_failed`) and satisfies nothing. Its dependents wait with `unverified_no_change`. Without plan control, the file is ignored.

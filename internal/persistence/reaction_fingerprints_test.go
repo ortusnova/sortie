@@ -326,3 +326,70 @@ func TestReactionObservationLifecycle(t *testing.T) {
 		t.Errorf("GetReactionFingerprint(after observation cleanup) = (%q, %v), want (\"\", false)", fingerprint, dispatched)
 	}
 }
+
+// Each dispatch of a fingerprint is counted, so a kind that retries one
+// subject can bound its runs across restarts. A new fingerprint starts
+// from zero, and the dispatched flag reads true from the first dispatch.
+func TestGetReactionDispatches_CountsEachDispatchOfTheFingerprint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := mustOpenStore(t)
+
+	if fp, n, err := s.GetReactionDispatches(ctx, "ISS-1", "merge-conflict"); err != nil || fp != "" || n != 0 {
+		t.Fatalf("GetReactionDispatches() on no row = %q, %d, %v; want empty, 0, nil", fp, n, err)
+	}
+	if err := s.UpsertReactionFingerprint(ctx, "ISS-1", "merge-conflict", "head-1"); err != nil {
+		t.Fatalf("UpsertReactionFingerprint: %v", err)
+	}
+	for range 2 {
+		if err := s.MarkReactionDispatched(ctx, "ISS-1", "merge-conflict"); err != nil {
+			t.Fatalf("MarkReactionDispatched: %v", err)
+		}
+	}
+	if err := s.UpsertReactionFingerprint(ctx, "ISS-1", "merge-conflict", "head-1"); err != nil {
+		t.Fatalf("UpsertReactionFingerprint: %v", err)
+	}
+	if fp, n, err := s.GetReactionDispatches(ctx, "ISS-1", "merge-conflict"); err != nil || fp != "head-1" || n != 2 {
+		t.Fatalf("GetReactionDispatches() after two dispatches = %q, %d, %v; want head-1, 2, nil", fp, n, err)
+	}
+	if _, dispatched, err := s.GetReactionFingerprint(ctx, "ISS-1", "merge-conflict"); err != nil || !dispatched {
+		t.Errorf("GetReactionFingerprint() dispatched = %v, %v; want true", dispatched, err)
+	}
+
+	if err := s.UpsertReactionFingerprint(ctx, "ISS-1", "merge-conflict", "head-2"); err != nil {
+		t.Fatalf("UpsertReactionFingerprint: %v", err)
+	}
+	if fp, n, err := s.GetReactionDispatches(ctx, "ISS-1", "merge-conflict"); err != nil || fp != "head-2" || n != 0 {
+		t.Errorf("GetReactionDispatches() after a new fingerprint = %q, %d, %v; want head-2, 0, nil", fp, n, err)
+	}
+}
+
+// A dispatch given back leaves the count one lower, and never below one,
+// so the fingerprint stays marked dispatched.
+func TestReturnReactionDispatch_NeverBelowOne(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := mustOpenStore(t)
+
+	if err := s.UpsertReactionFingerprint(ctx, "ISS-1", "merge-conflict", "head-1"); err != nil {
+		t.Fatalf("UpsertReactionFingerprint: %v", err)
+	}
+	for range 2 {
+		if err := s.MarkReactionDispatched(ctx, "ISS-1", "merge-conflict"); err != nil {
+			t.Fatalf("MarkReactionDispatched: %v", err)
+		}
+	}
+	for _, want := range []int{1, 1} {
+		if err := s.ReturnReactionDispatch(ctx, "ISS-1", "merge-conflict"); err != nil {
+			t.Fatalf("ReturnReactionDispatch: %v", err)
+		}
+		if _, n, err := s.GetReactionDispatches(ctx, "ISS-1", "merge-conflict"); err != nil || n != want {
+			t.Fatalf("GetReactionDispatches() = %d, %v; want %d", n, err, want)
+		}
+	}
+	if err := s.ReturnReactionDispatch(ctx, "ISS-2", "merge-conflict"); err != nil {
+		t.Errorf("ReturnReactionDispatch() on no row = %v, want nil", err)
+	}
+}

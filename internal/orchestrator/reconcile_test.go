@@ -184,6 +184,15 @@ func (m *mockReconcileStore) GetReactionFingerprint(_ context.Context, _, _ stri
 	return "", false, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (m *mockReconcileStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := m.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (m *mockReconcileStore) MarkReactionDispatched(_ context.Context, _, _ string) error {
 	m.markDispatchedCalls++
 	return nil

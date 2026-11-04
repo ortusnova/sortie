@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,7 +14,6 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
-	"github.com/sortie-ai/sortie/internal/hostview"
 )
 
 // healthClockAt makes the health checks of h read base advanced by the
@@ -96,15 +97,14 @@ func TestHealth_CredentialNearExpiryAsksForTheLoginBeforeAnySession(t *testing.T
 	dir := t.TempDir()
 	expiresFile := filepath.Join(dir, "expires")
 	writeHealthFile(t, expiresFile, now.Add(20*time.Minute).Format(time.RFC3339))
-	env := config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, Smolvm: config.SmolvmConfig{
-		Credentials: []config.SmolvmCredential{{
-			Name: "claude", Env: "CLAUDE_CODE_OAUTH_TOKEN", Hosts: []string{"api.anthropic.com"},
-			Command:        "printf sk-ant-oat01-health-check-token",
-			ExpiresCommand: "cat '" + expiresFile + "'",
-			Login:          "the Claude Code login of the sortie user (claude setup-token)",
-		}},
+	h := healthHarness(t, config.EnvironmentConfig{}, candidate("issue-70", "ONS-70"))
+	cfg := h.wm.Config()
+	cfg.Health.Credentials = []config.HealthCredential{{
+		Name:           "claude",
+		ExpiresCommand: "cat '" + expiresFile + "'",
+		Login:          "the Claude Code login of the sortie user (claude setup-token)",
 	}}
-	h := healthHarness(t, env, candidate("issue-70", "ONS-70"))
+	h.wm.config = cfg
 	advance := healthClockAt(h, now)
 
 	h.o.handleTick(ctx)
@@ -143,26 +143,34 @@ func TestHealth_CredentialNearExpiryAsksForTheLoginBeforeAnySession(t *testing.T
 }
 
 // A credential whose expiry is hours away, or that names no expiry,
-// holds nothing; one that already expired, or whose source yields no
-// value, is a fault that holds dispatch.
+// holds nothing; one that already expired, expires soon by its token's
+// own exp claim, or whose variable is not set, is a fault that holds
+// dispatch.
 func TestCredentialFinding(t *testing.T) {
-	t.Parallel()
-
 	now := time.Now().UTC()
+	jwt := func(exp time.Time) string {
+		payload := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"exp":%d}`, exp.Unix()))
+		return "eyJhbGciOiJub25lIn0." + payload + ".sig"
+	}
+	t.Setenv("SORTIE_TEST_HEALTH_PLAIN", "sk-plain-token")
+	t.Setenv("SORTIE_TEST_HEALTH_SOON", jwt(now.Add(20*time.Minute)))
+	t.Setenv("SORTIE_TEST_HEALTH_LATER", jwt(now.Add(5*time.Hour)))
 	at := func(d time.Duration) string { return "echo " + now.Add(d).Format(time.RFC3339) }
-	cred := func(command, expires string) config.SmolvmCredential {
-		return config.SmolvmCredential{Name: "claude", Env: "CLAUDE_TOKEN", Command: command, ExpiresCommand: expires}
+	cred := func(env, expires string) config.HealthCredential {
+		return config.HealthCredential{Name: "claude", Env: env, ExpiresCommand: expires}
 	}
 	for _, tc := range []struct {
 		name  string
-		cred  config.SmolvmCredential
+		cred  config.HealthCredential
 		cause string
 	}{
-		{"hours away", cred("echo token", at(3*time.Hour)), ""},
-		{"no known expiry", cred("echo token", ""), ""},
-		{"expired", cred("echo token", at(-time.Minute)), `credential "claude" expired at`},
-		{"no value", cred("exit 1", ""), `credential "claude": its source (command) yielded no value`},
-		{"unreadable expiry", cred("echo token", "echo soon"), `credential "claude": its source (expires_command) yielded no value`},
+		{"hours away", cred("", at(3*time.Hour)), ""},
+		{"no known expiry", cred("SORTIE_TEST_HEALTH_PLAIN", ""), ""},
+		{"token hours away", cred("SORTIE_TEST_HEALTH_LATER", ""), ""},
+		{"expired", cred("", at(-time.Minute)), `credential "claude" expired at`},
+		{"token expires soon", cred("SORTIE_TEST_HEALTH_SOON", ""), `credential "claude" expires at`},
+		{"not set", cred("SORTIE_TEST_HEALTH_UNSET", at(3*time.Hour)), `credential "claude": the variable SORTIE_TEST_HEALTH_UNSET is not set`},
+		{"unreadable expiry", cred("SORTIE_TEST_HEALTH_PLAIN", "echo soon"), `credential "claude": its source (expires_command) yielded no value`},
 	} {
 		f, failed := credentialFinding(context.Background(), tc.cred, "taichi", now)
 		switch {
@@ -394,37 +402,6 @@ func TestHealth_WorkerThatStaysUnreachable(t *testing.T) {
 	h.o.runOnLoop(ctx, func(context.Context) { after = healthFaults(h) })
 	if len(after) != 0 {
 		t.Errorf("health faults after the dismissal = %+v, want none while p1 stays away", after)
-	}
-}
-
-// Under smolvm, a running issue's machine that stays stopped for
-// [MachineDownAfter] is a fault; one seen stopped only now is not yet.
-func TestMachineFindings_MachineThatStaysStopped(t *testing.T) {
-	t.Parallel()
-
-	h := healthHarness(t, config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm})
-	now := time.Now().UTC()
-	h.state.Running["issue-76"] = &RunningEntry{Identifier: "ONS-76", StartedAt: now.Add(-time.Hour)}
-	listed := []hostview.Listed{{Name: "sortie-ONS-76", State: "stopped",
-		Labels: map[string]string{hostview.LabelSortieManaged: "1", "sortie.workspace": "ONS-76"}}}
-	cfg := h.wm.Config()
-
-	var first healthResult
-	h.o.machineFindings(cfg, listed, now, &first)
-	if len(first.findings) != 0 {
-		t.Fatalf("findings when first seen stopped = %+v, want none yet", first.findings)
-	}
-	var later healthResult
-	h.o.machineFindings(cfg, listed, now.Add(MachineDownAfter), &later)
-	if len(later.findings) != 1 || !strings.Contains(later.findings[0].Cause, `machine "sortie-ONS-76" of ONS-76 has been stopped since`) {
-		t.Fatalf("findings = %+v, want one for the stopped machine", later.findings)
-	}
-
-	listed[0].State = "running"
-	var running healthResult
-	h.o.machineFindings(cfg, listed, now.Add(2*MachineDownAfter), &running)
-	if len(running.findings) != 0 || len(h.o.health.machineDown) != 0 {
-		t.Errorf("findings once running = %+v, down = %v; want none", running.findings, h.o.health.machineDown)
 	}
 }
 

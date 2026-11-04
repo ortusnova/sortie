@@ -25,6 +25,13 @@ const (
 	// status as a four-byte big-endian signed integer. It is the last
 	// frame the worker sends.
 	FrameExit byte = 'X'
+	// FrameSortieFilesRequest asks the worker for the agent's .sortie
+	// files, from Sortie to a worker on [StdioProtocolFiles]. It has no
+	// payload.
+	FrameSortieFilesRequest byte = 'S'
+	// FrameSortieFiles answers it: a JSON object of each file the agent
+	// wrote in .sortie, by its name, its content base64-encoded.
+	FrameSortieFiles byte = 'F'
 )
 
 // MaxFramePayload bounds the payload of one frame.

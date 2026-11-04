@@ -93,22 +93,22 @@ type RemoteConfig struct {
 	// entry of the repositories list, until an issue's run sets it to
 	// the issue's own. Nil when neither is set, and for a repositories
 	// list that names no default.
-	Repository *SmolvmRepository
+	Repository *Repository
 
 	// Repositories lists every repository Sortie may open, in written
 	// order: the repositories list, or the single repository block as
 	// its one entry. Nil when neither is set: Sortie then serves no
 	// seed and pushes nothing.
-	Repositories []SmolvmRepository
+	Repositories []Repository
 
 	// DefaultRepository names the entry of Repositories an issue that
-	// names no repository runs in, as for the smolvm kind.
+	// names no repository runs in.
 	DefaultRepository string
 }
 
 // JobImage returns the image a job of repo runs in: repo's own, or
 // Image when repo is nil or sets none.
-func (c RemoteConfig) JobImage(repo *SmolvmRepository) string {
+func (c RemoteConfig) JobImage(repo *Repository) string {
 	if repo != nil && repo.Image != "" {
 		return repo.Image
 	}
@@ -117,7 +117,7 @@ func (c RemoteConfig) JobImage(repo *SmolvmRepository) string {
 
 // JobRequires returns what a worker must declare to take a job of repo:
 // repo's own requirements, or Requires when repo is nil or sets none.
-func (c RemoteConfig) JobRequires(repo *SmolvmRepository) RemoteRequirements {
+func (c RemoteConfig) JobRequires(repo *Repository) RemoteRequirements {
 	if repo != nil && repo.Requires != nil {
 		return *repo.Requires
 	}
@@ -209,7 +209,7 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 	if err != nil {
 		return RemoteConfig{}, err
 	}
-	var set SmolvmConfig
+	var set RepositorySet
 	if err := parseRepositoryList(m, remoteField, single, parseRemoteRepositoryEntry, &set); err != nil {
 		return RemoteConfig{}, err
 	}
@@ -252,7 +252,7 @@ func (c RemoteConfig) repositoryField(i int) string {
 
 // parseRemoteRepository reads environment.remote.repository with the
 // fields and defaults of a remote repositories entry, except dispatch.
-func parseRemoteRepository(raw any) (*SmolvmRepository, error) {
+func parseRemoteRepository(raw any) (*Repository, error) {
 	const field = remoteField + ".repository"
 	if raw == nil {
 		return nil, nil
@@ -268,9 +268,9 @@ func parseRemoteRepository(raw any) (*SmolvmRepository, error) {
 }
 
 // parseRemoteRepositoryEntry reads one remote repository mapping at
-// field: the fields and defaults of a smolvm repository, and the image
+// field: the fields and defaults of a repository, and the image
 // and requires of its jobs.
-func parseRemoteRepositoryEntry(entry map[string]any, field string) (*SmolvmRepository, error) {
+func parseRemoteRepositoryEntry(entry map[string]any, field string) (*Repository, error) {
 	if err := refuseUnknownKeys(entry, field, remoteRepositoryKeys); err != nil {
 		return nil, err
 	}
@@ -346,27 +346,19 @@ func refuseUnknownKeys(m map[string]any, field string, known []string) error {
 	}
 }
 
-// RepositorySet returns the repository settings of the kind c selects,
-// as a [SmolvmConfig] holding only its Repository, Repositories and
-// DefaultRepository: the smolvm block's own or the remote block's own.
-// Every other kind configures none.
-func (c EnvironmentConfig) RepositorySet() SmolvmConfig {
-	switch c.Kind {
-	case EnvironmentKindSmolvm:
-		return SmolvmConfig{Repository: c.Smolvm.Repository, Repositories: c.Smolvm.Repositories, DefaultRepository: c.Smolvm.DefaultRepository}
-	case EnvironmentKindRemote:
-		return SmolvmConfig{Repository: c.Remote.Repository, Repositories: c.Remote.Repositories, DefaultRepository: c.Remote.DefaultRepository}
+// RepositorySet returns the repository settings of the kind c selects:
+// the remote block's own. Every other kind configures none.
+func (c EnvironmentConfig) RepositorySet() RepositorySet {
+	if c.Kind != EnvironmentKindRemote {
+		return RepositorySet{}
 	}
-	return SmolvmConfig{}
+	return RepositorySet{Repository: c.Remote.Repository, Repositories: c.Remote.Repositories, DefaultRepository: c.Remote.DefaultRepository}
 }
 
 // SetRepository makes repo the repository of the kind c selects, the one
 // an issue's run uses.
-func (c *EnvironmentConfig) SetRepository(repo *SmolvmRepository) {
-	switch c.Kind {
-	case EnvironmentKindSmolvm:
-		c.Smolvm.Repository = repo
-	case EnvironmentKindRemote:
+func (c *EnvironmentConfig) SetRepository(repo *Repository) {
+	if c.Kind == EnvironmentKindRemote {
 		c.Remote.Repository = repo
 	}
 }
@@ -374,13 +366,7 @@ func (c *EnvironmentConfig) SetRepository(repo *SmolvmRepository) {
 // RepositoryField returns the setting path of the repository at index i
 // of [EnvironmentConfig.RepositorySet], for an error about it.
 func (c EnvironmentConfig) RepositoryField(i int) string {
-	switch {
-	case c.Kind == EnvironmentKindRemote:
-		return c.Remote.repositoryField(i)
-	case c.Smolvm.ListsRepositories():
-		return fmt.Sprintf("%s[%d]", smolvmRepositoriesField, i)
-	}
-	return smolvmRepositoryField
+	return c.Remote.repositoryField(i)
 }
 
 // parseRemoteRequirements reads the requires mapping at field: that of

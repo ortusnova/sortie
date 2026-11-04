@@ -12,8 +12,8 @@ import (
 )
 
 // repositoryProviderField is the setting naming the SCM provider of the
-// single smolvm repository block.
-const repositoryProviderField = "environment.smolvm.repository.provider"
+// single remote repository block.
+const repositoryProviderField = "environment.remote.repository.provider"
 
 // scmWithoutPullRequestsKind is an SCM adapter kind registered for the
 // tests that declares no pull request capability.
@@ -29,14 +29,14 @@ func init() {
 	})
 }
 
-// repositoryConfig returns a configuration under the smolvm kind whose
+// repositoryConfig returns a configuration under the remote kind whose
 // repository names provider.
 func repositoryConfig(provider string) config.ServiceConfig {
 	return config.ServiceConfig{
 		Tracker: config.TrackerConfig{Kind: "file"},
 		Environment: config.EnvironmentConfig{
-			Kind: config.EnvironmentKindSmolvm,
-			Smolvm: config.SmolvmConfig{Repository: &config.SmolvmRepository{
+			Kind: config.EnvironmentKindRemote,
+			Remote: config.RemoteConfig{Repository: &config.Repository{
 				URL: "https://example.com/org/app.git", Base: "main", BranchPrefix: "sortie/", Provider: provider, Project: "org/app", MaxBundleMiB: 512,
 			}},
 		},
@@ -68,7 +68,7 @@ func TestCheckRepositoryProvider(t *testing.T) {
 		want []string // substrings of the error; nil for none
 	}{
 		{name: "no provider", cfg: withCI(repositoryConfig(""), "github")},
-		{name: "a repository outside smolvm is not checked", cfg: withCI(local, "github")},
+		{name: "a repository outside remote is not checked", cfg: withCI(local, "github")},
 		{name: "export as the only SCM user", cfg: repositoryConfig("gitea")},
 		{name: "the same provider as every reaction", cfg: withCI(withReaction(repositoryConfig("github"), scmKindAutoMerge, "github"), "github")},
 		{

@@ -27,6 +27,7 @@ type remoteRunStore interface {
 	SaveRemoteRun(ctx context.Context, r persistence.RemoteRun) error
 	UpdateRemoteRunEntry(ctx context.Context, issueID, entry string) error
 	UpdateRemoteRunSession(ctx context.Context, issueID, sessionID string, turnsCompleted int, ended bool) error
+	UpdateRemoteRunRecord(ctx context.Context, issueID, record string) error
 	DeleteRemoteRun(ctx context.Context, issueID string) error
 	LoadRemoteRuns(ctx context.Context) ([]persistence.RemoteRun, error)
 }
@@ -83,6 +84,9 @@ type remoteRunEntry struct {
 	UnaccountedTurns    int                          `json:"unaccounted_turns"`
 	ToolTimeMs          int64                        `json:"tool_time_ms"`
 	APITimeMs           int64                        `json:"api_time_ms"`
+	// LastEventAt is the run's last agent event seen, zero before the
+	// first and in a record written before it was kept.
+	LastEventAt time.Time `json:"last_event_at"`
 }
 
 // remoteAdoption is a run a previous process left with a worker, restored
@@ -133,7 +137,7 @@ func snapshotRemoteEntry(entry *RunningEntry) remoteRunEntry {
 		TotalTokens: entry.AgentTotalTokens, CacheReadTokens: entry.CacheReadTokens, CacheWriteTokens: entry.CacheWriteTokens,
 		UsageByModel: maps.Clone(entry.UsageByModel), ModelName: entry.ModelName, APIRequestCount: entry.APIRequestCount,
 		RequestsByModel: maps.Clone(entry.RequestsByModel), UnaccountedTurns: entry.UnaccountedTurns,
-		ToolTimeMs: entry.ToolTimeMs, APITimeMs: entry.APITimeMs,
+		ToolTimeMs: entry.ToolTimeMs, APITimeMs: entry.APITimeMs, LastEventAt: entry.LastAgentTimestamp,
 	}
 }
 
@@ -164,6 +168,7 @@ func (s remoteRunEntry) restoreInto(entry *RunningEntry) {
 	entry.RequestsByModel = maps.Clone(s.RequestsByModel)
 	entry.UnaccountedTurns = s.UnaccountedTurns
 	entry.ToolTimeMs, entry.APITimeMs = s.ToolTimeMs, s.APITimeMs
+	entry.LastAgentTimestamp = s.LastEventAt
 }
 
 // storableContinuation returns a copy of a continuation context fit for
@@ -303,8 +308,8 @@ func (o *Orchestrator) RestoreRemoteRuns(ctx context.Context) {
 	}
 }
 
-// restore decodes r and restores its job tokens and lease.
-func (r *remoteWorkers) restore(run persistence.RemoteRun) (*remoteAdoption, error) {
+// decodeAdoption reads a stored run as a run to adopt.
+func decodeAdoption(run persistence.RemoteRun) (*remoteAdoption, error) {
 	a := &remoteAdoption{run: run}
 	if err := json.Unmarshal([]byte(run.Record), &a.record); err != nil {
 		return nil, fmt.Errorf("the run's record: %w", err)
@@ -314,6 +319,15 @@ func (r *remoteWorkers) restore(run persistence.RemoteRun) (*remoteAdoption, err
 		return nil, err
 	}
 	a.entry = entry
+	return a, nil
+}
+
+// restore decodes r and restores its job tokens and lease.
+func (r *remoteWorkers) restore(run persistence.RemoteRun) (*remoteAdoption, error) {
+	a, err := decodeAdoption(run)
+	if err != nil {
+		return nil, err
+	}
 	if err := r.tokens.Restore(run.JobID, uint64(max(run.Attempt, 0)), a.record.Tokens); err != nil {
 		return nil, err
 	}
@@ -327,6 +341,42 @@ func (r *remoteWorkers) restore(run persistence.RemoteRun) (*remoteAdoption, err
 	r.adoptions = append(r.adoptions, a)
 	r.mu.Unlock()
 	return a, nil
+}
+
+// resumed records the new job tokens a worker resumes jobID's attempt
+// with, so a restart restores those and not the ended ones. While the
+// process stops it refuses the resume: the worker asks the next start,
+// which restores the tokens recorded before.
+func (r *remoteWorkers) resumed(jobID string) error {
+	if r.stopping() {
+		return fmt.Errorf("%w: Sortie is stopping", worker.ErrRecovering)
+	}
+	if r.runs == nil {
+		return nil
+	}
+	ctx := context.Background()
+	runs, err := r.runs.LoadRemoteRuns(ctx)
+	if err != nil {
+		return fmt.Errorf("remote run tokens not recorded: %w", err)
+	}
+	for _, run := range runs {
+		if run.JobID != jobID {
+			continue
+		}
+		var rec remoteRunRecord
+		if err := json.Unmarshal([]byte(run.Record), &rec); err != nil {
+			return fmt.Errorf("remote run record: %w", err)
+		}
+		_, rec.Tokens = r.tokens.Digests(jobID)
+		raw, err := json.Marshal(rec)
+		if err == nil {
+			err = r.runs.UpdateRemoteRunRecord(ctx, run.IssueID, string(raw))
+		}
+		if err != nil {
+			return fmt.Errorf("remote run tokens not recorded: %w", err)
+		}
+	}
+	return nil
 }
 
 // takeAdoptions returns the restored runs not adopted yet.
@@ -382,6 +432,7 @@ func (o *Orchestrator) adoptRemoteRuns(ctx context.Context) {
 		log.Info("remote run adopted", slog.String("dispatch_id", e.DispatchID), slog.String("worker", a.run.WorkerID),
 			slog.Int("turns_completed", a.run.TurnsCompleted), slog.Bool("session_ended", a.run.SessionEnded))
 	}
+	o.remote.matcher.Recovered()
 }
 
 // abandon withdraws a restored run that cannot be adopted: its worker's
@@ -421,6 +472,7 @@ func adoptIssue(ctx context.Context, state *State, a *remoteAdoption, workerFn W
 		TurnClock:         clock,
 		RetryAttempt:      e.RetryAttempt,
 		StartedAt:         e.StartedAt,
+		AdoptedAt:         time.Now(),
 		CancelFunc:        func() { cancelRunCause(nil) },
 		CancelCauseFunc:   cancelRunCause,
 		CeilingCancelFunc: func() { cancelWorkerCause(errCeilingStop) },
@@ -474,7 +526,42 @@ func (o *Orchestrator) keepRemoteExit(ctx context.Context, result WorkerResult) 
 	o.recordRemoteEntry(context.WithoutCancel(ctx), result.IssueID)
 	delete(o.state.Running, result.IssueID)
 	delete(o.state.Claimed, result.IssueID)
+	if h, ok := o.remote.takeRehome(result.IssueID); ok && !o.remote.stopping() {
+		o.readoptRemoteRun(ctx, result.IssueID, h)
+	}
 	return true
+}
+
+// readoptRemoteRun adopts again, from its record, the run whose worker
+// broke its stdio stream while it held the job: the lease and the tokens
+// are still live, so it is adopted as at start with the job's own
+// outcome channel. A run that cannot be read is withdrawn, and its
+// worker's next heartbeat releases the job.
+func (o *Orchestrator) readoptRemoteRun(ctx context.Context, issueID string, h rehome) {
+	o.remote.unkeep(issueID)
+	log := o.logger.With(slog.String("issue_id", issueID))
+	runs, err := o.remote.runs.LoadRemoteRuns(ctx)
+	var a *remoteAdoption
+	for _, r := range runs {
+		if err == nil && r.IssueID == issueID {
+			a, err = decodeAdoption(r)
+		}
+	}
+	if err == nil && a == nil {
+		err = errors.New("the run has no record")
+	}
+	if err != nil {
+		log.Warn("remote run not adopted again; its job is withdrawn and the issue is dispatched again", slog.Any("error", err))
+		o.remote.matcher.Cancel(h.jobID)
+		_ = o.remote.runs.DeleteRemoteRun(ctx, issueID) //nolint:errcheck // a leftover row is dropped at the next start
+		return
+	}
+	a.ended = h.ended
+	o.remote.mu.Lock()
+	o.remote.adoptions = append(o.remote.adoptions, a)
+	o.remote.mu.Unlock()
+	log.Info("remote run kept across its worker's break; adopting it again", slog.String("job", a.run.JobID), slog.Int("attempt", a.run.Attempt))
+	o.adoptRemoteRuns(ctx)
 }
 
 // AdoptedRun is how far a run a previous process left with a worker got.

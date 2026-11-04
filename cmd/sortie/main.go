@@ -52,7 +52,6 @@ import (
 	_ "github.com/sortie-ai/sortie/internal/agent/opencode"
 	_ "github.com/sortie-ai/sortie/internal/environment/local"
 	_ "github.com/sortie-ai/sortie/internal/environment/remote"
-	_ "github.com/sortie-ai/sortie/internal/environment/smolvm"
 	_ "github.com/sortie-ai/sortie/internal/notify/discord"
 	_ "github.com/sortie-ai/sortie/internal/notify/slack"
 	_ "github.com/sortie-ai/sortie/internal/notify/telegram"
@@ -1052,7 +1051,6 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		Once:                              br.once,
 		SupervisorToken:                   br.supervisorToken,
 		SCMTokenInspector:                 tokenInspectorOf(sharedSCM),
-		MachineLister:                     newMachineLister(br.mgr.Config),
 	})
 	o.RestoreRemoteRuns(ctx)
 

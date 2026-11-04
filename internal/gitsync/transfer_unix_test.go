@@ -28,7 +28,7 @@ var _ environment.TransferDirNamer = transferEnv{}
 // An environment that names its transfer directory gets every bundle,
 // in and out, there and never in the syncer's own.
 func TestSeedAndExport_UseTheEnvironmentsTransferDir(t *testing.T) {
-	f := newSyncFixture(t, "ENG-70", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-70", config.Repository{})
 	dir := filepath.Join(t.TempDir(), "user-transfer")
 	env := transferEnv{Recorder: f.env, dir: dir}
 	ctx := context.Background()

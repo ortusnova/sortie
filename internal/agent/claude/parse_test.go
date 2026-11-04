@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -539,10 +540,23 @@ func TestRawAssistantMessageMeta_FromFixture(t *testing.T) {
 }
 
 // collectToolEvents delegates to [processToolBlocks] and collects the
-// emitted [domain.AgentEvent] values. It mirrors the RunTurn call
+// emitted [domain.EventToolResult] values. It mirrors the RunTurn call
 // sites, using the same now value for both the observed timestamp and
 // the event wall-clock timestamp in tests.
 func collectToolEvents(t *testing.T, ev rawEvent, tracker *agentcore.ToolTracker, now time.Time) []domain.AgentEvent {
+	t.Helper()
+	var results []domain.AgentEvent
+	for _, e := range collectAllToolEvents(t, ev, tracker, now) {
+		if e.Type == domain.EventToolResult {
+			results = append(results, e)
+		}
+	}
+	return results
+}
+
+// collectAllToolEvents delegates to [processToolBlocks] and collects every
+// event it emits.
+func collectAllToolEvents(t *testing.T, ev rawEvent, tracker *agentcore.ToolTracker, now time.Time) []domain.AgentEvent {
 	t.Helper()
 	work := agentcore.NewWorkObserver(agentcore.WorkSignals{ToolActivity: true})
 	var events []domain.AgentEvent
@@ -550,6 +564,46 @@ func collectToolEvents(t *testing.T, ev rawEvent, tracker *agentcore.ToolTracker
 		events = append(events, e)
 	})
 	return events
+}
+
+// A tool_use block publishes tool_started with its ID, so the orchestrator
+// knows the agent is inside the call, and the tool_result that ends it
+// carries the same ID.
+func TestProcessToolBlocks_ToolStartedThenResult(t *testing.T) {
+	t.Parallel()
+
+	data := loadFixture(t, "tool_use_parallel.json")
+	ev, err := parseEvent(data)
+	if err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	now := time.Now().UTC()
+	events := collectAllToolEvents(t, ev, agentcore.NewToolTracker(), now)
+
+	var ids []string
+	for _, e := range events {
+		if e.Type != domain.EventToolStarted {
+			t.Errorf("event %+v, want only tool_started for tool_use blocks", e)
+			continue
+		}
+		if !e.Timestamp.Equal(now) {
+			t.Errorf("tool_started Timestamp = %v, want %v", e.Timestamp, now)
+		}
+		ids = append(ids, e.ToolCallID)
+	}
+	if want := []string{"toolu_par_01", "toolu_par_02"}; !slices.Equal(ids, want) {
+		t.Errorf("tool_started ToolCallIDs = %v, want %v", ids, want)
+	}
+
+	same, err := parseEvent(loadFixture(t, "tool_use_message.json"))
+	if err != nil {
+		t.Fatalf("parseEvent() error = %v", err)
+	}
+	all := collectAllToolEvents(t, same, agentcore.NewToolTracker(), now)
+	if len(all) != 2 || all[0].Type != domain.EventToolStarted || all[1].Type != domain.EventToolResult ||
+		all[0].ToolCallID == "" || all[1].ToolCallID != all[0].ToolCallID {
+		t.Errorf("events = %+v, want tool_started then tool_result with the same ToolCallID", all)
+	}
 }
 
 func TestContentBlock_ToolUseID(t *testing.T) {

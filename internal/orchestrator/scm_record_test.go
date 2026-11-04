@@ -30,8 +30,8 @@ const trustedPR = 42
 // Sortie pushes the issue branch itself.
 func smolvmRepositoryEnvironment() config.EnvironmentConfig {
 	return config.EnvironmentConfig{
-		Kind: config.EnvironmentKindSmolvm,
-		Smolvm: config.SmolvmConfig{Repository: &config.SmolvmRepository{
+		Kind: config.EnvironmentKindRemote,
+		Remote: config.RemoteConfig{Repository: &config.Repository{
 			URL: "https://example.com/org/app.git", Base: "main", BranchPrefix: "sortie/", MaxBundleMiB: 512, Project: "org/app",
 		}},
 	}
@@ -112,7 +112,7 @@ func TestSCMMetadataSource(t *testing.T) {
 
 	withRepository := smolvmRepositoryEnvironment()
 	withoutRepository := smolvmRepositoryEnvironment()
-	withoutRepository.Smolvm.Repository = nil
+	withoutRepository.Remote.Repository = nil
 	tests := []struct {
 		name       string
 		cfg        config.EnvironmentConfig

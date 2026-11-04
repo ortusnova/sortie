@@ -222,8 +222,11 @@ type ReviewGateFunc func(ctx context.Context, pending *PendingReaction) (allowed
 // workflow that routes every story through the check lets Sortie merge
 // either kind. A ui story is let through as a criteria story is, and the
 // entry remembers it, so auto-merge also waits for its click-proofs (see
-// [planClickProofs]).
-func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) ReviewGateFunc {
+// [planClickProofs]). Whatever its label, the story's latest criteria
+// review must have recorded every criterion met (store, a
+// [CriteriaVerdictLoader]): a review that found one not met, or that
+// only a live proof settles, or that recorded no verdict, is not merged.
+func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter, store any) ReviewGateFunc {
 	if !cfg.Tracker.PlanControl() {
 		return nil
 	}
@@ -238,21 +241,26 @@ func planReviewGate(cfg config.ServiceConfig, tracker domain.TrackerAdapter) Rev
 			return false, "", err
 		}
 		data, _ := pending.KindData.(*AutoMergeReactionData)
+		labelled := false
 		if slices.ContainsFunc(issue.Labels, isUIReviewLabel) {
 			if data != nil {
 				data.story = storyUI
 			}
-			return true, "", nil
-		}
-		if data != nil {
-			data.story = storyOther
-		}
-		for _, l := range issue.Labels {
-			if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
-				return true, "", nil
+			labelled = true
+		} else {
+			if data != nil {
+				data.story = storyOther
+			}
+			for _, l := range issue.Labels {
+				if strings.EqualFold(l, config.ReviewCriteriaLabel) || strings.EqualFold(l, config.ReviewHumanLabel) {
+					labelled = true
+				}
 			}
 		}
-		return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
+		if !labelled {
+			return false, "the story carries neither " + config.ReviewCriteriaLabel + " nor " + config.ReviewHumanLabel, nil
+		}
+		return criteriaMergeAllowed(ctx, store, pending.IssueID)
 	}
 }
 
@@ -352,10 +360,27 @@ func planClickProofs(cfg config.ServiceConfig, reader domain.PullRequestCommentR
 // clickProofsRecord reports whether body holds a click-proofs record line
 // and returns the lower-cased commit it names. Markdown code ticks and
 // quote marks around the line are ignored.
-func clickProofsRecord(body string) (string, bool) {
+func clickProofsRecord(body string) (string, bool) { return recordLine(body, ClickProofsMarker) }
+
+// LiveProofMarker opens the line of a pull request comment that records
+// a story's live criteria proven by a live-proof job, at the head commit
+// the job ran:
+//
+//	sortie:live-proof proven <head sha>
+const LiveProofMarker = "sortie:live-proof proven"
+
+// liveProofRecord reports whether body holds a live-proof record line
+// and returns the lower-cased commit it names.
+func liveProofRecord(body string) (string, bool) { return recordLine(body, LiveProofMarker) }
+
+// recordLine reports whether body holds a line of marker, two words,
+// followed by a commit of at least seven hex digits, and returns that
+// commit lower-cased. Markdown code ticks and quote marks around the line
+// are ignored.
+func recordLine(body, marker string) (string, bool) {
 	for line := range strings.Lines(body) {
 		fields := strings.Fields(strings.Trim(strings.TrimSpace(line), "`>* "))
-		if len(fields) < 3 || !strings.EqualFold(fields[0]+" "+fields[1], ClickProofsMarker) {
+		if len(fields) < 3 || !strings.EqualFold(fields[0]+" "+fields[1], marker) {
 			continue
 		}
 		sha := strings.ToLower(strings.Trim(fields[2], "`.,;:"))
@@ -431,7 +456,14 @@ func handleCriteriaFailure(ctx context.Context, state *State, params HandleWorke
 	if summary == "" {
 		summary = "(the check left no summary)"
 	}
-	comment := fmt.Sprintf("The acceptance-criteria check (rule %s) did not pass, so the pull request is not merged.\n\n%s", rule.Name, summary)
+	// The story's comment also carries the stop's statement, such as the
+	// criteria a review found not met; the escalation does not, since the
+	// stop's own notification already carries it.
+	detail := summary
+	if statement := strings.TrimSpace(redact.Mask(result.SoftStopStatement.Text)); statement != "" {
+		detail = statement + "\n\n" + summary
+	}
+	comment := fmt.Sprintf("The acceptance-criteria check (rule %s) did not pass, so the pull request is not merged.\n\n%s", rule.Name, detail)
 	if params.TrackerAdapter != nil {
 		if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 			log.Warn("criteria failure comment failed", slog.Any("error", err))

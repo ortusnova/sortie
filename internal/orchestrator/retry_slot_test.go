@@ -143,6 +143,15 @@ func (s *retrySlotStore) GetReactionFingerprint(_ context.Context, issueID, kind
 	return s.marks[key], s.dispatched[key], nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *retrySlotStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *retrySlotStore) MarkReactionDispatched(_ context.Context, issueID, kind string) error {
 	s.markCalls++
 	s.dispatched[issueID+":"+kind] = true

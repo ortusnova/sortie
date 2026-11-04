@@ -14,7 +14,7 @@ import (
 )
 
 func TestChangedPaths_NoMirrorHasNone(t *testing.T) {
-	f := newSyncFixture(t, "ENG-80", config.SmolvmRepository{})
+	f := newSyncFixture(t, "ENG-80", config.Repository{})
 	paths, err := f.syncer.ChangedPaths(context.Background(), "ENG-80")
 	if err != nil || paths != nil {
 		t.Fatalf("ChangedPaths() before any seed = %v, %v, want none", paths, err)
@@ -25,7 +25,7 @@ func TestChangedPaths_NoMirrorHasNone(t *testing.T) {
 }
 
 func TestChangedPaths_PushedBranchAndRefusedImport(t *testing.T) {
-	f := seeded(t, "ENG-81", config.SmolvmRepository{})
+	f := seeded(t, "ENG-81", config.Repository{})
 	ctx := context.Background()
 	if paths, err := f.syncer.ChangedPaths(ctx, "ENG-81"); err != nil || len(paths) != 0 {
 		t.Fatalf("ChangedPaths() of a seeded branch = %v, %v, want none", paths, err)

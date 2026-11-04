@@ -42,7 +42,7 @@ const guestCleanupTimeout = 30 * time.Second
 // Params configures a [Syncer].
 type Params struct {
 	// Repository is the configured repository.
-	Repository config.SmolvmRepository
+	Repository config.Repository
 
 	// StateDir is Sortie's state directory; the mirror lives under it.
 	StateDir string
@@ -54,7 +54,7 @@ type Params struct {
 // Syncer places the configured repository in a workspace's environment
 // and keeps it current, through the repository's mirror.
 type Syncer struct {
-	repo   config.SmolvmRepository
+	repo   config.Repository
 	mirror *Mirror
 	logger *slog.Logger
 

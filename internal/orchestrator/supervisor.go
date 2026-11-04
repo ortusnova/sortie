@@ -366,8 +366,9 @@ func (s Supervisor) MarkDraft(ctx context.Context, identifier string) Supervisor
 
 // Merge merges the issue's watched pull request when it is open, not a
 // draft, mergeable, its review decision is approved or requires no
-// review, its CI conclusion is success, and the story is not a ui story,
-// whose merge the operator keeps. The merge records the plan merge as
+// review, its CI conclusion is success, the story is not a ui story,
+// whose merge the operator keeps, and its criteria verdict lets it merge
+// ([Supervisor.criteriaLetMerge]). The merge records the plan merge as
 // [Supervisor.RecordMerge] does.
 func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResult {
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
@@ -423,6 +424,9 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 		}
 		return precondition(issue, "ci_not_passed", fmt.Sprintf("the CI of %s is %s", formatPullRequest(pr), ci))
 	}
+	if r, ok := s.criteriaLetMerge(fctx, issue, status.HeadSHA); !ok {
+		return r
+	}
 	strategy := s.o.autoMergeConfig.Strategy
 	if strategy == "" {
 		strategy = domain.StrategySquash
@@ -475,6 +479,46 @@ func (s Supervisor) FileIssue(ctx context.Context, title, body string) Superviso
 	}
 	logging.WithIssue(s.o.logger, created.ID, created.Identifier).Info("issue filed by the supervisor")
 	return SupervisorResult{Status: SupervisorDone, IssueID: created.ID, Identifier: created.Identifier}
+}
+
+// criteriaLetMerge reports whether the story's latest criteria verdict
+// lets the supervisor merge its pull request at head, and the refusal
+// when it does not. A story no criteria review judged is not held. A
+// verdict that every criterion is met lets it merge; one that leaves
+// criteria to a live proof lets it merge only once a pull request
+// comment records them proven at head ([LiveProofMarker]); any other
+// verdict never does.
+func (s Supervisor) criteriaLetMerge(ctx context.Context, issue supervisedIssue, head string) (SupervisorResult, bool) {
+	loader, ok := s.o.store.(CriteriaVerdictLoader)
+	if !ok {
+		return SupervisorResult{}, true
+	}
+	v, found, err := loader.LoadCriteriaVerdict(ctx, issue.issueID)
+	switch {
+	case err != nil:
+		return upstreamFailed(issue, "the criteria verdict read failed", err), false
+	case !found || v.Outcome == CriteriaOutcomeMet:
+		return SupervisorResult{}, true
+	case v.Outcome != CriteriaOutcomeLiveProof:
+		return precondition(issue, "criteria_not_met", "the story's review did not find every criterion met ("+v.Outcome+"): decide how each is met, then release it for a new review"), false
+	}
+	pr := issue.pr
+	unproven := precondition(issue, "live_proof_unproven", fmt.Sprintf(
+		"the story's review left criteria to a live proof, and no comment on %s records them proven at its head %s (%s %s): request the live proof", formatPullRequest(pr), head, LiveProofMarker, head))
+	if s.o.prCommentReader == nil {
+		return unproven, false
+	}
+	comments, err := s.o.prCommentReader.FetchPullRequestComments(ctx, pr.Number, pr.Owner, pr.Repo)
+	if err != nil {
+		return upstreamFailed(issue, "the pull request comments read failed", err), false
+	}
+	h := strings.ToLower(head)
+	for _, c := range comments {
+		if sha, ok := liveProofRecord(c.Body); ok && strings.HasPrefix(h, sha) {
+			return SupervisorResult{}, true
+		}
+	}
+	return unproven, false
 }
 
 // RequestLiveProof checks that the issue named by identifier is known.

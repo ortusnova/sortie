@@ -15,7 +15,6 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
-	"github.com/sortie-ai/sortie/internal/hostview"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -61,6 +60,8 @@ type OrchestratorStore interface {
 	LatestResumeUsage(ctx context.Context, issueID, sessionID string) (*persistence.ResumeUsage, error)
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
+	GetReactionDispatches(ctx context.Context, issueID, kind string) (fingerprint string, dispatches int, err error)
+	ReturnReactionDispatch(ctx context.Context, issueID, kind string) error
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
 	DeleteReactionFingerprint(ctx context.Context, issueID, kind string) error
 	AddReactionHandedOffComments(ctx context.Context, issueID, kind string, commentIDs []string) error
@@ -325,10 +326,6 @@ type OrchestratorParams struct {
 	// the default check.
 	PlatformFaultChecker PlatformFaultChecker
 
-	// MachineLister lists the machines on this host, for the health check
-	// of the machines of running issues under smolvm. Nil checks none.
-	MachineLister func(ctx context.Context) ([]hostview.Listed, error)
-
 	// SCMTokenInspector reports what the forge says of the token Sortie
 	// calls it with, for the health check. Nil asserts it on SCMAdapter.
 	SCMTokenInspector domain.SCMTokenInspector
@@ -480,13 +477,12 @@ type Orchestrator struct {
 
 	// health is the state of Sortie's own health checks; healthNow, when
 	// set, is the clock they read. tokenInspector is the SCM adapter's
-	// token report, nil when it has none; machineLister lists the
-	// machines on this host; storyChanges, when set, reads the paths an
-	// issue's branch changes in place of [Orchestrator.storyChangedPaths].
+	// token report, nil when it has none; storyChanges, when set, reads
+	// the paths an issue's branch changes in place of
+	// [Orchestrator.storyChangedPaths].
 	health         healthState
 	healthNow      func() time.Time
 	tokenInspector domain.SCMTokenInspector
-	machineLister  func(ctx context.Context) ([]hostview.Listed, error)
 	storyChanges   func(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue) ([]string, error)
 
 	// supervisorToken and supervisorWorkDir are what a supervisor session
@@ -641,7 +637,6 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		hostName:                          faultHostName(params.HostName),
 		faultChecker:                      params.PlatformFaultChecker,
 		health:                            newHealthState(),
-		machineLister:                     params.MachineLister,
 		tokenInspector:                    params.SCMTokenInspector,
 		supervisorToken:                   params.SupervisorToken,
 		supervisorWorkDir:                 params.SupervisorDir,
@@ -904,6 +899,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.state.RuleAgents = o.ruleAgents(startCfg)
 	o.state.HopCeiling = startCfg.Dispatch.HopCeiling()
 	o.state.StallTimeoutMS = startCfg.Agent.StallTimeoutMS
+	o.state.ToolCallTimeoutMS = startCfg.Agent.ToolCallTimeoutMS
+	o.state.WorkerLive = o.workerLive(startCfg)
 	o.prepareConfiguredModels(startCfg)
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
@@ -1232,6 +1229,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.MaxTokens = cfg.Agent.MaxTokens
 	o.state.MaxCostUSD = cfg.Agent.MaxCostUSD
 	o.state.StallTimeoutMS = cfg.Agent.StallTimeoutMS
+	o.state.ToolCallTimeoutMS = cfg.Agent.ToolCallTimeoutMS
+	o.state.WorkerLive = o.workerLive(cfg)
 	o.state.MaxSessions = cfg.Agent.MaxSessions
 	o.state.StageChains = cfg.Dispatch.Chains()
 	o.state.RuleAgents = o.ruleAgents(cfg)
@@ -1256,7 +1255,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
 	ReconcileRunningIssues(o.state, ReconcileParams{
-		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter),
+		ReviewGate:                        planReviewGate(cfg, o.trackerAdapter, o.store),
 		OperatorComments:                  planOperatorComments(cfg, o.trackerAdapter, o.prCommentReader),
 		ClickProofs:                       planClickProofs(cfg, o.prCommentReader),
 		TrackerAdapter:                    o.trackerAdapter,
@@ -1265,6 +1264,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		TerminalStates:                    cfg.Tracker.TerminalStates,
 		HandoffState:                      cfg.Tracker.HandoffState,
 		StallTimeoutMS:                    cfg.Agent.StallTimeoutMS,
+		ToolCallTimeoutMS:                 cfg.Agent.ToolCallTimeoutMS,
 		MaxRetryBackoffMS:                 cfg.Agent.MaxRetryBackoffMS,
 		Store:                             o.store,
 		OnRetryFire:                       o.onRetryFire,

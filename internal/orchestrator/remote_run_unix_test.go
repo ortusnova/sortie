@@ -151,6 +151,14 @@ func (a *lineAdapter) RunTurn(ctx context.Context, session domain.Session, param
 				if s.readErr != nil {
 					return domain.TurnResult{SessionID: session.ID}, fmt.Errorf("reading the agent's output: %w", s.readErr)
 				}
+				// The standard error copy ends only with cmd.Wait, so
+				// stderr is read once the process is waited for.
+				select {
+				case <-s.exited:
+				case <-ctx.Done():
+					_ = s.cmd.Process.Kill()
+					<-s.exited
+				}
 				return domain.TurnResult{SessionID: session.ID}, fmt.Errorf("agent exited mid-turn: %s", s.stderr)
 			}
 			var line fakeAgentLine
@@ -336,8 +344,8 @@ func runDeps(t *testing.T, cfg config.ServiceConfig, adapter *lineAdapter, c *ru
 	}
 }
 
-func runRepository(upstream string) *config.SmolvmRepository {
-	return &config.SmolvmRepository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
+func runRepository(upstream string) *config.Repository {
+	return &config.Repository{URL: upstream, Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "org/app", MaxBundleMiB: 16}
 }
 
 func baseRunConfig(t *testing.T) config.ServiceConfig {
@@ -418,8 +426,8 @@ func runColocated(t *testing.T, f *gitFixture) (runCapture, string) {
 func runColocatedOn(t *testing.T, upstream string) runCapture {
 	t.Helper()
 	cfg := baseRunConfig(t)
-	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, HostPrefix: []string{envPath(t)},
-		Smolvm: config.SmolvmConfig{Repository: runRepository(upstream)}}
+	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
+		Remote: config.RemoteConfig{Repository: runRepository(upstream)}}
 	self, _ := os.Executable()
 	prompts := filepath.Join(t.TempDir(), "prompts.jsonl")
 	inner := recordingEnvironment(t)
@@ -476,6 +484,14 @@ type fakeWorker struct {
 	toolCalls []toolCall
 	// noNested checks in without nested virtualization.
 	noNested bool
+	// files speaks sortie-stdio/2: it answers Sortie's request for the
+	// agent's .sortie files between turns.
+	files bool
+	// onPrompt runs in the agent's turn n, in its clone, before the turn
+	// ends.
+	onPrompt func(n int, clone string)
+	// maxTurns overrides the run's agent.max_turns when set.
+	maxTurns int
 }
 
 // toolCall is the answer to one tool call on the mcp flow.
@@ -542,13 +558,16 @@ func (w *fakeWorker) flow(name string) (string, string) {
 	return f.URL + "/jobs/" + url.PathEscape(w.offer.Job.ID) + "/attempts/" + fmt.Sprint(w.offer.Job.Attempt), f.Token
 }
 
-// checkIn declares the worker's capacity to Sortie.
+// declaration is what the worker states at check-in.
+func (w *fakeWorker) declaration() worker.Declaration {
+	return worker.Declaration{OS: "linux", Arch: "x86_64", KVM: true, Nested: !w.noNested, Backends: []string{"smolvm"},
+		RunSlots: 2, Free: worker.Free{CPU: 8, MemGiB: 32, DiskGiB: 100}}
+}
+
+// checkIn declares the worker, free for two jobs.
 func (w *fakeWorker) checkIn() {
 	w.t.Helper()
-	resp := w.post("/api/v1/workers/checkin", map[string]any{
-		"os": "linux", "arch": "x86_64", "kvm": true, "nested": !w.noNested, "backends": []string{"smolvm"},
-		"run_slots": 2, "running": 0, "free": map[string]any{"cpu": 8, "mem_gib": 32, "disk_gib": 100},
-	})
+	resp := w.post("/api/v1/workers/checkin", w.declaration())
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		w.t.Fatalf("checkin: %d", resp.StatusCode)
@@ -605,7 +624,11 @@ func (w *fakeWorker) session() {
 		w.t.Fatal(err)
 	}
 	defer conn.Close() //nolint:errcheck // test
-	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", u.Path, u.Host, token, dataplane.StdioProtocol)
+	protocol := dataplane.StdioProtocol
+	if w.files {
+		protocol = dataplane.StdioProtocolFiles
+	}
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", u.Path, u.Host, token, protocol)
 	in := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(in, nil)
 	if err != nil {
@@ -616,9 +639,16 @@ func (w *fakeWorker) session() {
 		w.t.Fatalf("stdio upgrade: %d", resp.StatusCode)
 	}
 	stdinR, stdinW := io.Pipe()
+	out := frameWriter{conn: conn, broken: w.breakStdio}
 	go func() {
 		for {
 			typ, payload, err := dataplane.ReadFrame(in)
+			if err == nil && typ == dataplane.FrameSortieFilesRequest && w.files {
+				if err := out.frame(dataplane.FrameSortieFiles, w.sortieFiles()); err != nil {
+					w.t.Errorf("files answer: %v", err)
+				}
+				continue
+			}
 			if err != nil || typ == dataplane.FrameStdinClosed {
 				_ = stdinW.Close()
 				return
@@ -626,9 +656,11 @@ func (w *fakeWorker) session() {
 			_, _ = stdinW.Write(payload)
 		}
 	}()
-	out := frameWriter{conn: conn, broken: w.breakStdio}
 	err = fakeAgent(stdinR, &out, w.clone, w.reportUsage, func(p string) error {
 		w.received = append(w.received, p)
+		if w.onPrompt != nil {
+			w.onPrompt(len(w.received), w.clone)
+		}
 		if w.callTools && len(w.received) == 1 {
 			return w.makeToolCalls()
 		}
@@ -650,12 +682,32 @@ var errStreamBroken = errors.New("stdio stream broken by the test")
 // frameWriter writes the agent's output as stdout frames; with broken
 // set it closes the stream after the first write instead.
 type frameWriter struct {
+	mu     sync.Mutex
 	conn   net.Conn
 	broken bool
 }
 
+func (f *frameWriter) frame(typ byte, p []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return dataplane.WriteFrame(f.conn, typ, p)
+}
+
+// sortieFiles is the worker's answer to a files request: each file of
+// the clone's .sortie that Sortie takes back.
+func (w *fakeWorker) sortieFiles() []byte {
+	files := map[string][]byte{}
+	for _, name := range []string{"pr.json", "status", "criteria.json"} {
+		if data, err := os.ReadFile(filepath.Join(w.clone, ".sortie", name)); err == nil { //nolint:gosec // G304: the test's own clone
+			files[name] = data
+		}
+	}
+	raw, _ := json.Marshal(files)
+	return raw
+}
+
 func (f *frameWriter) Write(p []byte) (int, error) {
-	if err := dataplane.WriteFrame(f.conn, dataplane.FrameStdout, p); err != nil {
+	if err := f.frame(dataplane.FrameStdout, p); err != nil {
 		return 0, err
 	}
 	if f.broken {
@@ -702,9 +754,11 @@ func (w *fakeWorker) giveBack() {
 	part, _ := mw.CreateFormFile("bundle", "out.bundle")
 	raw, _ := os.ReadFile(bundle) //nolint:gosec // G304: the test's own file
 	_, _ = part.Write(raw)
-	if pr, err := os.ReadFile(filepath.Join(w.clone, ".sortie", "pr.json")); err == nil {
-		part, _ := mw.CreateFormFile("pr", "pr.json")
-		_, _ = part.Write(pr)
+	for _, f := range []struct{ part, name string }{{"pr", "pr.json"}, {"status", "status"}, {"criteria", "criteria.json"}} {
+		if data, err := os.ReadFile(filepath.Join(w.clone, ".sortie", f.name)); err == nil { //nolint:gosec // G304: the test's own clone
+			part, _ := mw.CreateFormFile(f.part, f.name)
+			_, _ = part.Write(data)
+		}
 	}
 	_ = mw.Close()
 	f := w.offer.Flows["bundles"]
@@ -771,6 +825,9 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 	w := &fakeWorker{t: t, git: f, base: srv.URL, id: "taichi", header: header, issuer: rw.tokens, ended: func() bool { return len(done) > 0 }}
 	if prepare != nil {
 		prepare(w)
+	}
+	if w.maxTurns > 0 {
+		cfg.Agent.MaxTurns = w.maxTurns
 	}
 	deps := runDeps(t, cfg, adapter, &run.runCapture, done)
 	if w.callTools {
@@ -869,6 +926,99 @@ func TestRemoteRunMatchesTheColocatedRun(t *testing.T) {
 	_, store, tracker := handOff(t, remote.result, &sequence)
 	if len(tracker.transitionCalls) != 1 || tracker.transitionCalls[0].TargetState != "Human Review" || store.runHistories[0].Status != "succeeded" {
 		t.Errorf("handoff transitions %+v, history %+v", tracker.transitionCalls, store.runHistories)
+	}
+}
+
+// A remote run's agent writes its status and its review verdict in the
+// worker's machine: the worker returns them with the issue branch, and
+// the run ends as if the agent had written them here. A review that
+// stopped blocked in a worker's machine is a refusal, not a pass.
+func TestRemoteRunReturnsTheAgentsStatusAndVerdict(t *testing.T) {
+	f := newGitFixture(t)
+	const verdict = `{"criteria": [{"criterion": "a", "verdict": "not-met", "evidence": "the chain timed out"}]}`
+	run := runRemoteONS30(t, f, nil, func(w *fakeWorker, _ context.CancelCauseFunc) {
+		w.take()
+		w.seed()
+		w.session()
+		dir := filepath.Join(w.clone, ".sortie")
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "status"), []byte("blocked\nWhich host list is right?\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "criteria.json"), []byte(verdict), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w.giveBack()
+	})
+	if run.result.ExitKind != WorkerExitNormal || run.result.Error != nil {
+		t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+	}
+	if !run.result.SoftStop || run.result.SoftStopReason != "blocked" || !strings.Contains(run.result.SoftStopStatement.Text, "Which host list") {
+		t.Errorf("soft stop %v %q %q, want blocked with the agent's question", run.result.SoftStop, run.result.SoftStopReason, run.result.SoftStopStatement.Text)
+	}
+	if string(run.result.CriteriaFile) != verdict {
+		t.Errorf("criteria file %q, want the agent's verdict", run.result.CriteriaFile)
+	}
+}
+
+// writeSortieFile writes the agent's .sortie/<name> in clone.
+func writeSortieFile(t *testing.T, clone, name, content string) {
+	t.Helper()
+	dir := filepath.Join(clone, ".sortie")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Error(err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Error(err)
+	}
+}
+
+// A remote run ends after the turn whose agent wrote a terminal file in
+// the worker's machine, as a co-located run does: a review's criteria
+// verdict or a status. A review that has not written its verdict yet is
+// given its next turn. Before, the turns could not see the worker's
+// files, so a review that had recorded its verdict on turn 1 was sent
+// the same prompt until agent.max_turns.
+func TestRemoteRunEndsAfterTheTurnThatWritesATerminalFile(t *testing.T) {
+	const verdict = `{"criteria": [{"criterion": "a", "verdict": "met", "evidence": "go test ./... passed"}]}`
+	for name, tc := range map[string]struct {
+		files     bool
+		write     map[int][2]string
+		wantTurns int
+		wantStop  string
+	}{
+		"a verdict on turn 1 ends the run":        {files: true, write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 1},
+		"a blocked status on turn 1 ends the run": {files: true, write: map[int][2]string{1: {"status", "blocked\nWhich host list is right?\n"}}, wantTurns: 1, wantStop: "blocked"},
+		"a verdict on turn 2 takes two turns":     {files: true, write: map[int][2]string{2: {"criteria.json", verdict}}, wantTurns: 2},
+		"no verdict runs to max_turns":            {files: true, wantTurns: 4},
+		"an older worker's run goes to max_turns": {write: map[int][2]string{1: {"criteria.json", verdict}}, wantTurns: 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newGitFixture(t)
+			run := runRemoteONS30(t, f, func(w *fakeWorker) {
+				w.files, w.maxTurns = tc.files, 4
+				w.onPrompt = func(n int, clone string) {
+					if file, ok := tc.write[n]; ok {
+						writeSortieFile(t, clone, file[0], file[1])
+					}
+				}
+			}, nil)
+			if run.result.ExitKind != WorkerExitNormal || run.result.Error != nil {
+				t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+			}
+			if run.result.TurnsCompleted != tc.wantTurns || len(run.received) != tc.wantTurns {
+				t.Errorf("turns completed %d, prompts received %d; want %d", run.result.TurnsCompleted, len(run.received), tc.wantTurns)
+			}
+			if run.result.SoftStopReason != tc.wantStop {
+				t.Errorf("soft stop %q, want %q", run.result.SoftStopReason, tc.wantStop)
+			}
+			if file, ok := tc.write[1]; ok && file[0] == "criteria.json" && string(run.result.CriteriaFile) != verdict {
+				t.Errorf("criteria file %q, want the agent's verdict", run.result.CriteriaFile)
+			}
+		})
 	}
 }
 

@@ -39,7 +39,7 @@ func TestHealthConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: NewServiceConfig: %v", tt.name, err)
 		}
-		if cfg.Health != tt.want {
+		if !reflect.DeepEqual(cfg.Health, tt.want) {
 			t.Errorf("%s: Health = %+v, want %+v", tt.name, cfg.Health, tt.want)
 		}
 		if cfg.ExtensionSection("health") != nil {
@@ -48,39 +48,49 @@ func TestHealthConfig(t *testing.T) {
 	}
 }
 
-func TestSmolvmCredentialHealthFields(t *testing.T) {
-	pack := writePack(t)
-
-	cfg, err := NewServiceConfig(smolvmRaw(pack, map[string]any{"credentials": []any{
-		map[string]any{"name": "claude", "env": "CLAUDE_CODE_OAUTH_TOKEN", "hosts": []any{"api.anthropic.com"},
-			"command":         "jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json",
+func TestHealthCredentials(t *testing.T) {
+	raw := func(creds any) map[string]any {
+		return map[string]any{"tracker": map[string]any{"kind": "file"}, "health": map[string]any{"credentials": creds}}
+	}
+	cfg, err := NewServiceConfig(raw([]any{
+		map[string]any{"name": "claude", "env": "CLAUDE_CODE_OAUTH_TOKEN",
 			"expires_command": "jq -r .claudeAiOauth.expiresAt ~/.claude/.credentials.json",
 			"login":           " Claude Code on taichi, as sortie "},
-	}}))
+		map[string]any{"name": "openrouter", "env": "OPENROUTER_API_KEY"},
+	}))
 	if err != nil {
 		t.Fatalf("NewServiceConfig() error = %v", err)
 	}
-	want := []SmolvmCredential{{
-		Name: "claude", Env: "CLAUDE_CODE_OAUTH_TOKEN", Hosts: []string{"api.anthropic.com"},
-		Command:        "jq -r .claudeAiOauth.accessToken ~/.claude/.credentials.json",
+	want := []HealthCredential{{
+		Name: "claude", Env: "CLAUDE_CODE_OAUTH_TOKEN",
 		ExpiresCommand: "jq -r .claudeAiOauth.expiresAt ~/.claude/.credentials.json",
 		Login:          "Claude Code on taichi, as sortie",
-	}}
-	if got := cfg.Environment.Smolvm.Credentials; !reflect.DeepEqual(got, want) {
+	}, {Name: "openrouter", Env: "OPENROUTER_API_KEY"}}
+	if got := cfg.Health.Credentials; !reflect.DeepEqual(got, want) {
 		t.Errorf("Credentials = %+v, want %+v", got, want)
 	}
 
 	for _, bad := range []struct {
-		key   string
-		value any
-	}{{"expires_command", " "}, {"expires_command", 1}, {"login", ""}} {
-		key, value := bad.key, bad.value
-		entry := map[string]any{"name": "claude", "env": "CLAUDE_TOKEN", "hosts": []any{"api.anthropic.com"}, key: value}
-		field := "environment.smolvm.credentials[0]." + key
-		_, err := NewServiceConfig(smolvmRaw(pack, map[string]any{"credentials": []any{entry}}))
+		name  string
+		creds any
+		field string
+	}{
+		{"not a list", "claude", "health.credentials"},
+		{"not a map", []any{"claude"}, "health.credentials[0]"},
+		{"no name", []any{map[string]any{"env": "CLAUDE_TOKEN"}}, "health.credentials[0].name"},
+		{"bad name", []any{map[string]any{"name": "a b", "env": "CLAUDE_TOKEN"}}, "health.credentials[0].name"},
+		{"duplicate name", []any{map[string]any{"name": "claude", "env": "A"}, map[string]any{"name": "claude", "env": "B"}}, "health.credentials[1].name"},
+		{"bad env", []any{map[string]any{"name": "claude", "env": "1A"}}, "health.credentials[0].env"},
+		{"blank expires_command", []any{map[string]any{"name": "claude", "expires_command": " "}}, "health.credentials[0].expires_command"},
+		{"expires_command not a string", []any{map[string]any{"name": "claude", "expires_command": 1}}, "health.credentials[0].expires_command"},
+		{"blank login", []any{map[string]any{"name": "claude", "env": "A", "login": ""}}, "health.credentials[0].login"},
+		{"nothing to watch", []any{map[string]any{"name": "claude", "login": "Claude Code"}}, "health.credentials[0]"},
+		{"unknown key", []any{map[string]any{"name": "claude", "env": "A", "command": "cat token"}}, "health.credentials[0].command"},
+	} {
+		_, err := NewServiceConfig(raw(bad.creds))
 		var ce *ConfigError
-		if !errors.As(err, &ce) || ce.Field != field {
-			t.Errorf("%s = %#v: NewServiceConfig err = %v, want a ConfigError on %s", key, value, err, field)
+		if !errors.As(err, &ce) || ce.Field != bad.field {
+			t.Errorf("%s: NewServiceConfig err = %v, want a ConfigError on %s", bad.name, err, bad.field)
 		}
 	}
 }

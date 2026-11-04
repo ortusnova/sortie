@@ -368,6 +368,15 @@ func (s *stubStore) GetReactionFingerprint(_ context.Context, _, _ string) (stri
 	return "", false, nil
 }
 
+// GetReactionDispatches reads the dispatched flag as one dispatch.
+func (s *stubStore) GetReactionDispatches(ctx context.Context, issueID, kind string) (string, int, error) {
+	fp, dispatched, err := s.GetReactionFingerprint(ctx, issueID, kind)
+	if dispatched {
+		return fp, 1, err
+	}
+	return fp, 0, err
+}
+
 func (s *stubStore) MarkReactionDispatched(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -11560,3 +11569,5 @@ func TestRun_UsageLimitRefusalHoldsItsKindOnly(t *testing.T) {
 		t.Errorf("budget_exhausted = %+v, want none after a refused run", snap.BudgetExhausted)
 	}
 }
+
+func (*stubStore) ReturnReactionDispatch(context.Context, string, string) error { return nil }
