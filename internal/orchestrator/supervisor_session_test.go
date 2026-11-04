@@ -939,6 +939,7 @@ func TestScenario_ASupervisorQuestionForATokenScope(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, nil)
 	question := SupervisorQuestion{
+		Kind:    "credential",
 		Action:  `Give taichi's GitHub token "Workflows: Read and write"`,
 		Where:   "GitHub, Settings, Developer settings, Personal access tokens",
 		Stories: []string{"ONS-49", "ONS-50"},
@@ -1008,13 +1009,15 @@ func TestSupervisor_AskPersonRefusals(t *testing.T) {
 	h.run()
 	h.park("id-7", "ONS-7")
 	sup := h.o.Supervisor()
-	q := SupervisorQuestion{Action: "Approve the spec", Where: "the workbench", Stories: []string{"ONS-7"}, Checked: "the spec has no approver"}
+	q := SupervisorQuestion{Kind: "approval", Action: "Approve the spec", Where: "the workbench", Stories: []string{"ONS-7"}, Checked: "the spec has no approver"}
 
 	for name, change := range map[string]func(q *SupervisorQuestion){
 		"no action":       func(q *SupervisorQuestion) { q.Action = " " },
 		"no place":        func(q *SupervisorQuestion) { q.Where = "" },
 		"nothing checked": func(q *SupervisorQuestion) { q.Checked = "" },
 		"no story":        func(q *SupervisorQuestion) { q.Stories = nil },
+		"no kind":         func(q *SupervisorQuestion) { q.Kind = "" },
+		"an unknown kind": func(q *SupervisorQuestion) { q.Kind = "chore" },
 	} {
 		bad := q
 		change(&bad)
