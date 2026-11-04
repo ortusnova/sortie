@@ -39,6 +39,15 @@ type PlatformFault struct {
 	// held stories; empty while the fault is open.
 	ResolvedAt string
 
+	// QuestionKind is the action kind of a question raised through the
+	// supervisor's question route, and RaisedBy who raised it, supervisor
+	// or operator; both are empty for any other fault. Withdrawn is the
+	// evidence the supervisor gave when it withdrew the question; empty
+	// unless it did.
+	QuestionKind string
+	RaisedBy     string
+	Withdrawn    string
+
 	Holds []PlatformFaultHold
 }
 
@@ -62,8 +71,8 @@ func (s *Store) SavePlatformFault(ctx context.Context, fault PlatformFault) erro
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO platform_faults (id, signature, class, step, cause, detail, action, action_where, recorded_at,
-			action_done_at, action_done_by, last_check_at, last_check_error, resolved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			action_done_at, action_done_by, last_check_at, last_check_error, resolved_at, question_kind, raised_by, withdrawn)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			signature        = excluded.signature,
 			class            = excluded.class,
@@ -77,9 +86,13 @@ func (s *Store) SavePlatformFault(ctx context.Context, fault PlatformFault) erro
 			action_done_by   = excluded.action_done_by,
 			last_check_at    = excluded.last_check_at,
 			last_check_error = excluded.last_check_error,
-			resolved_at      = excluded.resolved_at`,
+			resolved_at      = excluded.resolved_at,
+			question_kind    = excluded.question_kind,
+			raised_by        = excluded.raised_by,
+			withdrawn        = excluded.withdrawn`,
 		fault.ID, fault.Signature, fault.Class, fault.Step, fault.Cause, fault.Detail, fault.Action, fault.ActionWhere,
 		fault.RecordedAt, fault.ActionDoneAt, fault.ActionDoneBy, fault.LastCheckAt, fault.LastCheckError, fault.ResolvedAt,
+		fault.QuestionKind, fault.RaisedBy, fault.Withdrawn,
 	); err != nil {
 		return fmt.Errorf("save platform fault %q: %w", fault.ID, err)
 	}
@@ -108,7 +121,7 @@ func (s *Store) SavePlatformFault(ctx context.Context, fault PlatformFault) erro
 func (s *Store) LoadOpenPlatformFaults(ctx context.Context) ([]PlatformFault, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, signature, class, step, cause, detail, action, action_where, recorded_at,
-			action_done_at, action_done_by, last_check_at, last_check_error, resolved_at
+			action_done_at, action_done_by, last_check_at, last_check_error, resolved_at, question_kind, raised_by, withdrawn
 		FROM platform_faults WHERE resolved_at = '' ORDER BY recorded_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("load open platform faults: %w", err)
@@ -118,7 +131,8 @@ func (s *Store) LoadOpenPlatformFaults(ctx context.Context) ([]PlatformFault, er
 	for rows.Next() {
 		var f PlatformFault
 		if err := rows.Scan(&f.ID, &f.Signature, &f.Class, &f.Step, &f.Cause, &f.Detail, &f.Action, &f.ActionWhere,
-			&f.RecordedAt, &f.ActionDoneAt, &f.ActionDoneBy, &f.LastCheckAt, &f.LastCheckError, &f.ResolvedAt); err != nil {
+			&f.RecordedAt, &f.ActionDoneAt, &f.ActionDoneBy, &f.LastCheckAt, &f.LastCheckError, &f.ResolvedAt,
+			&f.QuestionKind, &f.RaisedBy, &f.Withdrawn); err != nil {
 			rows.Close() //nolint:errcheck,gosec // the scan error is the one reported
 			return nil, fmt.Errorf("scan platform fault: %w", err)
 		}

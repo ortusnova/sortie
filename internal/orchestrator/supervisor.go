@@ -11,10 +11,8 @@ import (
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
-	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/persistence"
-	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/workspace"
 )
 
@@ -466,34 +464,6 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 	}
 }
 
-// FileIssue creates an open story in the tracker's project, in
-// tracker.backlog_state when it is set, so it waits for a person and is
-// not dispatched. Its plan key starts with "supervisor-".
-func (s Supervisor) FileIssue(ctx context.Context, title, body string) SupervisorResult {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return SupervisorResult{Status: SupervisorPrecondition, Code: "invalid_request", Message: "title must not be empty"}
-	}
-	creator, ok := s.o.trackerAdapter.(domain.IssueCreator)
-	if !ok {
-		return SupervisorResult{Status: SupervisorUnsupported, Message: "the tracker adapter cannot create issues"}
-	}
-	fctx, cancel := context.WithTimeout(ctx, supervisorForgeBound)
-	defer cancel()
-	created, err := creator.CreateIssue(fctx, domain.NewIssue{
-		Title:   title,
-		Body:    body,
-		Kind:    domain.IssueKindStory,
-		PlanKey: "supervisor-" + strconv.FormatInt(time.Now().UnixNano(), 36),
-		State:   s.o.workflowManager.Config().Tracker.BacklogState,
-	})
-	if err != nil {
-		return SupervisorResult{Status: SupervisorUpstreamFailed, Message: "the tracker refused the issue: " + err.Error()}
-	}
-	logging.WithIssue(s.o.logger, created.ID, created.Identifier).Info("issue filed by the supervisor")
-	return SupervisorResult{Status: SupervisorDone, IssueID: created.ID, Identifier: created.Identifier}
-}
-
 // criteriaLetMerge reports whether the story's latest criteria verdict
 // lets the supervisor merge its pull request at head, and the refusal
 // when it does not. A story no criteria review judged is not held. A
@@ -709,129 +679,4 @@ func (s Supervisor) pullRequestOf(ctx context.Context, issue supervisedIssue) (p
 		return pullRequestRef{}, precondition(issue, "no_pull_request", fmt.Sprintf("issue %s is parked and no open pull request has its branch %s in %s/%s", issue.identifier, branch, owner, name)), false
 	}
 	return pullRequestRef{Number: found.Number, Owner: owner, Repo: name, Branch: branch}, SupervisorResult{}, true
-}
-
-// PlatformFaultClassSupervisorQuestion is the class of the platform fault
-// that carries a question the supervisor raised for a person.
-const PlatformFaultClassSupervisorQuestion = "supervisor_question"
-
-// supervisorQuestionStep is the step of a supervisor question's fault.
-const supervisorQuestionStep = "supervisor"
-
-// SupervisorQuestion is a question the supervisor raises for a person:
-// the exact action, where to take it, the stories it holds, and what the
-// supervisor already checked. Cause says why the action is needed; it may
-// be empty.
-type SupervisorQuestion struct {
-	Action  string
-	Where   string
-	Stories []string
-	Checked string
-	Cause   string
-}
-
-// SupervisorQuestionResult is the answer to [Supervisor.AskPerson]. Fault
-// is the platform fault that carries the question; Existing reports that
-// an open question named the same action and place already, so the
-// stories joined it instead of a second question.
-type SupervisorQuestionResult struct {
-	SupervisorResult
-	Fault    SnapshotPlatformFault
-	Existing bool
-}
-
-// questionSignature is the signature that makes one question of one
-// decision: its action and place, case and spacing folded.
-func questionSignature(action, where string) string {
-	fold := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
-	return PlatformFaultClassSupervisorQuestion + ": " + fold(action) + " @ " + fold(where)
-}
-
-// AskPerson raises q for a person through the person-action path: a
-// platform fault whose person action is q's action and place, whose
-// detail is what the supervisor checked, and which holds q's stories out
-// of dispatch until a person marks the action done and its check passes.
-// A question with the action and place of an open one adds its stories to
-// that one. A story with a running worker is refused, since the hold
-// would take its claim.
-func (s Supervisor) AskPerson(ctx context.Context, q SupervisorQuestion) SupervisorQuestionResult {
-	q.Action, q.Where, q.Checked, q.Cause = strings.TrimSpace(q.Action), strings.TrimSpace(q.Where), strings.TrimSpace(q.Checked), strings.TrimSpace(q.Cause)
-	stories := make([]string, 0, len(q.Stories))
-	for _, id := range q.Stories {
-		if id = strings.TrimSpace(id); id != "" && !slices.Contains(stories, id) {
-			stories = append(stories, id)
-		}
-	}
-	if q.Action == "" || q.Where == "" || q.Checked == "" || len(stories) == 0 {
-		return SupervisorQuestionResult{SupervisorResult: SupervisorResult{
-			Status: SupervisorPrecondition, Code: "invalid_request",
-			Message: "a question names the action, where to take it, the stories it holds, and what the supervisor checked",
-		}}
-	}
-	var result SupervisorQuestionResult
-	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
-		result = s.askOnLoop(loopCtx, q, stories, time.Now().UTC())
-	}); !ok {
-		return SupervisorQuestionResult{SupervisorResult: r}
-	}
-	return result
-}
-
-func (s Supervisor) askOnLoop(ctx context.Context, q SupervisorQuestion, stories []string, now time.Time) SupervisorQuestionResult {
-	state := s.o.state
-	issues := make([]supervisedIssue, 0, len(stories))
-	for _, identifier := range stories {
-		issue, known := lookupSupervised(state, identifier)
-		switch {
-		case !known:
-			return SupervisorQuestionResult{SupervisorResult: unknownIssue(identifier)}
-		case issue.running:
-			return SupervisorQuestionResult{SupervisorResult: precondition(issue, "running", "issue "+identifier+" has a running worker")}
-		}
-		issues = append(issues, issue)
-	}
-	signature := questionSignature(q.Action, q.Where)
-	var fault *PlatformFault
-	for _, f := range state.PlatformFaults {
-		if f.Signature == signature {
-			fault = f
-		}
-	}
-	existing := fault != nil
-	if !existing {
-		cause := q.Cause
-		if cause == "" {
-			cause = "The supervisor asks a person to act."
-		}
-		fault = &PlatformFault{
-			ID:          platformFaultID(signature, now),
-			Signature:   signature,
-			Class:       PlatformFaultClassSupervisorQuestion,
-			Step:        supervisorQuestionStep,
-			Cause:       redact.Mask(cause),
-			Detail:      redact.Mask(q.Checked),
-			Action:      &failcause.PersonAction{Action: q.Action, Where: q.Where},
-			RecordedAt:  now,
-			NextCheckAt: now.Add(PlatformFaultCheckInterval),
-		}
-		state.PlatformFaults[fault.ID] = fault
-	}
-	log := s.o.logger.With(slog.String("platform_fault_id", fault.ID))
-	for _, issue := range issues {
-		holdUnderPlatformFault(ctx, state, s.o.store, fault, PlatformFaultHold{
-			IssueID: issue.issueID, Identifier: issue.identifier, HeldAt: now,
-		}, logging.WithIssue(log, issue.issueID, issue.identifier))
-	}
-	log.Info("supervisor raised a question for a person",
-		slog.String("person_action", redact.Mask(q.Action)),
-		slog.String("where", redact.Mask(q.Where)),
-		slog.Int("stories", len(fault.Holds)),
-		slog.Bool("existing", existing),
-	)
-	s.o.notifyObservers()
-	return SupervisorQuestionResult{
-		SupervisorResult: SupervisorResult{Status: SupervisorDone, IssueID: issues[0].issueID, Identifier: issues[0].identifier},
-		Fault:            snapshotPlatformFault(fault),
-		Existing:         existing,
-	}
 }

@@ -33,8 +33,22 @@ What to do:
 
 Ask a person, with `POST /api/v1/supervisor/questions`, for a credential, a
 key, a spec or story approval, an operator decision, or any action whose
-effect you cannot check. Name the exact `action`, `where` to take it, the
-`stories` it holds, and what you already `checked`. Ask one question per
-decision, and never ask what you can find out yourself.
+effect you cannot check. Give its `kind` (`credential`, `key`, `approval`,
+`decision`, `host_action`, or `live_proof`), and name the exact `action`,
+`where` to take it, the `stories` it holds, and what you already `checked`.
+Ask one question per decision, and never ask what you can find out yourself:
+a question of the same story and kind joins the open one.
+
+When a question you raised went stale, because the forge or the state
+overtook it, withdraw it with
+`POST /api/v1/supervisor/questions/<platform fault id>/withdraw` and the
+`evidence`, adding a `replacement` question when one still applies. The
+stories it held are then free. Withdraw only your own questions: their
+`raised_by` is `supervisor`.
+
+File an issue with `POST /api/v1/issues` for a platform defect
+(`kind: platform_defect`) or a story's follow-up work (`kind: follow_up`),
+naming the `stories` or the fault `signature` it concerns. Filing the same
+issue again adds your evidence to the open one.
 
 Do nothing else. When nothing needs you, end the session.

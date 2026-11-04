@@ -2892,6 +2892,26 @@
             }
           ]
         },
+        "question_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raised_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "recorded_at": {
           "format": "date-time",
           "type": "string"
@@ -2929,7 +2949,9 @@
         "last_check_at",
         "last_check_error",
         "next_check_at",
-        "checking"
+        "checking",
+        "question_kind",
+        "raised_by"
       ],
       "type": "object"
     },
@@ -6583,6 +6605,51 @@
       ],
       "type": "object"
     },
+    "SupervisorIssueResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "merge_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "issue_identifier",
+        "issue_id",
+        "existing",
+        "pull_request",
+        "merge_commit"
+      ],
+      "type": "object"
+    },
     "SupervisorQuestionResponse": {
       "properties": {
         "action": {
@@ -6597,6 +6664,21 @@
       },
       "required": [
         "action",
+        "existing",
+        "platform_fault"
+      ],
+      "type": "object"
+    },
+    "SupervisorReplacementResponse": {
+      "properties": {
+        "existing": {
+          "type": "boolean"
+        },
+        "platform_fault": {
+          "$ref": "#/$defs/PlatformFaultResponse"
+        }
+      },
+      "required": [
         "existing",
         "platform_fault"
       ],
@@ -6926,6 +7008,32 @@
         "issue_identifier",
         "detail",
         "at"
+      ],
+      "type": "object"
+    },
+    "SupervisorWithdrawResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "platform_fault": {
+          "$ref": "#/$defs/PlatformFaultResponse"
+        },
+        "replacement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorReplacementResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "platform_fault",
+        "replacement"
       ],
       "type": "object"
     },

@@ -1,4 +1,4 @@
--- Migration 1017 (fork range): the state digest of each supervisor session
+-- Migration 1018 (fork range): the state digest of each supervisor session
 --
 -- digest is the state digest Sortie computed when it started the session.
 -- A session starts only when the digest differs from the last session's,

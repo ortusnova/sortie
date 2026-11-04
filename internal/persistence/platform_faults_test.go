@@ -71,3 +71,37 @@ func TestPlatformFaults_SaveLoadAndResolve(t *testing.T) {
 		t.Errorf("holds of the resolved fault = %d, %v, want none", holds, err)
 	}
 }
+
+func TestPlatformFaults_QuestionKindRaiserAndWithdrawal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateOrFatal(t, s)
+
+	q := PlatformFault{
+		ID: "pf-q", Signature: "supervisor_question: prove o/r#12 @ the workbench", Class: "supervisor_question", Step: "supervisor",
+		Action: "Prove o/r#12", ActionWhere: "the workbench", RecordedAt: "2026-11-02T10:00:00Z",
+		QuestionKind: "live_proof", RaisedBy: "supervisor",
+		Holds: []PlatformFaultHold{{IssueID: "id-77", Identifier: "ONS-77", HeldAt: "2026-11-02T10:00:00Z"}},
+	}
+	if err := s.SavePlatformFault(ctx, q); err != nil {
+		t.Fatalf("SavePlatformFault: %v", err)
+	}
+	open, err := s.LoadOpenPlatformFaults(ctx)
+	if err != nil || len(open) != 1 || !reflect.DeepEqual(open[0], q) {
+		t.Fatalf("LoadOpenPlatformFaults() = %+v, %v, want %+v", open, err, q)
+	}
+
+	q.Withdrawn, q.ResolvedAt = "the forge shows o/r#12 merged and reverted", "2026-11-02T11:00:00Z"
+	if err := s.SavePlatformFault(ctx, q); err != nil {
+		t.Fatalf("SavePlatformFault(withdrawn): %v", err)
+	}
+	var withdrawn string
+	if err := s.db.QueryRowContext(ctx, `SELECT withdrawn FROM platform_faults WHERE id = 'pf-q'`).Scan(&withdrawn); err != nil || withdrawn != q.Withdrawn {
+		t.Errorf("withdrawn = %q, %v, want the evidence", withdrawn, err)
+	}
+	if open, err := s.LoadOpenPlatformFaults(ctx); err != nil || len(open) != 0 {
+		t.Errorf("LoadOpenPlatformFaults() after the withdrawal = %+v, %v, want none", open, err)
+	}
+}
