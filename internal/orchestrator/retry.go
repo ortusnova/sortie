@@ -163,6 +163,13 @@ type HandleRetryTimerParams struct {
 	// attempt and takes no slot. Nil holds none.
 	WorkerWait func(domain.Issue) *WorkerHold
 
+	// HealthHold reports whether a failing health check holds the
+	// re-fetched issue and, with hold set, holds it under the check's
+	// platform fault, which releases its claim; its retry entry is then
+	// deleted. A reaction continuation is not held but re-armed. Nil holds
+	// none.
+	HealthHold func(issue domain.Issue, hold bool) bool
+
 	// EgressHold returns the hold an invalid egress policy of the
 	// re-fetched issue's repository gives its remote job, and nil when
 	// the policy is valid or not read. A retry it holds keeps its attempt
@@ -934,6 +941,23 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			)
 			return
 		}
+	}
+
+	if continuation := isKnownReactionKind(popped.ReactionKind); params.HealthHold != nil && params.HealthHold(issue, !continuation) {
+		if params.HostPool != nil && host != "" {
+			params.HostPool.ReleaseHost(issueID)
+		}
+		if continuation {
+			rearmHeld(time.Now().Add(time.Duration(params.PollIntervalMS) * time.Millisecond))
+			log.Info("health check fails, rechecking the reaction retry")
+			return
+		}
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry for an issue a health check holds",
+				slog.Any("error", err),
+			)
+		}
+		return
 	}
 
 	if params.MakeWorkerFn == nil {

@@ -326,6 +326,10 @@ type OrchestratorParams struct {
 	// the default check.
 	PlatformFaultChecker PlatformFaultChecker
 
+	// SCMTokenInspector reports what the forge says of the token Sortie
+	// calls it with, for the health check. Nil asserts it on SCMAdapter.
+	SCMTokenInspector domain.SCMTokenInspector
+
 	// SupervisorToken is server.supervisor_token, which a supervisor
 	// session receives to act through Sortie's API. Empty starts no
 	// supervisor session.
@@ -471,6 +475,16 @@ type Orchestrator struct {
 	// faultChecker checks an open platform fault again; nil uses
 	// [Orchestrator.checkPlatformFault].
 	faultChecker PlatformFaultChecker
+
+	// health is the state of Sortie's own health checks; healthNow, when
+	// set, is the clock they read. tokenInspector is the SCM adapter's
+	// token report, nil when it has none; storyChanges, when set, reads
+	// the paths an issue's branch changes in place of
+	// [Orchestrator.storyChangedPaths].
+	health         healthState
+	healthNow      func() time.Time
+	tokenInspector domain.SCMTokenInspector
+	storyChanges   func(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue) ([]string, error)
 
 	// readEgress reads a repository's egress policy at the tip of its
 	// base branch; nil reads it from the repository's mirror.
@@ -627,6 +641,8 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		abandonCh:                         params.AbandonCh,
 		hostName:                          faultHostName(params.HostName),
 		faultChecker:                      params.PlatformFaultChecker,
+		health:                            newHealthState(),
+		tokenInspector:                    params.SCMTokenInspector,
 		supervisorToken:                   params.SupervisorToken,
 		supervisorWorkDir:                 params.SupervisorDir,
 	}
@@ -654,6 +670,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
 		o.prFinder, _ = params.SCMAdapter.(domain.PullRequestFinder)
+		if o.tokenInspector == nil {
+			o.tokenInspector, _ = params.SCMAdapter.(domain.SCMTokenInspector)
+		}
 	}
 	if params.CIProvider != nil {
 		o.ciProvider = observeCI(params.CIProvider, o.scmHealth)
@@ -850,6 +869,7 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			LabelFixReactionConfigured:        o.labelFixReactionConfigured,
 			MergeCompletionReactionConfigured: o.mergeCompletionReactionConfigured,
 		})
+		o.noteAgentCredentialRefused(ctx, result)
 		o.recordOutcome(result, outcome)
 		o.takeHandoffParts(ctx, result)
 	}
@@ -984,6 +1004,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				},
 				WorkerWait: func(issue domain.Issue) *WorkerHold {
 					return o.workerWait(cfg, issue)
+				},
+				HealthHold: func(issue domain.Issue, hold bool) bool {
+					return o.healthHold(ctx, cfg, issue, hold) != nil
 				},
 				EgressHold: func(issue domain.Issue) *EgressHold {
 					hold, read := o.egressHold(ctx, cfg, issue, newEgressPass(o.egressReader()))
@@ -1240,6 +1263,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 
 	o.advanceHandoffParts(ctx, time.Now().UTC())
 	o.startDueFaultChecks(ctx, time.Now())
+	o.runDueHealthChecks(ctx, cfg)
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
@@ -1479,6 +1503,10 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		if wait := o.workerWait(cfg, issue); wait != nil {
 			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
 			o.once.deferFor(issue.ID, deferTick)
+			continue
+		}
+		if o.healthHold(ctx, cfg, issue, true) != nil {
+			o.once.declined(issue, SkipIneligible)
 			continue
 		}
 		adapter, adapterErr := o.agentAdapterByKind(resolution.AgentKind)

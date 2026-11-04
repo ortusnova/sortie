@@ -123,3 +123,10 @@ func pullRequestOpeners(shared domain.SCMAdapter, sharedProvider string) orchest
 		return opener, nil
 	}
 }
+
+// tokenInspectorOf returns the token report of the shared SCM adapter,
+// or nil when there is none or it reports nothing of its token.
+func tokenInspectorOf(shared domain.SCMAdapter) domain.SCMTokenInspector {
+	inspector, _ := shared.(domain.SCMTokenInspector)
+	return inspector
+}

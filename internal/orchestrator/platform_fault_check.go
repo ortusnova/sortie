@@ -28,8 +28,12 @@ func faultHostName(name string) string {
 // of the export step is probed by pushing again what a held story's
 // refused export imported, which passes once the push does. Otherwise a
 // fault only a person can clear passes once its action is marked done,
-// and any other fault passes, so its stories run again.
+// and any other fault passes, so its stories run again. A fault a health
+// check recorded is checked by [Orchestrator.checkHealthFault].
 func (o *Orchestrator) checkPlatformFault(ctx context.Context, check PlatformFaultCheck) error {
+	if check.Step == healthStep {
+		return o.checkHealthFault(ctx, check)
+	}
 	if probed, err := o.probePush(ctx, check); probed {
 		return err
 	}
@@ -115,6 +119,7 @@ func (o *Orchestrator) startDueFaultChecks(ctx context.Context, now time.Time) {
 func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string, checkErr error) (*PlatformFault, bool) {
 	now := time.Now()
 	f, resolved := applyFaultCheck(ctx, o.state, o.store, faultID, checkErr, now, o.logger)
+	o.noteHealthFaultChecked(f, resolved)
 	if resolved {
 		o.handoffFaultResolved(ctx, f, now.UTC())
 	}

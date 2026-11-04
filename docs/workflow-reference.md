@@ -26,6 +26,7 @@
   - [2.11 `notifications` (operator notification backends)](#211-notifications-operator-notification-backends)
   - [2.12 `environment` — Execution Environment](#212-environment--execution-environment)
   - [2.13 `supervisor` — Supervisor Session](#213-supervisor--supervisor-session)
+  - [2.14 `health` — Health Checks Before Runs Fail](#214-health--health-checks-before-runs-fail)
 - [3. Environment Variable Overrides](#3-environment-variable-overrides)
   - [3.1 Source Precedence](#31-source-precedence)
   - [3.2 Curated Variable List](#32-curated-variable-list)
@@ -137,7 +138,7 @@ After parsing, the loader produces a struct with three fields:
 
 ### 2.1 Top-Level Keys
 
-The core schema recognizes twelve top-level keys:
+The core schema recognizes thirteen top-level keys:
 
 ```yaml
 tracker: # Issue tracker connection and query settings
@@ -152,6 +153,7 @@ dispatch: # Rule-based dispatch routing
 notifications: # Operator notification backends (notify_operator tool)
 environment: # Where workspace code runs: on the host or on workers
 supervisor: # The supervisor agent session, its triggers and its daily budget
+health: # What Sortie's own health check reads, such as a deploy kit's state file
 ```
 
 **Unknown top-level keys are ignored** by the core schema for forward compatibility. They are collected into an `Extensions` map and made available to consumers (e.g., `server`, `worker`, adapter-specific blocks like `claude-code`).
@@ -590,7 +592,7 @@ agent:
 **The same failure twice:** A run that ends on an error is given a failure signature, kept in run history as `failure_signature`: the step that failed (such as `export` for the push of the issue branch and its pull request, or `agent_session_start`), the failure's class, and the first line of its error with the values that change from run to run (issue keys, commit hashes, paths, URLs, times, durations, process IDs) replaced by placeholders. When an issue's run fails with the same signature as the issue's previous run, the failure is stopped: Sortie schedules no backoff retry and routes it by its fault class to whoever can act on it.
 
 - A **story fault** is one the story's own agent can fix: a failing `make test`, `make lint`, `make check` or `make vet`, failing tests, an agent turn that failed or ran out of time, or a branch that moved upstream or has conflicts. Sortie starts one new session of the story's agent at once, within the issue's budgets, with the failure appended to its first-turn prompt whatever your template says: a section headed `## The previous runs failed` with the failed step, the error's first line, and the failing step's whole output (as `error_detail` keeps it) as JSON strings. The retry shows the trigger `story_fault`. When that session fails the same way, Sortie parks the issue with the reason `repeated_failure` under the primary-dispatch parking label (the `review_comments` escalation label, `needs-human` by default), keeping the error's first line as the park's statement. The issue is released like any park, by removing the label, moving the issue to another state, or answering it through `POST /api/v1/{identifier}/answer`, and the park spends no session, so the issue keeps the rest of its `max_sessions`.
-- A **platform fault** is one no session of the story can fix: a token without a scope, invalid credentials, no access to the repository, a missing agent runtime, a `WORKFLOW.md` setting, a lost worker, or an execution environment that does not start. Sortie records it once, with its cause and every story it holds, and holds the story: no retry, no dispatch, no session spent. Any other story whose run then fails with the same signature is held under the same fault on its first failure. Sortie checks the fault again every 5 minutes; a fault of the `export` step is checked by pushing again the branch a held story's refused export left in the repository mirror. When the check passes, the held stories run again on the next poll with the budgets they have left. A platform fault only a person can clear also carries a **person action**: the exact action and where to take it, such as `Give taichi's GitHub token "Workflows: Read and write"` for a push refused for the `workflow` scope, naming the host Sortie runs on. `GET /api/v1/state` lists each fault in `platform_faults`, and `POST /api/v1/platform-faults/{id}/action-done` marks its action done and checks it at once; without a probe for its step, a person-action fault passes its check once its action is marked done. A signature in no fault class is a platform fault with the person action to read the cause and clear it. Faults and their holds survive a restart.
+- A **platform fault** is one no session of the story can fix: a token without a scope, invalid credentials, no access to the repository, a missing agent runtime, a `WORKFLOW.md` setting, a lost worker, or an execution environment that does not start. Sortie records it once, with its cause and every story it holds, and holds the story: no retry, no dispatch, no session spent. Any other story whose run then fails with the same signature is held under the same fault on its first failure. Sortie checks the fault again every 5 minutes; a fault of the `export` step is checked by pushing again the branch a held story's refused export left in the repository mirror. When the check passes, the held stories run again on the next poll with the budgets they have left. A platform fault only a person can clear also carries a **person action**: the exact action and where to take it, such as `Give taichi's GitHub token "Workflows: Read and write"` for a push refused for the `workflow` scope, naming the host Sortie runs on. `GET /api/v1/state` lists each fault in `platform_faults`, and `POST /api/v1/platform-faults/{id}/action-done` marks its action done and checks it at once; without a probe for its step, a person-action fault passes its check once its action is marked done. A signature in no fault class is a platform fault with the person action to read the cause and clear it. Faults and their holds survive a restart. Sortie's own health checks record some of the same faults before any run fails on them; see [Section 2.14](#214-health--health-checks-before-runs-fail).
 
 The fault classes and the signatures in each are a fixed list, given in the architecture's Section 8.4 (Stopped failure routing). A failure of a transient class keeps the retry backoff however often it repeats: `network_timeout` (a network operation that timed out), `server_error` (a 5xx answer, such as a GitHub 502), `rate_limit` (an HTTP 429 or an answer that names a rate limit), and `usage_limit` (a provider usage limit, which waits for its reset). A `label-review` or `label-fix` pass keeps its backoff too.
 
@@ -2282,6 +2284,78 @@ Sortie then appends a section that holds the API URL, the supervisor token, ever
 **Pause and budget.** `POST /api/v1/supervisor/pause` stops the running session (outcome `paused`) and starts no new one; triggers keep coming in and wait. `POST /api/v1/supervisor/resume` starts a session at once for what waited. The pause is in memory and a restart clears it. Each session is stored in the `supervisor_sessions` table, so the day's budget and the last session outlive a restart. `GET /api/v1/state` serves the supervisor's status, its last trigger and its budget use as `supervisor`.
 
 **Reload.** The section reloads. A new prompt path, sweep interval or budget applies from the next loop iteration; a running session finishes with the settings it started with. Removing the section lets a running session finish and starts no new one.
+
+---
+
+### 2.14 `health` — Health Checks Before Runs Fail
+
+```yaml
+health:
+  deploy_state: ~/.local/state/stage0/deploy.json
+  credentials:
+    - name: claude
+      expires_command: jq -r .claudeAiOauth.expiresAt ~/.claude/.credentials.json
+      login: the Claude Code login of the sortie user
+    - name: openrouter
+      env: OPENROUTER_API_KEY
+```
+
+Sortie checks what its runs use before a run fails on it: every 5 minutes on the poll tick, and again before a dispatch when the last check is more than a minute old. A check that fails is recorded as a [platform fault](#post-apiv1platform-faultsidaction-done--platform-faults) of the step `health`, with a person action that says what to do and where, and is served in `platform_faults` on `GET /api/v1/state`, so the workbench asks it as a question before any session hits it. When the check passes again, the fault is resolved and the stories it holds run on the same poll. The checks:
+
+| Check | Fails when | Class | Holds dispatch |
+| ----- | ---------- | ----- | -------------- |
+| Each credential of `health.credentials` | Its `env` variable is not set in Sortie's environment, its `expires_command` fails or prints no time, or it expires within 30 minutes or has expired. Sortie runs the command and reads the variable anew for each check, so a credential renewed at its source passes at once. | `credentials` | Yes |
+| Each agent kind's credential | The agent runtime refused or could not confirm its credential in a session's credential verification. Only the runtime can ask its provider, so this check is that verification: the first refusal is recorded at once, and every later dispatch of that agent kind is held before its session. It passes once a person signs the runtime in again and marks its action done. | `credentials` | Stories of that agent kind |
+| The token of the SCM adapter | The forge refuses it, or says it expires within 30 minutes or has expired. On GitHub, the expiry is the one GitHub reports for a personal access token that has one. | `credentials` | Yes |
+| The token's scopes against a story's change | Before a story is dispatched, Sortie reads the paths the story's branch changes against the base branch in the host mirror of its repository (the branch the mirror last fetched, and an import whose push was refused), asks the SCM adapter which scopes a push of such a change needs, and the forge lists the token's scopes without one of them. On GitHub, a change under `.github/workflows/` needs the `workflow` scope of a classic token. A forge that lists no scopes, such as for a GitHub fine-grained token, is not checked. | `token_scope` | That story |
+| The deploy state file `health.deploy_state` | See [Deploy state file](#deploy-state-file). | `deploy` | Yes |
+| Each worker under `environment.kind: remote` | It has not checked in for 10 minutes, or for three heartbeat intervals when that is longer. | `machine` | No |
+
+A check that holds dispatch holds every story that would be dispatched while it fails, retries included, under its fault, so the question names them; a reaction run waits instead, without being held. A check that could not run, such as a forge that did not answer, leaves its fault as it was. A `credentials` fault passes only once its check passes; marking its action done checks it again at once. A `deploy` or `machine` fault also passes when a person marks its action done, so the stories run on as things are; the check then raises it again only after it once passed. A `token_scope` fault is checked every 5 minutes and when its action is marked done, and passes once the forge lists the scope.
+
+The person action of a `credentials` fault for a listed credential names its `login`, or the credential itself when it sets none: `Renew the Claude Code login of the sortie user on taichi`.
+
+| Field | Type | Required | Default | Description |
+| ----- | ---- | -------- | ------- | ----------- |
+| `health.deploy_state` | path string | No | _(none)_ | The deploy state file a deploy kit, such as the stage-0 kit, writes for this Sortie. `~` and `$VAR` are expanded; the path must be absolute then. Without it, Sortie checks no deploy. |
+| `health.credentials` | list of maps | No | `[]` | The credentials the runs use that the health check watches. Without it, Sortie watches no credential's expiry; the agent kinds' credential verification and the SCM token are checked either way. |
+
+`health.credentials[]` fields; each entry sets `env`, `expires_command`, or both, and any other key fails validation:
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | **Yes** | The credential's name, `[A-Za-z0-9_-]+`, unique in the list. The fault's signature and cause name it. |
+| `env` | string | No | A variable of Sortie's own environment that holds the value, as under `local` or `worker.ssh_hosts`, where sessions inherit or carry it. The check fails while it is not set. Without `expires_command`, a value that is a JSON Web Token with an `exp` claim gives the expiry. Under `remote`, where the worker's egress proxy holds the value and Sortie reads none, leave it out. |
+| `expires_command` | string | No | A shell command, run with `sh -c` on Sortie's host at each check and bounded to 30 seconds, whose standard output is when the value expires: an RFC 3339 time, or a Unix time in seconds or milliseconds, such as `jq -r .claudeAiOauth.expiresAt ~/.claude/.credentials.json`. It should read the place the value is renewed in, so a renewed value shows its new expiry. |
+| `login` | string | No | The login that renews the value, as a person knows it, such as `the Claude Code login of the sortie user`. The health check's question names it. |
+
+#### Deploy state file
+
+The kit writes one JSON object, replacing the whole file at once, each time it checks or deploys, and at least once an hour:
+
+```json
+{
+  "status": "succeeded",
+  "commit": "4af7b7bb1c0e5d6f8a9b0c1d2e3f405162738495",
+  "main": "01ea6aa9f3b2c1d0e9f8a7b6c5d4e3f201928374",
+  "behind_since": "2026-11-03T09:12:00Z",
+  "error": "",
+  "updated_at": "2026-11-03T09:40:00Z"
+}
+```
+
+| Field | Type | Required | Meaning |
+| ----- | ---- | -------- | ------- |
+| `status` | string | Yes | The last deploy's outcome: `succeeded`, `failed`, or `deploying` while one runs. |
+| `commit` | string | No | The commit of main that is deployed. |
+| `main` | string | No | The newest commit of main the kit saw. |
+| `behind_since` | RFC 3339 time or `null` | No | When the deployed commit first fell behind `main`; `null` or absent while it is `main`. |
+| `error` | string | No | Why the last deploy failed, when `status` is `failed`. |
+| `updated_at` | RFC 3339 time | Yes | When the kit last wrote the file. |
+
+The deploy check fails when the file cannot be read, is longer than 64 KiB, is not such an object, or lacks `status` or `updated_at`; when `updated_at` is more than an hour old; when `status` is `failed`; or when `behind_since` is more than 30 minutes old. Unknown fields are ignored.
+
+**Reload.** The section reloads: the next check reads the new path and credential list.
 
 ---
 
@@ -5052,7 +5126,7 @@ Both routes take the control token only; a session token gets `403`. A malformed
 
 #### `POST /api/v1/platform-faults/{id}/action-done` — Platform Faults
 
-A platform fault is a stopped failure no session of a story can fix (see **The same failure twice** in [Section 2.6](#26-agent--coding-agent-configuration)): a token without a scope, invalid credentials, a missing agent runtime. Sortie records it once and holds every story that stops on it, without spending their budgets. `GET /api/v1/state` lists each open fault in `platform_faults`; a fault only a person can clear carries a `person_action` saying exactly what to do and where, and the workbench asks it as a question naming the stories it holds.
+A platform fault is a stopped failure no session of a story can fix (see **The same failure twice** in [Section 2.6](#26-agent--coding-agent-configuration)): a token without a scope, invalid credentials, a missing agent runtime. Sortie records it once and holds every story that stops on it, without spending their budgets. Sortie's own health checks (see [Section 2.14](#214-health--health-checks-before-runs-fail)) record a platform fault of the step `health` before any run fails on the condition, and hold the stories it would fail. `GET /api/v1/state` lists each open fault in `platform_faults`; a fault only a person can clear carries a `person_action` saying exactly what to do and where, and the workbench asks it as a question naming the stories it holds.
 
 ```json
 {"platform_faults": [{
@@ -5084,8 +5158,8 @@ A platform fault is a stopped failure no session of a story can fix (see **The s
 | Field | Description |
 | --- | --- |
 | `id` | The fault's ID, which the route takes. |
-| `class` | The fault class: `token_scope`, `credentials`, `repository_access`, `agent_runtime`, `workflow_config`, `worker_lost`, `environment`, or `unclassified` for a signature in no class, `supervisor_question` for a question the supervisor raised, or one of `handoff_person`, `handoff_unplaced`, `handoff_check_failed` and `handoff_change` for a part of a story a session could not do (see [Work a session could not do](#sortiehandoffjson--work-a-session-could-not-do)). |
-| `step`, `signature` | The failed step and the failure signature the fault is recorded by. |
+| `class` | The fault class: `token_scope`, `credentials`, `repository_access`, `agent_runtime`, `workflow_config`, `worker_lost`, `environment`, or `unclassified` for a signature in no class, `supervisor_question` for a question the supervisor raised, one of `handoff_person`, `handoff_unplaced`, `handoff_check_failed` and `handoff_change` for a part of a story a session could not do (see [Work a session could not do](#sortiehandoffjson--work-a-session-could-not-do)), or, for a health check, `credentials`, `token_scope`, `deploy` or `machine`. |
+| `step`, `signature` | The failed step and the failure signature the fault is recorded by. A health check's fault has the step `health` and the signature `health \| <class> \| <check>`, such as `health \| credentials \| credential claude`. |
 | `cause`, `detail` | The first line of the error and the failing step's whole output, masked; for a `supervisor_question`, why the action is needed and what the supervisor already checked. |
 | `person_action` | `action`, `where`, and `done_at` and `done_by` once someone marked it done; `null` for a fault Sortie's own check clears (`worker_lost`, `environment`). |
 | `stories` | Every story the fault holds, in the order they were held. |
@@ -5103,7 +5177,7 @@ HTTP/1.1 200 OK
 {"resolved": true, "platform_fault": {"id": "pf-3f9a1c0b2d4e", "person_action": {"done_at": "2026-11-02T11:00:00Z", "done_by": "taichi", ...}, ...}}
 ```
 
-The request records the action done and checks the fault again at once; the answer waits for the check. `resolved` is `true` when the check passed: the fault leaves `platform_faults`, and its stories run again from the poll the release queues, with the budgets they have left. `false` keeps every hold and shows the check's error in `last_check_error`. A fault of the `export` step is checked by pushing the held branch again, so it passes only once the push does; any other fault with a person action passes once its action is marked done. When a scheduled check is already running, the answer does not wait: it serves the fault with `checking` set, and if that check fails, Sortie checks the fault again at once instead of 5 minutes later. The body is optional and `by` defaults to `operator`. The route takes the control token only; a session token gets `403`. An ID with no open fault gets `404` (`platform_fault_not_found`), a malformed body `400` (`invalid_request`), and `503` (`orchestrator_unavailable`) answers during shutdown.
+The request records the action done and checks the fault again at once; the answer waits for the check. `resolved` is `true` when the check passed: the fault leaves `platform_faults`, and its stories run again from the poll the release queues, with the budgets they have left. `false` keeps every hold and shows the check's error in `last_check_error`. A fault of the `export` step is checked by pushing the held branch again, so it passes only once the push does; a fault of the `health` step passes as [Section 2.14](#214-health--health-checks-before-runs-fail) says; any other fault with a person action passes once its action is marked done. When a scheduled check is already running, the answer does not wait: it serves the fault with `checking` set, and if that check fails, Sortie checks the fault again at once instead of 5 minutes later. The body is optional and `by` defaults to `operator`. The route takes the control token only; a session token gets `403`. An ID with no open fault gets `404` (`platform_fault_not_found`), a malformed body `400` (`invalid_request`), and `503` (`orchestrator_unavailable`) answers during shutdown.
 
 **A question the supervisor raises.** The supervisor (see [Section 2.13](#213-supervisor--supervisor-session)) asks a person through the same path. One question per decision, naming the exact action, where, the stories it holds, and what it already checked:
 
@@ -6698,6 +6772,7 @@ Sortie watches `WORKFLOW.md` for filesystem changes and automatically re-reads a
 | `environment.host_prefix`              | Future session launches, not in-flight sessions.                                               |
 | `environment.remote.*`                 | Future dispatches. A reload whose repository `provider` differs from an active SCM reaction's provider is rejected. |
 | `supervisor.*`                         | **Immediate**: the next loop iteration applies it; a running supervisor session keeps the settings it started with. |
+| `health.deploy_state`, `health.credentials` | **Immediate**: the next health check reads the new path and list. |
 | `db_path`                              | **No effect** — requires restart. In-memory config updated, but database connection unchanged. |
 | `reactions.<kind>.provider`                     | **No effect** — requires restart. Adapters are created once at process start.                  |
 | `reactions.ci_failure.max_retries`              | Future dispatches.                                                                             |
@@ -6991,6 +7066,19 @@ These errors are raised during typed config construction from the parsed front m
 | `config: environment.host_prefix: must not be an empty list; remove the key to launch without a host prefix` | `host_prefix: []`. | Remove the key, or list the prefix. |
 | `config: environment.host_prefix[<i>]: expected string, got <type>` | An element is not a string. | Quote the element. |
 | `config: environment.host_prefix[<i>]: must not be an empty string` | An element is `""`. | Remove the element or give it a value. |
+| `config: health: expected map, got <type>` | `health` is not a map. | Write a map. |
+| `config: health.deploy_state: must not be empty; remove the key when no kit deploys this Sortie` | `deploy_state` is blank. | Name the file, or remove the key. |
+| `config: health.deploy_state: "<p>" is not an absolute path after ~ and $VAR expansion` | `deploy_state` is relative. | Write an absolute path or one under `~`. |
+| `config: health.credentials: expected list, got <type>` | `credentials` is not a list. | Write a list of maps. |
+| `config: health.credentials[<i>]: expected mapping, got <type>` | An entry is not a map. | Write `{name, env}` or `{name, expires_command}`. |
+| `config: health.credentials[<i>].<key>: unknown key; valid: name, env, expires_command, login` | An entry sets another key, such as `file` or `command`. | Remove the key. |
+| `config: health.credentials[<i>].name: is required and must be a non-empty string` | `name` is absent or empty. | Name the credential. |
+| `config: health.credentials[<i>].name: invalid credential name "<v>"; use letters, digits, '_' and '-'` | `name` has another character. | Rename the entry. |
+| `config: health.credentials[<j>].name: credential name "<v>" is already used by health.credentials[<i>]` | Two entries share a name. | Give each entry its own name. |
+| `config: health.credentials[<i>].env: invalid environment variable name "<v>"` | `env` is not `[A-Za-z_][A-Za-z0-9_]*`. | Write the variable name. |
+| `config: health.credentials[<i>].expires_command: must not be empty; remove the key when the expiry is not known` | `expires_command` is blank. | Write the command, or remove the key. |
+| `config: health.credentials[<i>]: sets neither env nor expires_command; the health check needs one to watch the credential` | An entry sets only `name` and `login`. | Set `env`, `expires_command`, or both. |
+| `config: health.credentials[<i>].login: must not be empty; remove the key to name the credential instead` | `login` is blank. | Name the login, or remove the key. |
 | `config: environment.remote.credentials[<i>].file: is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it` | `file` or `command` under `remote`. | Remove the key; give the value to the worker's egress proxy. |
 | `config: environment.remote.<key>: unknown key: the remote kind does not support it; valid: <keys>` | `environment.remote`, one of its repositories, credentials, flows or `requires` blocks sets a key the remote kind does not know, such as `pass_env` or `allow_hosts`. The error names the first such key in full. | Remove the key. |
 | `config: environment.remote.egress.<entry>: <reason>` | `environment.remote.egress` breaks a rule of [Job egress policy](#job-egress-policy), such as `config: environment.remote.egress.hosts[0].reason: is required: say why the jobs reach models.opencode.ai`. Startup and reload; a reload keeps the previous configuration. | Fix the entry the error names. |
@@ -7165,6 +7253,8 @@ A flat reference of every configuration field, for quick lookup. The "Env Overri
 | `supervisor.sweep_interval_ms`          | integer          | `1800000`                    | —                                        | Time between sweeps; positive |
 | `supervisor.max_sessions_per_day`       | integer          | `48`                         | —                                        | Sessions per UTC day; positive |
 | `supervisor.max_tokens_per_day`         | integer          | `2000000`                    | —                                        | Tokens less cache reads per UTC day; positive; stops a session that reaches it |
+| `health.deploy_state`                   | path             | _(none)_                     | —                                        | Deploy state file the deploy kit writes; checked with the other health checks |
+| `health.credentials`                    | `[map]`          | `[]`                         | —                                        | `name` required; `env`, `expires_command` (one at least), `login`; each watched for presence and expiry |
 | **Extensions**                          |                  |                              |                                          |                                                                                        |
 | `server.port`                           | integer          | `7678`                       | —                                        | CLI `--port` overrides; `0` disables server                                    |
 | `server.host`                           | string (IP)      | `127.0.0.1`                  | —                                        | CLI `--host` overrides                                                         |

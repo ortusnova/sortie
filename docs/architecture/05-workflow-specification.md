@@ -49,6 +49,7 @@ Top-level keys:
 - `notifications`
 - `environment`
 - `supervisor`
+- `health`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -780,6 +781,17 @@ Fields:
 - `max_sessions_per_day` (positive integer, default `48`) and `max_tokens_per_day` (positive integer, default `2000000`): the daily budget, per UTC day, the tokens counted less cache reads.
 
 The section needs `server.supervisor_token`; startup fails without it. A session starts on a park, on a repeated stopped failure whose signature is in no fault class, on a pull request reaction without progress for an hour, on a poll that leaves a story slot free and dispatches nothing while stories are held, and on each sweep. Triggers that come while a session runs wait for the next one; triggers that come while the day's budget is spent are dropped. The session runs on Sortie's host in a directory beside the database, outside `agent.max_concurrent_agents`, for one turn bounded by `agent.turn_timeout_ms`, and is stopped when its tokens reach what the day's budget has left. Its prompt is the rendered template (variables `trigger`, `triggers`, `state`, `state_json`, `supervisor.token`, `supervisor.api_url`) followed by a section holding the token, the API URL, every trigger, and a state digest of the runs, retries, parks, holds, platform faults, reactions and plan blockers. The operator pauses and resumes it with `POST /api/v1/supervisor/pause` and `/resume`. A question it raises for a person is a platform fault of class `supervisor_question` (Section 8.4). Each session is stored in `supervisor_sessions` (Section 19.2). The section reloads; a running session keeps the settings it started with. The full reference is in the [workflow reference](../workflow-reference.md#213-supervisor--supervisor-session).
+
+#### 5.3.13 `health` (object, optional)
+
+What Sortie's own health checks (Section 8.4, Health checks before dispatch) read beyond the rest of the configuration. Absent, they check no deploy and watch no credential.
+
+Fields:
+
+- `deploy_state` (path, optional): the deploy state file a deploy kit writes for this Sortie, with `~` and `$VAR` expanded; it must be absolute then. Its format is in the [workflow reference](../workflow-reference.md#deploy-state-file).
+- `credentials` (list of objects, optional): the credentials the runs use that the checks watch, each `{name, env, expires_command, login}`. `name` is required, `[A-Za-z0-9_-]+` and unique in the list; at least one of `env` and `expires_command` is set. `env` names a variable of Sortie's own environment that holds the value, which the check finds set, and whose JSON Web Token `exp` claim gives the expiry when `expires_command` is absent; under `remote`, where the worker's egress proxy holds the value, it is left out. `expires_command` is a shell command run on Sortie's host at each check that prints when the value expires (RFC 3339, or Unix seconds or milliseconds). `login` names the login that renews the value, which the check's person action names. Any other key fails validation.
+
+The section reloads: the next health check reads the new path and list. The full reference is in the [workflow reference](../workflow-reference.md#214-health--health-checks-before-runs-fail).
 
 ### 5.4 Prompt Template Contract
 

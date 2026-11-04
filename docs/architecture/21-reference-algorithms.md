@@ -101,6 +101,8 @@ on_tick(state, once):
   state = apply_config_to_state(state, current_config())
   report_new_advisories(current_config().advisories() + worker_config().advisories())
 
+  state = run_due_health_checks(state, now())               // Section 8.4, Health checks before dispatch: every 5m
+
   state = reconcile_running_issues(state, skip_reactions=(once != null))   // once mode runs no reaction or label-command step on any path
 
   state.sweep_tick_counter += 1
@@ -185,6 +187,13 @@ on_tick(state, once):
       if not dispatchable:
         if once != null:
           once.defer(issue.id, tick)                     // evaluated again on the next tick
+        continue
+      # Runs the health checks again when the last run is older than 1m,
+      # then holds the issue under the fault of a check that holds every
+      # dispatch, or of a forge token without a scope its change needs.
+      if health_hold(state, issue, hold=true) is fault:
+        if once != null:
+          once.drop(issue.id)
         continue
       # An issue with a pending park release reads its comments once its
       # agent kind, template, and attempt settings pass (Section 16.4). A
@@ -1504,6 +1513,13 @@ on_retry_timer(issue_id, state, release_held=false):
       error: "no available orchestrator slots",
       session_id: retry_entry.session_id
     })
+
+  if health_hold(state, issue, hold=(retry_entry.reaction_kind is none)) is fault:
+    release_host(issue_id)
+    if retry_entry.reaction_kind is not none:
+      return rearm_retry(state, issue_id, retry_entry.attempt, state.poll_interval_ms, retry_entry, hold_rearmed=true)
+    store.delete_retry_entry(issue_id)                 // the hold released the claim
+    return state
 
   frozen = (retry_entry.agent_kind, retry_entry.template_id, retry_entry.rule_name)
   selection = retry_selection(state.cfg, template_held, frozen, issue, hop_route_of(state, issue_id))
