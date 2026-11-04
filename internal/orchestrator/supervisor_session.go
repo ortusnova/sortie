@@ -256,7 +256,7 @@ func noteIdleSlot(state *State, dispatched int, now time.Time) {
 	}
 	held := heldStoryIDs(state)
 	idle := dispatched == 0 && state.dispatchPause == nil && len(held) > 0 &&
-		GlobalAvailableSlots(state.MaxConcurrentAgents, len(state.Running)) > 0
+		GlobalAvailableSlots(state.MaxConcurrentAgents, AgentsRunning(state.Running)) > 0
 	if !idle {
 		s.idleSeen = ""
 		return

@@ -5,6 +5,8 @@ package orchestrator
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,11 +46,17 @@ type restartTracker struct {
 	holdRefresh bool
 	refreshed   chan struct{}
 	refreshOnce sync.Once
+	// holdDescription, when set, blocks the description read of a run
+	// until its context ends; describing is closed at the first one.
+	holdDescription bool
+	describing      chan struct{}
+	describingOnce  sync.Once
 }
 
 func newRestartTracker() *restartTracker {
 	issue := remoteRunIssue()
-	return &restartTracker{mockTrackerAdapter: &mockTrackerAdapter{}, issue: issue, state: issue.State, refreshed: make(chan struct{})}
+	return &restartTracker{mockTrackerAdapter: &mockTrackerAdapter{}, issue: issue, state: issue.State, refreshed: make(chan struct{}),
+		describing: make(chan struct{})}
 }
 
 func (r *restartTracker) current() domain.Issue {
@@ -67,7 +75,15 @@ func (r *restartTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, 
 	return []domain.Issue{issue}, nil
 }
 
-func (r *restartTracker) FetchIssueByID(context.Context, string) (domain.Issue, error) {
+func (r *restartTracker) FetchIssueByID(ctx context.Context, _ string) (domain.Issue, error) {
+	r.mu.Lock()
+	hold := r.holdDescription
+	r.mu.Unlock()
+	if hold {
+		r.describingOnce.Do(func() { close(r.describing) })
+		<-ctx.Done()
+		return domain.Issue{}, context.Cause(ctx)
+	}
 	return r.current(), nil
 }
 
@@ -130,11 +146,15 @@ type restartHarness struct {
 	cfg      config.ServiceConfig
 	// prepare adjusts each process before it runs.
 	prepare func(*Orchestrator)
+	// worker is checked in before the first process runs; starts counts
+	// the processes started.
+	worker *restartWorker
+	starts int
 }
 
 const restartHeader = "X-Sortie-Worker-Identity"
 
-func newRestartHarness(t *testing.T, maxTurns int, leaseTTL time.Duration) *restartHarness {
+func newRestartHarness(t *testing.T, maxTurns int) *restartHarness {
 	t.Helper()
 	f := newGitFixture(t)
 	h := &restartHarness{t: t, git: f, upstream: f.upstream(), dbPath: filepath.Join(t.TempDir(), "sortie.db"),
@@ -159,7 +179,7 @@ func newRestartHarness(t *testing.T, maxTurns int, leaseTTL time.Duration) *rest
 	}
 	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, HostPrefix: []string{envPath(t)},
 		Remote: config.RemoteConfig{IdentityHeader: restartHeader, Backend: "smolvm", Image: "ghcr.io/ortusnova/agent:1",
-			Flows: flows, LeaseTTLMS: int(leaseTTL / time.Millisecond), Repository: runRepository(h.upstream)}}
+			Flows: flows, LeaseTTLMS: int(time.Minute / time.Millisecond), Repository: runRepository(h.upstream)}}
 	h.cfg = cfg
 	return h
 }
@@ -202,8 +222,10 @@ func (a *resumeAdapter) resumed() []string {
 }
 
 // start starts Sortie as the binary does: the store, the restored remote
-// runs, then the server, then the event loop.
-func (h *restartHarness) start() *sortieProcess {
+// runs, then the server, then the event loop. Each of beforeLoop runs
+// while the server answers and before the first tick, so a worker it
+// checks in is there when that tick reads the issue.
+func (h *restartHarness) start(beforeLoop ...func()) *sortieProcess {
 	h.t.Helper()
 	ctx := context.Background()
 	store, err := persistence.Open(ctx, h.dbPath)
@@ -240,11 +262,19 @@ func (h *restartHarness) start() *sortieProcess {
 	if h.prepare != nil {
 		h.prepare(p.o)
 	}
+	if h.starts++; h.starts == 1 && h.worker != nil {
+		// The first dispatch may come before the worker's own check-in,
+		// and a job no worker can take waits a whole poll interval.
+		p.o.Workers().CheckIn(h.worker.id, h.worker.declaration())
+	}
 	p.o.RestoreRemoteRuns(ctx)
 	mux := http.NewServeMux()
 	mux.Handle(worker.Prefix, worker.Handler(p.o.Workers(), restartHeader))
 	mux.Handle(dataplane.Prefix, p.o.DataPlane())
 	h.handler.Store(new(http.Handler(mux)))
+	for _, f := range beforeLoop {
+		f()
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	p.cancel = cancel
@@ -338,15 +368,48 @@ type restartWorker struct {
 	holdingOnce sync.Once
 	// dieOnBreak makes the worker go away when the stream breaks.
 	dieOnBreak bool
+	// selfBreak makes the worker break the stream itself when its agent
+	// first holds a prompt, as a worker daemon that restarts does.
+	selfBreak bool
+	stream    net.Conn
+	// resumeOnBreak makes the worker resume the attempt after a break,
+	// as a restarted worker daemon does: it takes the attempt's new
+	// tokens, and endedStdio keeps the stdio token that ended.
+	resumeOnBreak bool
+	endedStdio    string
 
 	beating chan struct{}
+	// released is closed when Sortie answers that the job is gone, on a
+	// heartbeat or the stdio stream; the worker then ends the job with
+	// no report. goneOn names what was answered 410.
+	released     chan struct{}
+	releasedOnce sync.Once
+	goneOn       []string
+}
+
+// release ends the job as gone, as the daemon does on a 410.
+func (w *restartWorker) release(on string) {
+	w.mu.Lock()
+	w.goneOn = append(w.goneOn, on)
+	w.mu.Unlock()
+	w.releasedOnce.Do(func() { close(w.released) })
+}
+
+func (w *restartWorker) isReleased() bool {
+	select {
+	case <-w.released:
+		return true
+	default:
+		return false
+	}
 }
 
 func newRestartWorker(h *restartHarness) *restartWorker {
-	return &restartWorker{
+	h.worker = &restartWorker{
 		fakeWorker: &fakeWorker{t: h.t, git: h.git, base: h.srv.URL, id: "taichi", header: restartHeader},
-		holding:    make(chan struct{}), beating: make(chan struct{}),
+		holding:    make(chan struct{}), beating: make(chan struct{}), released: make(chan struct{}),
 	}
+	return h.worker
 }
 
 // heartbeat renews the lease, as the daemon does, until the job ends;
@@ -366,6 +429,10 @@ func (w *restartWorker) heartbeat() {
 		req.Header.Set(w.header, w.id)
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusGone {
+				w.release("heartbeat")
+				return
+			}
 		}
 	}
 }
@@ -383,11 +450,40 @@ func (w *restartWorker) run() {
 		if w.dieOnBreak {
 			return
 		}
+		if w.resumeOnBreak {
+			w.resume()
+		}
+	}
+	if w.isReleased() {
+		return
 	}
 	w.giveBack()
 }
 
-// dial opens the stdio stream, retrying until the attempt is served.
+// resume takes the attempt's offer again, with new tokens, retrying
+// while Sortie answers that it is not ready.
+func (w *restartWorker) resume() {
+	w.t.Helper()
+	_, old := w.flow("stdio")
+	path := fmt.Sprintf("/api/v1/workers/jobs/%s/attempts/%d/resume", w.offer.Job.ID, w.offer.Job.Attempt)
+	waittest.Until(w.t, func() error {
+		resp := w.post(path, nil)
+		defer resp.Body.Close() //nolint:errcheck // test
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("resume: %d", resp.StatusCode)
+		}
+		var o worker.Offer
+		if err := json.NewDecoder(resp.Body).Decode(&o); err != nil {
+			return err
+		}
+		w.offer.Flows = o.Flows
+		return nil
+	})
+	w.endedStdio = old
+}
+
+// dial opens the stdio stream, retrying until the attempt is served. It
+// returns a nil stream once Sortie answers that the job is gone.
 func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 	w.t.Helper()
 	target, token := w.flow("stdio")
@@ -407,6 +503,15 @@ func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 			return err
 		}
 		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusGone {
+			_ = c.Close()
+			w.release("stdio")
+			return nil
+		}
+		if w.isReleased() {
+			_ = c.Close()
+			return nil
+		}
 		if resp.StatusCode != http.StatusSwitchingProtocols {
 			_ = c.Close()
 			return fmt.Errorf("stdio upgrade: %d", resp.StatusCode)
@@ -421,7 +526,13 @@ func (w *restartWorker) dial() (net.Conn, *bufio.Reader) {
 // stream broke before the agent's input closed.
 func (w *restartWorker) session() bool {
 	conn, in := w.dial()
+	if conn == nil {
+		return false
+	}
 	defer conn.Close() //nolint:errcheck // test
+	w.mu.Lock()
+	w.stream = conn
+	w.mu.Unlock()
 	w.mu.Lock()
 	w.starts++
 	start := w.starts
@@ -460,8 +571,9 @@ func (w *restartWorker) session() bool {
 	return false
 }
 
-// agent is [fakeAgent] that may hold a prompt until the stream breaks.
-// It commits its two changes once, at the first prompt it works.
+// agent is [fakeAgent] that may hold a prompt, after one message, until
+// the stream breaks. It commits its two changes once, at the first prompt
+// it works.
 func (w *restartWorker) agent(start int, in io.Reader, out io.Writer, broken <-chan struct{}) error {
 	enc := json.NewEncoder(out)
 	sc := bufio.NewScanner(in)
@@ -475,7 +587,17 @@ func (w *restartWorker) agent(start int, in io.Reader, out io.Writer, broken <-c
 		w.prompts[start-1] = append(w.prompts[start-1], line.Prompt)
 		w.mu.Unlock()
 		if w.hold != nil && w.hold(start, line.Prompt) {
-			w.holdingOnce.Do(func() { close(w.holding) })
+			if err := enc.Encode(fakeAgentLine{Message: "working"}); err != nil {
+				return err
+			}
+			w.holdingOnce.Do(func() {
+				close(w.holding)
+				if w.selfBreak {
+					w.mu.Lock()
+					_ = w.stream.Close()
+					w.mu.Unlock()
+				}
+			})
 			<-broken
 			return errStreamBroken
 		}
@@ -519,10 +641,10 @@ func (w *restartWorker) seen() (offers, starts int, prompts [][]string) {
 // with its worker, the restarted Sortie resumes the session and runs the
 // interrupted turn again, and the run hands off once, as one session.
 func TestRestartMidTurnKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 1, time.Minute)
+	h := newRestartHarness(t, 1)
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -558,10 +680,10 @@ func TestRestartMidTurnKeepsTheRun(t *testing.T) {
 // A restart between two turns keeps the run: the restarted Sortie runs
 // the second turn as the continuation, and only it.
 func TestRestartBetweenTurnsKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 2, time.Minute)
+	h := newRestartHarness(t, 2)
 	h.tracker.holdRefresh = true
 	w := newRestartWorker(h)
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -595,7 +717,7 @@ func TestRestartBetweenTurnsKeepsTheRun(t *testing.T) {
 // Sortie runs the interrupted CI fix turn again from the same
 // continuation, and the run hands off once.
 func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
-	h := newRestartHarness(t, 1, time.Minute)
+	h := newRestartHarness(t, 1)
 	starts := 0
 	h.prepare = func(o *Orchestrator) {
 		if starts++; starts > 1 {
@@ -615,7 +737,7 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 	}
 	w := newRestartWorker(h)
 	w.hold = func(start int, _ string) bool { return start == 1 }
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -659,11 +781,15 @@ func TestRestartDuringAReactionRunKeepsTheRun(t *testing.T) {
 // once, as a new job attempt; with no worker checked in, that retry waits
 // for one.
 func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
-	h := newRestartHarness(t, 1, 1500*time.Millisecond)
+	// The first process gives the worker a lease too long to lapse while
+	// it waits for its job, since it checks in only once; the restarted
+	// one restores the lease with a short one, which lapses as the worker
+	// is gone.
+	h := newRestartHarness(t, 1)
 	w := newRestartWorker(h)
 	w.hold = func(int, string) bool { return true }
 	w.dieOnBreak = true
-	first := h.start()
+	first := h.start(w.checkIn)
 	worked := make(chan struct{})
 	go func() {
 		defer close(worked)
@@ -674,6 +800,7 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	h.stopAndGo(first)
 	waittest.Receive(t, worked, "the worker gone")
 
+	h.cfg.Environment.Remote.LeaseTTLMS = 1500
 	second := h.start()
 	waittest.Until(t, func() error {
 		snap, err := second.o.SnapshotFunc()()
@@ -694,6 +821,170 @@ func TestRestartWithTheWorkerGoneRetriesOnce(t *testing.T) {
 	}
 	if len(h.tracker.handoffs()) != 0 {
 		t.Errorf("handoffs %v, want none", h.tracker.handoffs())
+	}
+}
+
+// An adopted run that ends before its job is handed back to the data
+// plane, here cancelled while it reads the issue's description, releases
+// the worker that holds the job: its heartbeat and its stdio stream are
+// answered 410, the lease is gone, and so is the run's record.
+func TestAnAdoptedRunEndedBeforeItsStreamReleasesTheWorker(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(first, nil)
+	h.stopAndGo(first)
+
+	h.tracker.mu.Lock()
+	h.tracker.holdDescription = true
+	h.tracker.mu.Unlock()
+	second := h.start()
+	waittest.Receive(t, h.tracker.describing, "the adopted run reading the issue's description")
+	cancelled := make(chan struct{})
+	second.o.runOnLoop(context.Background(), func(context.Context) {
+		defer close(cancelled)
+		entry := second.o.state.Running[remoteIssueID]
+		if entry == nil {
+			t.Error("the adopted run is not running")
+			return
+		}
+		entry.cancelRun(errCancelStall)
+	})
+	waittest.Receive(t, cancelled, "the adopted run cancelled")
+
+	waittest.Receive(t, w.released, "Sortie telling the worker its job is gone")
+	waittest.Receive(t, worked, "the worker ending the job")
+	if state := second.o.Workers().Snapshot(); len(state.Leases) != 0 {
+		t.Errorf("leases %+v, want the cancelled job's released", state.Leases)
+	}
+	runs, err := second.store.LoadRemoteRuns(context.Background())
+	if err != nil || len(runs) != 0 {
+		t.Errorf("remote runs %+v %v, want the cancelled run's record deleted", runs, err)
+	}
+}
+
+// run-supervision: A worker restart keeps the run. The worker daemon
+// restarts while ONS-30's agent is mid-turn: its stdio stream breaks from
+// the worker's side while its heartbeats keep the lease. Sortie keeps the
+// run instead of ending it as stalled, the worker dials the stream again,
+// Sortie resumes the session and runs the interrupted turn again, and the
+// run hands off once, as one session.
+func TestAWorkerRestartKeepsTheRun(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(start int, _ string) bool { return start == 1 }
+	w.selfBreak = true
+	w.resumeOnBreak = true
+	p := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(p, nil)
+	dispatchID := h.dispatchID(p)
+	h.handedOff(p)
+	waittest.Receive(t, worked, "the worker's report")
+
+	offers, starts, prompts := w.seen()
+	if offers != 1 || starts != 2 {
+		t.Fatalf("offers %d, agent starts %d, want the one job and the agent started again once", offers, starts)
+	}
+	if len(prompts[1]) != 1 || prompts[1][0] != prompts[0][0] {
+		t.Errorf("prompts %q, want the interrupted turn run again", prompts)
+	}
+	if got := p.adapter.resumed(); len(got) != 2 || got[1] != "line-session" {
+		t.Errorf("sessions resumed %q, want the second start to resume line-session", got)
+	}
+	h.oneSessionHandedOff(p, dispatchID, 1)
+	if w.endedStdio == "" {
+		t.Fatal("the worker did not resume the attempt")
+	}
+	_, now := w.flow("stdio")
+	if now == w.endedStdio {
+		t.Error("the resume handed the same stdio token")
+	}
+}
+
+// A restart of Sortie after a worker resumed restores the resumed
+// tokens: the worker's stream, dialed with them, is served.
+func TestARestartAfterAResumeAdmitsTheNewTokens(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(start int, _ string) bool { return start <= 2 }
+	w.selfBreak = true
+	w.resumeOnBreak = true
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Until(t, func() error {
+		if _, starts, prompts := w.seen(); starts != 2 || len(prompts[1]) == 0 {
+			return fmt.Errorf("agent starts %d, want the second holding its turn", starts)
+		}
+		return nil
+	})
+	h.recorded(first, func(r persistence.RemoteRun) error {
+		_, stdio := w.flow("stdio")
+		var rec remoteRunRecord
+		if err := json.Unmarshal([]byte(r.Record), &rec); err != nil {
+			return err
+		}
+		if rec.Tokens["stdio"] != hexDigest(stdio) {
+			return errors.New("the record does not hold the resumed stdio token")
+		}
+		return nil
+	})
+	dispatchID := h.dispatchID(first)
+	h.stopAndGo(first)
+	second := h.start()
+	h.handedOff(second)
+	waittest.Receive(t, worked, "the worker's report")
+	if _, starts, _ := w.seen(); starts != 3 {
+		t.Errorf("agent starts %d, want three: the first, after the resume, after the restart", starts)
+	}
+	h.oneSessionHandedOff(second, dispatchID, 1)
+}
+
+// A worker that breaks its stream and never comes back lets the lease
+// expire: the kept run then fails as for any lost lease and is retried
+// once, as a new job attempt.
+func TestAWorkerGoneAfterItsBreakRetriesOnce(t *testing.T) {
+	h := newRestartHarness(t, 1)
+	h.cfg.Environment.Remote.LeaseTTLMS = 1500
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	w.selfBreak = true
+	w.dieOnBreak = true
+	p := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, worked, "the worker gone after its break")
+	waittest.Until(t, func() error {
+		snap, err := p.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 0 || len(snap.Retrying) != 1 || snap.Retrying[0].Identifier != "ONS-30" {
+			return fmt.Errorf("running %d, retrying %+v, want ONS-30's one retry", len(snap.Running), snap.Retrying)
+		}
+		return nil
+	})
+	if rows := h.history(p); len(rows) != 1 || rows[0].Status == "succeeded" {
+		t.Fatalf("run history %+v, want the one failed run", rows)
 	}
 }
 
@@ -729,4 +1020,172 @@ func (h *restartHarness) oneSessionHandedOff(p *sortieProcess, dispatchID string
 	if err != nil || len(runs) != 0 {
 		h.t.Errorf("remote runs %+v %v, want none left", runs, err)
 	}
+}
+
+// A run no worker took records no worker.
+func TestRemoteAttemptWithoutAGrantNamesNoWorker(t *testing.T) {
+	t.Parallel()
+	a := &remoteAttempt{}
+	if got := a.adjust(WorkerResult{}).Worker; got != "" {
+		t.Errorf("Worker = %q, want empty for an attempt no worker took", got)
+	}
+	a = &remoteAttempt{adopt: &remoteAdoption{run: persistence.RemoteRun{WorkerID: "taichi"}}}
+	if got := a.adjust(WorkerResult{}).Worker; got != "taichi" {
+		t.Errorf("Worker = %q, want taichi for an adopted attempt", got)
+	}
+}
+
+// sawEvent waits until the event loop took the agent's first event, so
+// the record written at shutdown keeps it.
+func (h *restartHarness) sawEvent(p *sortieProcess) {
+	h.t.Helper()
+	waittest.Until(h.t, func() error {
+		snap, err := p.o.SnapshotFunc()()
+		if err != nil {
+			return err
+		}
+		if len(snap.Running) != 1 || snap.Running[0].LastAgentTimestamp.IsZero() {
+			return errors.New("no agent event seen yet")
+		}
+		return nil
+	})
+}
+
+// backdate moves ONS-30's recorded run back in time, as if it had started
+// started ago and its last agent event came lastEvent ago. The record is
+// the only clock a restart carries, so this is the restart of a run that
+// old.
+func (h *restartHarness) backdate(started, lastEvent time.Duration) {
+	h.t.Helper()
+	ctx := context.Background()
+	store, err := persistence.Open(ctx, h.dbPath)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer store.Close() //nolint:errcheck // test
+	runs, err := store.LoadRemoteRuns(ctx)
+	if err != nil || len(runs) != 1 {
+		h.t.Fatalf("remote runs %+v %v, want ONS-30's", runs, err)
+	}
+	e, err := decodeRemoteRunEntry(runs[0].Entry)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if e.LastEventAt.IsZero() {
+		h.t.Fatal("the record keeps no last event")
+	}
+	now := time.Now()
+	e.StartedAt, e.LastEventAt = now.Add(-started), now.Add(-lastEvent)
+	raw, err := json.Marshal(e)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := store.UpdateRemoteRunEntry(ctx, runs[0].IssueID, string(raw)); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// run-supervision: A deploy restarts Sortie under a run older than the
+// stall timeout. The restarted Sortie measures the adopted run's silence
+// from no earlier than its adoption, so its first pass does not stop it
+// as stalled: the run goes on and hands off once. A tool call open at the
+// restart ended with the agent process the restart stopped, and the turn
+// it was in runs again.
+func TestRestartKeepsARunOlderThanTheStallTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		started, lastEvent time.Duration
+	}{
+		{"20 minutes in, its last event a minute ago", 20 * time.Minute, time.Minute},
+		{"an hour in, inside a tool call for 40 minutes", time.Hour, 40 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newRestartHarness(t, 1)
+			h.cfg.Agent.StallTimeoutMS = int((15 * time.Minute).Milliseconds())
+			w := newRestartWorker(h)
+			w.hold = func(start int, _ string) bool { return start == 1 }
+			first := h.start()
+			worked := make(chan struct{})
+			go func() {
+				defer close(worked)
+				w.run()
+			}()
+			waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+			h.recorded(first, nil)
+			h.sawEvent(first)
+			dispatchID := h.dispatchID(first)
+			h.stopAndGo(first)
+			h.backdate(tt.started, tt.lastEvent)
+
+			second := h.start()
+			h.handedOff(second)
+			waittest.Receive(t, worked, "the worker's report")
+			h.oneSessionHandedOff(second, dispatchID, 1)
+		})
+	}
+}
+
+// A run silent for longer than the stall timeout before the restart, with
+// no tool call open, is still stopped as stalled once it stays silent for
+// the timeout after its adoption; until then the running row's quiet_at
+// and stall_at count from the adoption.
+func TestRestartStallsAnAdoptedRunSilentForTheTimeout(t *testing.T) {
+	const timeout = 2 * time.Second
+	h := newRestartHarness(t, 1)
+	w := newRestartWorker(h)
+	w.hold = func(int, string) bool { return true }
+	w.dieOnBreak = true
+	first := h.start()
+	worked := make(chan struct{})
+	go func() {
+		defer close(worked)
+		w.run()
+	}()
+	waittest.Receive(t, w.holding, "the agent in the middle of its turn")
+	h.recorded(first, nil)
+	h.sawEvent(first)
+	h.stopAndGo(first)
+	waittest.Receive(t, worked, "the worker gone silent")
+	// Scaled down: the run's last event is 16 stall timeouts old.
+	h.backdate(30*timeout, 16*timeout)
+	h.cfg.Agent.StallTimeoutMS = int(timeout.Milliseconds())
+	h.cfg.Polling.IntervalMS = 100
+
+	adopted := time.Now()
+	second := h.start()
+	snap, err := second.o.SnapshotFunc()()
+	if err != nil || len(snap.Running) != 1 {
+		t.Fatalf("running %+v %v, want the adopted ONS-30", snap.Running, err)
+	}
+	row := snap.Running[0]
+	if row.StallAt.Before(adopted.Add(timeout)) || !row.QuietAt.Equal(row.StallAt.Add(-timeout/2)) {
+		t.Errorf("quiet_at %v, stall_at %v, want them counted from the adoption at %v", row.QuietAt, row.StallAt, adopted)
+	}
+	if row.LastAgentTimestamp.IsZero() || !row.LastAgentTimestamp.Before(adopted.Add(-15*timeout)) {
+		t.Errorf("last_event_at %v, want the recorded last event", row.LastAgentTimestamp)
+	}
+
+	var rows []persistence.RunHistory
+	waittest.Until(t, func() error {
+		if rows = h.history(second); len(rows) == 0 {
+			return errors.New("no run ended")
+		}
+		return nil
+	})
+	if len(rows) != 1 || rows[0].Error == nil || *rows[0].Error != StallCancelError {
+		t.Fatalf("run history %+v, want the one run stopped as stalled", rows)
+	}
+	ended, err := time.Parse(time.RFC3339, rows[0].CompletedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended.Before(adopted.Add(timeout).Truncate(time.Second)) {
+		t.Errorf("stopped at %v, before the stall timeout after the adoption at %v", ended, adopted)
+	}
+}
+
+// hexDigest is the digest a run's record keeps of a job token.
+func hexDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

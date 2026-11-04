@@ -283,3 +283,27 @@ func TestToRunResponseModelUsage(t *testing.T) {
 		})
 	}
 }
+
+// A run on a remote worker serves the worker that held its lease; a run
+// that no worker ran, or that was recorded before the worker was, serves
+// null.
+func TestRunsServeTheWorker(t *testing.T) {
+	t.Parallel()
+
+	ts := historyServer(t, orchestrator.RuntimeSnapshotResult{}, &fakeRunHistory{rows: []RunHistoryEntry{
+		{ID: 11, IssueID: "id-30", Identifier: "ONS-30", Attempt: 2, Status: "succeeded", Worker: "taichi"},
+		{ID: 10, IssueID: "id-30", Identifier: "ONS-30", Attempt: 1, Status: "failed"},
+	}})
+
+	status, got := getJSON[runsResponse](t, ts, "/api/v1/runs")
+
+	if status != http.StatusOK || len(got.Runs) != 2 {
+		t.Fatalf("GET /api/v1/runs = status %d with %d runs, want 200 with 2", status, len(got.Runs))
+	}
+	if w := got.Runs[0].Worker; w == nil || *w != "taichi" {
+		t.Errorf("runs[0].worker = %v, want taichi", w)
+	}
+	if w := got.Runs[1].Worker; w != nil {
+		t.Errorf("runs[1].worker = %q, want null", *w)
+	}
+}

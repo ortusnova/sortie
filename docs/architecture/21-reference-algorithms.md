@@ -717,9 +717,9 @@ function run_agent_attempt(issue, attempt, settings, orchestrator_channel):
 
   // Every hook, verification command, triage run, git inspection, and
   // agent launch below goes through the workflow's execution environment
-  // (§9.7). Preparation creates or starts the issue's VM under smolvm,
-  // seeds or refreshes its repository, and reports whether after_create
-  // runs. The environment is released (the VM stopped) as the worker's
+  // (§9.7). Preparation seeds or refreshes the issue's repository, and
+  // reports whether after_create
+  // runs. The environment is released as the worker's
   // last step on every exit.
   workspace = workspace_manager.create_for_issue(issue.identifier)
   if workspace failed:
@@ -959,9 +959,9 @@ function run_agent_attempt(issue, attempt, settings, orchestrator_channel):
     SORTIE_SELF_REVIEW_SUMMARY_PATH: workspace.path + "/.sortie/review_summary.md"
   })
 
-  // Under smolvm with environment.smolvm.repository (§9.7.2): export,
+  // With a repository configured (§9.7.2): export,
   // push, and ensure the pull request before any tracker handoff. A
-  // failure fails the run, keeps the VM, and takes the retry path.
+  // failure fails the run and takes the retry path.
   if repository configured:
     exported_commit, export_err = export_issue_branch(environment, workspace)
     if export_err failed:

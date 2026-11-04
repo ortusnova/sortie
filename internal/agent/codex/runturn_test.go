@@ -1177,6 +1177,18 @@ func TestRunTurn_ItemStartedAndCompletedEmitsToolResult(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("tool_result events (name, argument, kind, failed) = %+v, want %+v", got, want)
 	}
+
+	started := map[string]bool{}
+	for _, e := range events {
+		switch e.Type {
+		case domain.EventToolStarted:
+			started[e.ToolCallID] = true
+		case domain.EventToolResult:
+			if e.ToolCallID == "" || !started[e.ToolCallID] {
+				t.Errorf("tool_result %+v has ToolCallID %q, want the ID of a tool_started before it", e, e.ToolCallID)
+			}
+		}
+	}
 }
 
 func TestRunTurn_AgentMessageTextEmitsNotification(t *testing.T) {

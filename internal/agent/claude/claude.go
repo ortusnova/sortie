@@ -748,9 +748,9 @@ func truncateToolError(s string, maxLen int) string {
 }
 
 // processToolBlocks scans content blocks for tool_use and tool_result
-// entries. tool_use blocks are registered in inFlight; tool_result
-// blocks are correlated against inFlight and emitted as
-// [domain.EventToolResult] via onEvent. The wallTime parameter is the
+// entries. tool_use blocks are registered in inFlight and emitted as
+// [domain.EventToolStarted]; tool_result blocks are correlated against
+// inFlight and emitted as [domain.EventToolResult] via onEvent. The wallTime parameter is the
 // wall-clock timestamp written into emitted events. work observes tool
 // activity at either block, because a requested call counts at any
 // point in its life, not only at completion.
@@ -764,7 +764,9 @@ func processToolBlocks(
 	for _, block := range blocks {
 		if block.Type == "tool_use" && block.ID != "" {
 			work.ObserveToolActivity()
-			inFlight.Begin(block.ID, toolCallOf(block.Name, block.Input))
+			call := toolCallOf(block.Name, block.Input)
+			inFlight.Begin(block.ID, call)
+			agentcore.EmitToolStarted(onEvent, wallTime, block.ID, call)
 		}
 		if block.Type == "tool_result" {
 			work.ObserveToolActivity()
@@ -786,6 +788,7 @@ func processToolBlocks(
 				ToolArgument:   call.Argument,
 				ToolDurationMS: durationMS,
 				ToolError:      block.IsError,
+				ToolCallID:     block.ToolUseID,
 				Message:        msg,
 			})
 		}

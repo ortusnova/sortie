@@ -94,11 +94,12 @@ Note: `timer_handle` is runtime-only and is not stored.
 | `agent_text` | TEXT | The statement that came with that token, normalized and masked as §21.1 "Publication" states, the text the `session.stopped` event carries as agent text. The empty string when `declared_outcome` is empty, when the agent wrote no statement, when normalization empties it, and on a row written before the column existed, which is not backfilled |
 | `skills` | TEXT | JSON array of the run's skill calls in completion order, each an object with `skill` and, for a failed call, `tool_error` set to `true`, such as `[{"skill":"ce-plan"},{"skill":"ce-work","tool_error":true}]`; no entry limit, repeats included. The orchestrator marshals it at worker exit from the list it built from every `tool_result` event on arrival, and the store carries it as text, as it carries `review_metadata`. `[]` when the run called no skill, which includes a run whose agent reports none; the worker exit and a recorded CI result both write it. `NULL` only on a row written before the column existed, which is not backfilled, and when marshaling the list failed at worker exit |
 | `held_ms` | INTEGER | Total time, in milliseconds, the run spent held through the hold endpoint (§13.7), written when the run ends; `0` for a run never held, a `ci_failed` row, and a row written before migration 1001 (migration 1001) |
-| `environment_image_sha256` | TEXT | Hex SHA-256 of the image the run's execution environment instance was created from: for `smolvm`, the pack file, as the VM's `sortie.pack` label recorded it when the VM was created, so a pack rebuilt since does not change it; empty for a run on the host, and for a row written before migration 1002 (migration 1002) |
-| `exported_commit` | TEXT | The commit the run pushed to the upstream issue branch when it ended, under `smolvm` with `environment.smolvm.repository`; empty for a run that pushed nothing, a run on the host, and a row written before migration 1003 (migration 1003) |
+| `environment_image_sha256` | TEXT | Hex SHA-256 of the image the run's execution environment instance was created from: for a run under the removed `smolvm` kind, the pack file, as the VM's `sortie.pack` label recorded it when the VM was created; empty for a run on the host or under `remote`, and for a row written before migration 1002 (migration 1002) |
+| `exported_commit` | TEXT | The commit the run pushed to the upstream issue branch when it ended, under `remote` with a repository (or under the removed `smolvm` kind with one); empty for a run that pushed nothing, a run on the host, and a row written before migration 1003 (migration 1003) |
 
 | `error_detail` | TEXT | The whole cause of a failed run: the full output of the step that failed it, taken at worker exit from the first error in the run error's chain that carries one. For a git command Sortie ran on its mirror, the command's porcelain output and standard error under a line naming the command and its exit status; for an agent runtime's protocol error, the error object it answered with. Every registered credential is masked and the text is capped at 16 KiB, keeping its start and its end. Empty when the failing step left no output, for a run that did not fail, and for a row written before migration 1005 (migration 1005), which is not backfilled |
 | `failure_signature` | TEXT | The signature of a run that ended on an error (Section 8.4, Repeated failure): its failed step, its failure class, and the first line of its error with run-specific values removed, joined by ` | `. Read at the next worker exit of the same issue, from the issue's newest row that is not `ci_failed`, to tell whether the run failed as the previous one did. Empty for a run that did not end on an error and for a row written before migration 1006 (migration 1006), which is not backfilled |
+| `worker` | TEXT | Under `environment.kind: remote`, the ID of the worker that held the run's lease, as it checked in: the worker the matcher granted the job to, or the one an adopted run was recorded with. Empty for a run no worker took, a run under any other kind, a `ci_failed` row, and a row written before migration 1013 (migration 1013), which is not backfilled |
 
 Neither execution environment column is backfilled. A failed export records its error in `error`, the output of a git command that failed it, such as a refused push, in `error_detail`, and an empty `exported_commit`.
 
@@ -202,10 +203,10 @@ A recorded value is written in the statement that writes the share's cost, and a
 | `issue_id`    | TEXT    | Tracker-internal issue ID (composite PK with `kind`)          |
 | `kind`        | TEXT    | Reaction kind; one row per issue per kind                     |
 | `fingerprint` | TEXT    | The observed value this kind deduplicates on                  |
-| `dispatched`  | INTEGER | `1` when the action for this fingerprint has been performed   |
+| `dispatched`  | INTEGER | How many times the action for this fingerprint has been dispatched; non-zero when it has been performed. A kind that reads it as a flag sees only zero or not |
 | `updated_at`  | TEXT    | ISO-8601 timestamp                                            |
 
-Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action.
+Primary key: `(issue_id, kind)`. Every reaction kind that deduplicates across restarts owns a row here under its own `kind` discriminator, so one issue may hold several rows at once without the kinds interfering. Upserts reset `dispatched` to `0` when the fingerprint value changes, which re-arms the latch for exactly one further action. Each dispatch adds one; the merge-conflict reaction reads the count to bound the rebase runs one head gets across restarts, and gives one back, never below one, for a run that a shutdown or a lost worker ended.
 
 What the fingerprint holds is defined by the owning kind, not by this table: a digest of the comment set last acted on, the git ref last checked, a journal high-water mark, or a merge commit identifier, whichever value identifies "the same observation" for that kind. The column is opaque text and this schema attaches no meaning to it beyond equality.
 
@@ -225,7 +226,7 @@ Cleanup is owned by an active merge-completion pass. Such a pass deletes the obs
 | `kind`               | TEXT    | Reaction kind that escalated; one row per issue per kind                                                    |
 | `subject`            | TEXT    | What the latest escalation judged: the pull request head, the comment set fingerprint, the merge fingerprint, the merge commit, or the pull request identity; empty when it has none. Defaults to empty |
 | `escalated_at`       | TEXT    | RFC 3339 with nanoseconds; NULL once the escalation ended                                                   |
-| `escalation_trigger` | TEXT    | `budget_exhausted`, `triage`, `refused`, or `missing_merge_commit`                                          |
+| `escalation_trigger` | TEXT    | `budget_exhausted`, `triage`, `refused`, `missing_merge_commit`, or `unresolved`                            |
 | `attempts`           | INTEGER | The kind's attempt counter at the escalation. Defaults to `0`                                               |
 | `pr_number`          | INTEGER | Pull request number                                                                                         |
 | `pr_owner`           | TEXT    | Pull request owner                                                                                          |
@@ -539,7 +540,7 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 
 The event loop writes a row when a session starts, and the session's goroutine records its end. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the newest row, which `GET /api/v1/state` serves as `last_session` until a session ends. Rows are never deleted.
 
-**`handoff_parts`**: the parts of a story a session could not do, from `.sortie/handoff.json` (Section 21.5) (migration 1013)
+**`handoff_parts`**: the parts of a story a session could not do, from `.sortie/handoff.json` (Section 21.5) (migration 1015)
 
 | Column            | Type             | Notes |
 | ----------------- | ---------------- | ----- |

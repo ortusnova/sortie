@@ -80,6 +80,11 @@ type runResponse struct {
 	SessionID            *string             `json:"session_id"`
 	SSHHost              *string             `json:"ssh_host"`
 
+	// Worker is the worker that held the run's lease under the remote
+	// kind; null for a run no worker took, under any other kind, and for
+	// a run recorded before the worker was.
+	Worker *string `json:"worker"`
+
 	// DispatchID is "" on the recorded CI result and null for a run recorded
 	// before the dispatch ID existed.
 	DispatchID *string `json:"dispatch_id"`
@@ -297,6 +302,7 @@ func toRunResponse(e RunHistoryEntry, chains [][]string) runResponse {
 		ModelUsage:           toModelUsageResponses(e.ModelUsage),
 		Skills:               toSkillCalls(e.Skills),
 		DeclaredOutcome:      textOrNil(e.DeclaredOutcome),
+		Worker:               textOrNil(e.Worker),
 	}
 	if e.AgentText != "" {
 		resp.AgentText = new(redact.Mask(e.AgentText))

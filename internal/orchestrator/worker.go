@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -248,6 +249,16 @@ type WorkerResult struct {
 	// upstream's issue branch. Empty when the run configures no
 	// repository, or its export pushed nothing.
 	ExportedCommit string
+
+	// CriteriaFile is the .sortie/criteria.json the run left (see
+	// [CriteriaFile]); nil when it left none. Set only on
+	// [WorkerExitNormal].
+	CriteriaFile []byte
+
+	// Worker is the ID of the worker that held the run's lease under
+	// environment.kind remote. Empty when no worker took the run, and
+	// under any other kind.
+	Worker string
 }
 
 // SessionToolRegistryFunc builds the first-turn tool advertisement.
@@ -278,9 +289,10 @@ const (
 	// effects, fresh session.
 	PostureReview
 
-	// PostureFix is the read-write fix dispatch (label-fix): full clone via
-	// operator hooks so the agent can check out the PR head branch and push,
-	// a fresh session, and every issue-work side effect suppressed.
+	// PostureFix is the read-write fix dispatch (label-fix, and a parked
+	// story's live-proof job): full clone via operator hooks so the agent
+	// can check out the PR head branch and push, a fresh session, and every
+	// issue-work side effect suppressed.
 	PostureFix
 )
 
@@ -303,7 +315,7 @@ func dispatchPostureForReactionKind(kind string) DispatchPosture {
 	switch kind {
 	case ReactionKindLabelReview:
 		return PostureReview
-	case ReactionKindLabelFix:
+	case ReactionKindLabelFix, ReactionKindLiveProof:
 		return PostureFix
 	default:
 		return PostureNormal
@@ -1139,6 +1151,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		PreRunFunc: func(wsPath string) {
 			workspace.CleanupStatusFile(wsPath, logger)
 			workspace.CleanupEvidenceFile(wsPath, logger)
+			clearCriteriaFile(wsPath, logger)
 		},
 	})
 	cancelledAtEnding = ctx.Err() != nil
@@ -1572,6 +1585,11 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		presentedComments = adoptedPresentedComments(deps.ReactionKind, tmpl, issue.ToTemplateMap(), attemptInt, maxTurns, continuation, firstTurnOptions)
 	}
 
+	// A pull request suggestion already in the workspace, as a reused
+	// directory may hold, is not this run's: only one the run writes, or
+	// changes, ends it.
+	suggestionBefore := pullRequestSuggestion(wsResult.Path)
+
 	for !skipTurns {
 		if ctx.Err() != nil {
 			stopSessionBestEffort(ctx, deps.AgentAdapter, session, cfg, logger)
@@ -1757,6 +1775,12 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 			return
 		}
 
+		// A remote run's agent writes its files in the worker's machine:
+		// they are brought here before the turn's files are read.
+		if remote, ok := repo.(*remoteRepository); ok {
+			remote.syncSortieFiles(runContextFrom(ctx), wsResult.Path)
+		}
+
 		// Read the A2O status file to detect agent-reported blockage before
 		// a wasted tracker call. A recognized signal leaves the loop so the
 		// single post-loop teardown is the only exit path.
@@ -1764,6 +1788,21 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		if statusFile.Signal.IsRecognized() {
 			pendingSoftStopReason = string(statusFile.Signal)
 			pendingSoftStopStatement = statusFile.Statement
+			break
+		}
+
+		// A criteria verdict is the review's last word: the turn that
+		// recorded it ends the run, which hands the verdict to the review
+		// gate instead of sending the same prompt again.
+		if criteriaRecorded(wsResult.Path) {
+			logger.Info("agent recorded its criteria verdict, exiting worker", slog.Int("turns_completed", turnsCompleted))
+			break
+		}
+
+		// The agent writes its pull request suggestion when it has
+		// finished: the turn that wrote it ends the run.
+		if s := pullRequestSuggestion(wsResult.Path); s != nil && !bytes.Equal(s, suggestionBefore) {
+			logger.Info("agent wrote its pull request suggestion, exiting worker", slog.Int("turns_completed", turnsCompleted))
 			break
 		}
 
@@ -2051,6 +2090,19 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		}
 	}
 
+	// A remote run's agent wrote its status in the worker's machine, which
+	// the export brought back into this workspace with the issue branch:
+	// the turns above could not see it.
+	if _, remote := repo.(*remoteRepository); remote && pendingSoftStopReason == "" {
+		if statusFile := workspace.ReadStatusFile(wsResult.Path, logger); statusFile.Signal.IsRecognized() {
+			logger.Info("agent signaled status in the worker's machine",
+				slog.String("status", string(statusFile.Signal)))
+			pendingSoftStopReason = string(statusFile.Signal)
+			pendingSoftStopStatement = statusFile.Statement
+		}
+	}
+	criteriaFile := readCriteriaFile(wsResult.Path, logger)
+
 	logger.Info("worker exiting",
 		slog.Any("exit_kind", WorkerExitNormal),
 		slog.Int("turns_completed", turnsCompleted),
@@ -2087,6 +2139,7 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 		UnaccountedTurns:             localUnaccounted,
 		HandedOffComments:            presentedComments,
 		ExportedCommit:               exportedCommit,
+		CriteriaFile:                 criteriaFile,
 		HandoffParts:                 readHandoffParts(wsResult.Path, logger),
 	})
 }

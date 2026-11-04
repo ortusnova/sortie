@@ -108,8 +108,13 @@ func TestApplySessionUpdate(t *testing.T) {
 				if !ok {
 					t.Fatalf("parseSessionUpdate(%s) found = false, want true", tt.beginFixture)
 				}
-				if got := applySessionUpdate(tracker, begin); got.hasEvent {
-					t.Fatalf("applySessionUpdate(%s) = %+v, want hasEvent=false", tt.beginFixture, got)
+				started := applySessionUpdate(tracker, begin)
+				if !started.hasEvent || started.event.Type != domain.EventToolStarted {
+					t.Fatalf("applySessionUpdate(%s) = %+v, want a tool_started event", tt.beginFixture, started)
+				}
+				startedCall := agentcore.ToolCall{Name: started.event.ToolName, Kind: started.event.ToolKind, Argument: started.event.ToolArgument}
+				if startedCall != tt.want || started.event.ToolCallID != "call_001" {
+					t.Errorf("applySessionUpdate(%s) = call %+v, ToolCallID %q, want call %+v, ToolCallID %q", tt.beginFixture, startedCall, started.event.ToolCallID, tt.want, "call_001")
 				}
 
 				end, ok := parseSessionUpdate(loadSessionUpdateFixture(t, "tool_call_update_completed.json"))
@@ -124,7 +129,25 @@ func TestApplySessionUpdate(t *testing.T) {
 				if gotCall != tt.want || got.event.ToolError {
 					t.Errorf("applySessionUpdate(%s, completed) = call %+v, ToolError %v, want call %+v, ToolError false", tt.beginFixture, gotCall, got.event.ToolError, tt.want)
 				}
+				if got.event.ToolCallID != started.event.ToolCallID {
+					t.Errorf("applySessionUpdate(%s, completed) ToolCallID = %q, want the started call's %q", tt.beginFixture, got.event.ToolCallID, started.event.ToolCallID)
+				}
 			})
+		}
+	})
+
+	t.Run("a tool_call that begins finished emits no tool_started", func(t *testing.T) {
+		t.Parallel()
+
+		for _, status := range []string{"completed", "failed"} {
+			raw := `{"sessionUpdate":"tool_call","toolCallId":"call_009","title":"Read a file","kind":"read","status":"` + status + `"}`
+			ev, ok := parseSessionUpdate(json.RawMessage(raw))
+			if !ok {
+				t.Fatalf("parseSessionUpdate(%s) found = false, want true", raw)
+			}
+			if got := applySessionUpdate(agentcore.NewToolTracker(), ev); got.hasEvent {
+				t.Errorf("applySessionUpdate(%s) = %+v, want hasEvent=false: a finished call is never open", raw, got)
+			}
 		}
 	})
 

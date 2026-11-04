@@ -61,12 +61,12 @@
     - Surfaces an additional error kind, `ErrSCMConflict`, for HTTP 405 and HTTP 409 responses from the merge endpoint (precondition raced, branch protection refused, or PR already merged).
     - Activated by `reactions.review_comments.provider` or `reactions.auto_merge.provider` presence in workflow front matter. Auto-merge activation requires the provider token to carry `pull_requests:write` and, when branch deletion is enabled, `contents:write`.
     - Distinct from CI Status Provider: the CI provider queries pipeline status for a git ref; the SCM adapter queries PR-level data (reviews, comments, mergeability) and performs the merge call for a pull request number.
-    - An adapter may also implement the optional `PullRequestOpener` (`EnsurePullRequest`). The repository export of the `smolvm` execution environment uses it to open, or find, the issue branch's pull request after Sortie pushes the branch (Section 9.7.2). `SCMAdapter` itself is unchanged.
+    - An adapter may also implement the optional `PullRequestOpener` (`EnsurePullRequest`). The repository export of the `remote` execution environment uses it to open, or find, the issue branch's pull request after Sortie pushes the branch (Section 9.7.2). `SCMAdapter` itself is unchanged.
 
 12. `Execution Environment`
-    - Adapter interface over where workspace code runs, resolved by `environment.kind`: `local` (the host, the default) or `smolvm` (one microVM per issue workspace).
+    - Adapter interface over where workspace code runs, resolved by `environment.kind`: `local` (the host, the default) or `remote` (workers that dial Sortie run each job's machine).
     - Builds the process for every hook, verification command, triage run, workspace `git` inspection, and agent launch, and prepares, releases, removes, and sweeps the per-issue environment.
-    - Under `smolvm`, a repository mirror (`internal/gitsync`) moves git data in and out of the VM as bundles, and a per-issue socket serves Sortie's tools to the VM from the host. See Section 9.7.
+    - Under `remote`, a repository mirror (`internal/gitsync`) moves git data to and from the workers as bundles, and the data plane serves Sortie's tools to each job. See Section 9.7.
 
 ### 3.2 Abstraction Levels
 
@@ -106,7 +106,6 @@ This section names what the system depends on outside its own process, by role. 
 - Filesystem event notification, for live reload of the workflow file. Pure Go, no CGo, no external daemon. See ADR-0006.
 - Metrics exposition, for the Prometheus scrape endpoint when the HTTP server is enabled. Pure Go; it does not require an external metrics server to be present. See ADR-0008.
 - CI platform API, reached through whichever CI status provider is configured. Required only when CI feedback is configured.
-- Source-control platform API, reached through whichever SCM adapter is configured. Required only when a reaction that observes or writes to a pull request is configured, or when the `smolvm` repository export opens pull requests.
-- The `smolvm` command line, version `1.32.4` or later, with KVM, on a Linux host. Required only when `environment.kind` is `smolvm`. Sortie drives it as a subprocess, never through a library.
-- The host's `git` client and git credentials, for the repository mirror. Required only when `environment.smolvm.repository` is set.
+- Source-control platform API, reached through whichever SCM adapter is configured. Required only when a reaction that observes or writes to a pull request is configured, or when the repository export opens pull requests.
+- The host's `git` client and git credentials, for the repository mirror. Required only when `environment.remote` sets a repository.
 

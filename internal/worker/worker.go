@@ -8,6 +8,7 @@ package worker
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"slices"
 	"sort"
@@ -26,7 +27,21 @@ var (
 	ErrUnknownLease  = errors.New("worker: unknown lease")
 	ErrLeaseHeld     = errors.New("worker: job already leased")
 	ErrLeaseLost     = errors.New("worker: lease expired or held by another worker")
+	// ErrJobGone reports a job attempt that ended, or that Sortie does
+	// not hold; [GoneError] says which.
+	ErrJobGone = errors.New("worker: job attempt gone")
+	// ErrRecovering reports a job attempt Sortie does not know while it
+	// is still adopting the runs a previous process left with workers.
+	ErrRecovering = errors.New("worker: Sortie is still adopting the runs it restored")
 )
+
+// GoneError is [ErrJobGone] with why the attempt is gone.
+type GoneError struct{ Reason string }
+
+func (e *GoneError) Error() string { return "worker: job attempt gone: " + e.Reason }
+
+// Is reports [ErrJobGone] as e's kind.
+func (e *GoneError) Is(target error) bool { return target == ErrJobGone }
 
 // Free is what a worker has free after its own reserve and floor: CPUs,
 // memory in GiB and disk in GiB.
@@ -72,6 +87,25 @@ func (d Declaration) has(c string) bool {
 		return d.Nested
 	}
 	return c == d.OS || c == d.Arch || slices.Contains(d.Backends, c) || slices.Contains(d.Capabilities, c)
+}
+
+// spare counts the capabilities the declaration includes that r does
+// not need.
+func (d Declaration) spare(r Requires) int {
+	caps := append(append([]string{d.OS, d.Arch}, d.Backends...), d.Capabilities...)
+	if d.KVM {
+		caps = append(caps, "kvm")
+	}
+	if d.Nested {
+		caps = append(caps, "nested")
+	}
+	n := 0
+	for _, c := range caps {
+		if !slices.Contains(r.Capabilities, c) {
+			n++
+		}
+	}
+	return n
 }
 
 // Capacity is what the matcher counts a worker as having free now: the
@@ -393,11 +427,25 @@ type Matcher struct {
 	pending []Job
 	leased  map[string]Job
 	ends    map[string]chan Outcome
-	// granted holds, per queued job, the channel its worker's ID
-	// arrives on when it is leased.
+	// granted holds, per submitted job until it ends, the channel its
+	// worker's ID arrives on when it is leased.
 	granted map[string]chan string
 	// steps holds the step each leased job last reported.
 	steps map[string]Step
+	// gone holds, per job, its last attempt a worker held that ended,
+	// and why.
+	endedJobs map[string]endedAttempt
+	// recovering reports that the runs a previous process left with
+	// workers are not all adopted yet.
+	recovering bool
+	// onResume records each job whose attempt a worker resumed.
+	onResume func(jobID string) error
+}
+
+// endedAttempt is an attempt that ended and why.
+type endedAttempt struct {
+	attempt int
+	reason  string
 }
 
 // NewMatcher returns a matcher using leaser, clock now and token issuer
@@ -408,7 +456,24 @@ func NewMatcher(leaser Leaser, now func() time.Time, tokens Tokens) *Matcher {
 	}
 	return &Matcher{leaser: leaser, now: now, tokens: tokens,
 		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{},
-		granted: map[string]chan string{}, steps: map[string]Step{}}
+		granted: map[string]chan string{}, steps: map[string]Step{}, endedJobs: map[string]endedAttempt{}}
+}
+
+// Recovering marks the matcher as restarted: until [Matcher.Recovered],
+// a heartbeat or report for a job it does not know returns
+// [ErrRecovering], since the job may yet be adopted.
+func (m *Matcher) Recovering() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recovering = true
+}
+
+// Recovered marks the adoption of the restored runs done: from now on a
+// job the matcher does not know is gone.
+func (m *Matcher) Recovered() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recovering = false
 }
 
 // Timings returns how often a worker should check in and renew, and how
@@ -456,7 +521,9 @@ func (m *Matcher) Submit(j Job) <-chan Outcome {
 }
 
 // Granted returns the channel the ID of the worker that leases the
-// submitted job arrives on, once; nil for a job not queued.
+// submitted job arrives on, once; nil for a job not submitted or already
+// ended. A call after the grant still returns it, with the ID waiting, so
+// a poll between Submit and Granted loses nothing.
 func (m *Matcher) Granted(jobID string) <-chan string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -555,21 +622,80 @@ func misfits(w *Worker, j Job) []string {
 	}
 	a, r := w.Available, j.Requires
 	if a.CPU < r.CPU {
-		out = append(out, fmt.Sprintf("%g of %g CPUs free", a.CPU, r.CPU))
+		out = append(out, fmt.Sprintf("%g of %g CPUs free", hundredths(a.CPU), r.CPU))
 	}
 	if a.MemGiB < r.MemGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB memory free", a.MemGiB, r.MemGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB memory free", hundredths(a.MemGiB), r.MemGiB))
 	}
 	if a.DiskGiB < r.DiskGiB {
-		out = append(out, fmt.Sprintf("%g of %g GiB disk free", a.DiskGiB, r.DiskGiB))
+		out = append(out, fmt.Sprintf("%g of %g GiB disk free", hundredths(a.DiskGiB), r.DiskGiB))
 	}
 	return out
 }
 
-// Poll offers the worker the first queued job it can run, charging a
-// run slot and the job's resources until its next check-in. It returns
-// false when none fits or the worker is gone, and [ErrUnknownWorker]
-// before the worker's first check-in.
+// hundredths rounds what is free to hundredths, as a worker declares it:
+// charging jobs against it leaves float noise (11.430000000000007).
+func hundredths(x float64) float64 { return math.Round(x*100) / 100 }
+
+// capable reports whether w is not gone and declares every capability
+// j requires, whatever it has free.
+func capable(w *Worker, j Job) bool {
+	if w.Gone {
+		return false
+	}
+	for _, c := range j.Requires.Capabilities {
+		if !w.Declaration.has(c) {
+			return false
+		}
+	}
+	return true
+}
+
+// place decides which of workers takes each of jobs now, charging each
+// worker for what it takes, and returns the index of its worker per job,
+// -1 for a job that waits. Jobs fewer workers are capable of are placed
+// first, then in the order given, so a job only a scarce worker can run
+// never waits behind jobs another worker can run. Of the workers a job
+// fits, it goes to the one with the fewest capabilities it does not
+// need, then to poller, then to the first in order.
+func place(workers []Worker, jobs []Job, poller string) []int {
+	capableOf := make([]int, len(jobs))
+	order := make([]int, len(jobs))
+	for k := range jobs {
+		order[k] = k
+		for i := range workers {
+			if capable(&workers[i], jobs[k]) {
+				capableOf[k]++
+			}
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool { return capableOf[order[a]] < capableOf[order[b]] })
+	where := make([]int, len(jobs))
+	for _, k := range order {
+		best, bestSpare := -1, 0
+		for i := range workers {
+			if len(misfits(&workers[i], jobs[k])) > 0 {
+				continue
+			}
+			s := workers[i].Declaration.spare(jobs[k].Requires)
+			if best < 0 || s < bestSpare || s == bestSpare && workers[i].ID == poller {
+				best, bestSpare = i, s
+			}
+		}
+		where[k] = best
+		if best >= 0 {
+			workers[best].take(jobs[k].Requires)
+		}
+	}
+	return where
+}
+
+// Poll offers the worker the first queued job that [place] gives it,
+// charging a run slot and the job's resources until its next check-in:
+// a job another worker without a capability the job does not need can
+// take now is left to that worker. It returns false when no job is the
+// worker's or the worker is gone, and [ErrUnknownWorker] before the
+// worker's first check-in.
 func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -580,8 +706,10 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	if m.gone(w) {
 		return Offer{}, false, nil
 	}
+	workers := m.workersLocked()
+	where := place(workers, m.pending, workerID)
 	for i, j := range m.pending {
-		if len(misfits(w, j)) > 0 {
+		if where[i] < 0 || workers[where[i]].ID != workerID {
 			continue
 		}
 		ls, err := m.leaser.Acquire(j.ID, workerID, m.now())
@@ -598,7 +726,8 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 		m.leased[j.ID] = j
 		delete(m.steps, j.ID)
 		if ch, ok := m.granted[j.ID]; ok {
-			delete(m.granted, j.ID)
+			// Buffered for the one grant of the submission, which left
+			// the queue above; endLocked drops the channel.
 			ch <- workerID
 		}
 		w.take(j.Requires)
@@ -612,26 +741,25 @@ func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 }
 
 // Placeable reports whether a checked-in worker that is not gone could
-// take a job that requires r now, after the queued jobs took what they
-// fit, and else why it waits, per worker. A job that waits here is
-// better not submitted: no worker would take it.
-func (m *Matcher) Placeable(r Requires) ([]string, bool) {
+// take a job that requires r now, placed with the queued jobs as a poll
+// places them ([place]), and else why it waits, per worker. A job that
+// waits here is better not submitted: no worker would take it.
+//
+// ahead is what jobs dispatched but not yet queued require: each is
+// placed after the queued jobs, so a dispatch that sees one free slot
+// sends one job to it, not one per issue it reads.
+func (m *Matcher) Placeable(r Requires, ahead ...Requires) ([]string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workers := m.workersLocked()
-	for _, j := range m.pending {
-		for i := range workers {
-			if len(misfits(&workers[i], j)) == 0 {
-				workers[i].take(j.Requires)
-				break
-			}
-		}
+	jobs := slices.Clone(m.pending)
+	for _, a := range ahead {
+		jobs = append(jobs, Job{Requires: a})
 	}
 	probe := Job{Requires: r}
-	for i := range workers {
-		if len(misfits(&workers[i], probe)) == 0 {
-			return nil, true
-		}
+	jobs = append(jobs, probe)
+	if where := place(workers, jobs, ""); where[len(jobs)-1] >= 0 {
+		return nil, true
 	}
 	return waiting(probe, workers), false
 }
@@ -650,12 +778,30 @@ func (m *Matcher) Capable(caps []string) bool {
 	return false
 }
 
+// Queued reports whether jobID waits in the queue: submitted, and no
+// worker leased it yet.
+func (m *Matcher) Queued(jobID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
+}
+
+// Holds reports whether jobID is queued or leased.
+func (m *Matcher) Holds(jobID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, leased := m.leased[jobID]
+	return leased || slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
+}
+
 // held returns the leased job when workerID holds a live lease on
-// jobID's attempt.
+// jobID's attempt. It returns [ErrLeaseLost] while that attempt is
+// leased but not to workerID, or under a lease not yet swept, and else
+// what [Matcher.goneLocked] does.
 func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {
 	j, ok := m.leased[jobID]
 	if !ok || j.Attempt != attempt {
-		return Job{}, ErrLeaseLost
+		return Job{}, m.goneLocked(jobID, attempt)
 	}
 	for _, ls := range m.leaser.Leases() {
 		if ls.JobID == jobID && ls.WorkerID == workerID && m.now().Before(ls.Expires) {
@@ -665,8 +811,25 @@ func (m *Matcher) held(workerID, jobID string, attempt int) (Job, error) {
 	return Job{}, ErrLeaseLost
 }
 
+// goneLocked returns why no worker holds jobID's attempt: a
+// [GoneError], or [ErrRecovering] for a job the matcher does not know
+// before [Matcher.Recovered].
+func (m *Matcher) goneLocked(jobID string, attempt int) error {
+	if e, ok := m.endedJobs[jobID]; ok && e.attempt == attempt {
+		return &GoneError{Reason: e.reason}
+	}
+	_, leased := m.leased[jobID]
+	_, ended := m.endedJobs[jobID]
+	known := leased || ended || slices.ContainsFunc(m.pending, func(j Job) bool { return j.ID == jobID })
+	if m.recovering && !known {
+		return ErrRecovering
+	}
+	return &GoneError{Reason: fmt.Sprintf("Sortie holds no attempt %d of job %s", attempt, jobID)}
+}
+
 // Heartbeat renews the caller's lease on the job's attempt, or returns
-// [ErrLeaseLost] when the caller holds no live lease on it.
+// [ErrLeaseLost] when the attempt is held otherwise and [ErrJobGone]
+// when no worker holds it.
 func (m *Matcher) Heartbeat(workerID, jobID string, attempt int) (Expiry, error) {
 	return m.HeartbeatStep(workerID, jobID, attempt, Step{})
 }
@@ -689,9 +852,56 @@ func (m *Matcher) HeartbeatStep(workerID, jobID string, attempt int, step Step) 
 	return Expiry{Expires: ls.Expires.UTC()}, nil
 }
 
+// OnResume sets f to record, outside the matcher's lock, each job whose
+// attempt a worker resumes with new tokens, before the worker gets them:
+// an error refuses the resume, and the worker asks again.
+func (m *Matcher) OnResume(f func(jobID string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onResume = f
+}
+
+// Resume hands the worker that holds a live lease on the job's attempt
+// the attempt's offer again, with new flow tokens, as a worker that
+// restarted and kept the job's machine needs it: the tokens it held
+// ended with its process, and it never keeps one at rest. The earlier
+// tokens of the attempt end. The lease is renewed. It returns the errors
+// of [Matcher.Heartbeat] for an attempt the worker does not hold.
+func (m *Matcher) Resume(workerID, jobID string, attempt int) (Offer, error) {
+	m.mu.Lock()
+	j, err := m.held(workerID, jobID, attempt)
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, err
+	}
+	ls, err := m.leaser.Renew(jobID, workerID, m.now())
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, err
+	}
+	toks, err := m.tokens.Mint(j)
+	if err != nil {
+		m.mu.Unlock()
+		return Offer{}, fmt.Errorf("worker: minting job tokens: %w", err)
+	}
+	hook := m.onResume
+	m.mu.Unlock()
+	flows := make(map[string]FlowAccess, len(j.Flows))
+	for name, u := range j.Flows {
+		flows[name] = FlowAccess{URL: u, Token: toks[name]}
+	}
+	if hook != nil {
+		if err := hook(jobID); err != nil {
+			return Offer{}, err
+		}
+	}
+	return Offer{Job: j, Lease: Expiry{Expires: ls.Expires.UTC()}, Run: j.Run, Flows: flows}, nil
+}
+
 // Report ends the job's attempt with the worker's outcome and releases
-// its lease, or returns [ErrLeaseLost], changing nothing, when the
-// caller holds no live lease on that attempt. The machine's state
+// its lease, or returns, changing nothing, the error of
+// [Matcher.Heartbeat] when the caller holds no live lease on that
+// attempt. The machine's state
 // decides what returns to the worker's count until its next check-in.
 func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error {
 	m.mu.Lock()
@@ -709,6 +919,7 @@ func (m *Matcher) Report(workerID, jobID string, attempt int, out Outcome) error
 	if w := m.workers[workerID]; w != nil {
 		w.release(j.Requires, out.Machine)
 	}
+	m.endedJobs[jobID] = endedAttempt{attempt: attempt, reason: fmt.Sprintf("worker %s reported attempt %d of job %s", workerID, attempt, jobID)}
 	m.endLocked(jobID, out)
 	return nil
 }
@@ -722,8 +933,8 @@ func (m *Matcher) endLocked(jobID string, out Outcome) {
 }
 
 // Cancel withdraws a job, queued or leased, and ends it as cancelled.
-// A worker's later heartbeat or report for it is refused, and the
-// worker stops its machine.
+// A worker's later heartbeat or report for it returns [ErrJobGone], and
+// the worker releases its machine.
 func (m *Matcher) Cancel(jobID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -741,6 +952,7 @@ func (m *Matcher) Cancel(jobID string) {
 		delete(m.leased, jobID)
 		delete(m.steps, jobID)
 		m.tokens.Void(jobID)
+		m.endedJobs[jobID] = endedAttempt{attempt: j.Attempt, reason: fmt.Sprintf("Sortie withdrew attempt %d of job %s", j.Attempt, jobID)}
 	}
 	m.endLocked(jobID, Outcome{Cancelled: true, Reason: "job withdrawn"})
 }
@@ -763,8 +975,9 @@ func (m *Matcher) ExpireLeases() []string {
 		if w := m.workers[ls.WorkerID]; w != nil {
 			w.release(j.Requires, MachineStopped)
 		}
-		m.endLocked(ls.JobID, Outcome{Expired: true, Machine: MachineStopped,
-			Reason: fmt.Sprintf("lease held by worker %s expired", ls.WorkerID)})
+		reason := fmt.Sprintf("lease held by worker %s expired", ls.WorkerID)
+		m.endedJobs[ls.JobID] = endedAttempt{attempt: j.Attempt, reason: fmt.Sprintf("the %s on attempt %d of job %s", reason, j.Attempt, ls.JobID)}
+		m.endLocked(ls.JobID, Outcome{Expired: true, Machine: MachineStopped, Reason: reason})
 		ids = append(ids, ls.JobID)
 	}
 	return ids

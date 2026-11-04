@@ -98,7 +98,7 @@ func handoffConfig(t *testing.T) config.ServiceConfig {
 	cfg.Tracker.ActiveStates = []string{"To Do"}
 	cfg.Tracker.TerminalStates = []string{"Done", "Canceled"}
 	cfg.Tracker.HandoffState = "In Review"
-	cfg.Environment.Remote.Repositories = []config.SmolvmRepository{
+	cfg.Environment.Remote.Repositories = []config.Repository{
 		{Name: "agentic-orchestration", URL: "git@github.com:ortusnova/agentic-orchestration.git", Base: "main", Provider: "github", Project: "ortusnova/agentic-orchestration"},
 		{Name: "sortie", URL: "git@github.com:ortusnova/sortie.git", Base: "plan-bench", Provider: "github", Project: "ortusnova/sortie"},
 	}

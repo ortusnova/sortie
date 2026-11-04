@@ -18,7 +18,7 @@ func remoteHoldConfig(t *testing.T, maxAgents int) config.ServiceConfig {
 	t.Helper()
 	cfg := runConfig(t, map[string]any{"agent": map[string]any{"kind": "kind-a", "command": "a-cmd"}})
 	cfg.Agent.MaxConcurrentAgents = maxAgents
-	repos := []config.SmolvmRepository{
+	repos := []config.Repository{
 		{Name: "homelab", URL: "https://forge.invalid/o/homelab.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/homelab",
 			Requires: &config.RemoteRequirements{Capabilities: []string{"nested"}, CPU: 8, MemGiB: 20, DiskGiB: 200}},
 		{Name: "sortie", URL: "https://forge.invalid/o/sortie.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/sortie"},
@@ -184,5 +184,64 @@ func TestHandleRetryTimer_WaitsForAWorker(t *testing.T) {
 	HandleRetryTimer(state, "ISS-54", params)
 	if _, running := state.Running["ISS-54"]; !running || dispatched != 1 {
 		t.Errorf("running = %v, dispatches = %d once a worker can take it; want 1 dispatch", running, dispatched)
+	}
+}
+
+// A dispatch pass sends no more jobs than the workers have free slots:
+// a job dispatched in the pass but not yet queued counts as the queued
+// ones do. Live, 2026-11-03: under a cap of 16, one free slot on p1
+// and one on taichi took ONS-101, ONS-105 and ONS-109 in one pass; the
+// third sat in the queue as running until the stall timeout ended it.
+func TestHandleTick_DispatchesOneJobPerFreeSlot(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h := remoteHoldHarness(t, 16, candidate("issue-101", "ONS-101"), candidate("issue-105", "ONS-105"), candidate("issue-109", "ONS-109"))
+	one := remoteHost()
+	one.RunSlots, one.Running = 3, 2
+	h.o.remote.matcher.CheckIn("p1", one)
+	h.o.remote.matcher.CheckIn("taichi", one)
+
+	h.o.handleTick(ctx)
+
+	for _, id := range []string{"issue-101", "issue-105"} {
+		if _, running := h.state.Running[id]; !running {
+			t.Errorf("%s not running, want it on a free slot; held: %+v", id, h.state.Held[id])
+		}
+	}
+	got := requireHeld(t, h, "issue-109", SkipNoWorker)
+	want := []string{"worker p1: all 3 run slots in use", "worker taichi: all 3 run slots in use"}
+	if got.Worker == nil || !reflect.DeepEqual(got.Worker.Waiting, want) {
+		t.Errorf("State.Held[issue-109].Worker = %+v, want waiting %v", got.Worker, want)
+	}
+}
+
+// A running entry whose job waits in the matcher's queue holds no agent
+// slot and does not stall; once a worker takes the job, stall detection
+// measures from then.
+func TestRefreshWorkerQueue_AQueuedJobIsNotRunning(t *testing.T) {
+	h := remoteHoldHarness(t, 1)
+	now := time.Now()
+	h.state.Running["issue-101"] = &RunningEntry{Identifier: "ONS-101", Issue: candidate("issue-101", "ONS-101"), StartedAt: now.Add(-time.Hour)}
+	h.o.remote.matcher.Submit(worker.Job{ID: "ONS-101", Attempt: 1, Issue: worker.Issue{Identifier: "ONS-101"}})
+
+	h.o.refreshWorkerQueue(now)
+
+	e := h.state.Running["issue-101"]
+	if !e.WorkerQueued || AgentsRunning(h.state.Running) != 0 || !HasAvailableSlots(h.state, "To Do") {
+		t.Fatalf("queued = %v, agents running = %d; want the queued job to hold no agent slot", e.WorkerQueued, AgentsRunning(h.state.Running))
+	}
+	reconcileStalled(h.state, ReconcileParams{StallTimeoutMS: 60_000}, discardLogger(), context.Background(), now, nil)
+	if _, running := h.state.Running["issue-101"]; !running {
+		t.Fatal("the queued job was ended as stalled")
+	}
+
+	h.o.remote.matcher.CheckIn("taichi", remoteHost())
+	if _, ok, err := h.o.remote.matcher.Poll("taichi"); !ok || err != nil {
+		t.Fatalf("Poll() = %v, %v; want ONS-101 offered", ok, err)
+	}
+	later := now.Add(time.Minute)
+	h.o.refreshWorkerQueue(later)
+	if e.WorkerQueued || !e.WorkerGrantedAt.Equal(later) || !stallReference(e).Equal(later) || AgentsRunning(h.state.Running) != 1 {
+		t.Errorf("after the grant: queued %v, granted at %v, stall reference %v; want measured from %v", e.WorkerQueued, e.WorkerGrantedAt, stallReference(e), later)
 	}
 }

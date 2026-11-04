@@ -1,4 +1,4 @@
--- Migration 1013 (fork range): the parts of a story a session could not do
+-- Migration 1015 (fork range): the parts of a story a session could not do
 --
 -- One row per part a session recorded in .sortie/handoff.json, keyed by
 -- the story and the part's ID, with what it needs, how to check it, and

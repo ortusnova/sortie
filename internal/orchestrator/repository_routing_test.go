@@ -13,32 +13,42 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/worker"
 	"github.com/sortie-ai/sortie/internal/workspace"
 )
 
 // routedRepository returns a repositories entry called name.
-func routedRepository(name string, closed bool) config.SmolvmRepository {
-	return config.SmolvmRepository{
+func routedRepository(name string, closed bool) config.Repository {
+	return config.Repository{
 		Name: name, URL: "https://example.com/org/" + name + ".git", Base: "main",
 		BranchPrefix: "sortie/", MaxBundleMiB: 512, ClosedToDispatch: closed,
 	}
 }
 
-// routedEnvironment returns a smolvm environment that lists repos and
+// routedEnvironment returns a remote environment that lists repos and
 // names def the default, or no default when def is empty.
-func routedEnvironment(def string, repos ...config.SmolvmRepository) config.EnvironmentConfig {
-	env := config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm, Smolvm: config.SmolvmConfig{Repositories: repos, DefaultRepository: def}}
+func routedEnvironment(def string, repos ...config.Repository) config.EnvironmentConfig {
+	env := config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{
+		Backend: config.DefaultRemoteBackend, Repositories: repos, DefaultRepository: def,
+	}}
 	if def != "" {
-		env.Smolvm.Repository, _ = env.Smolvm.RepositoryNamed(def)
+		env.Remote.Repository, _ = env.RepositorySet().RepositoryNamed(def)
 	}
 	return env
 }
 
 // newRoutedHarness returns a run harness whose workflow runs under env,
-// over tracker when it is not nil. The test's environment kinds are not
-// registered here, so a dispatched attempt fails its preparation; the
-// dispatch decision is what these tests read.
+// over tracker when it is not nil, built by [buildRouted].
 func newRoutedHarness(t *testing.T, env config.EnvironmentConfig, tracker *runTracker) *runHarness {
+	t.Helper()
+	h := unbuiltRoutedHarness(t, env, tracker)
+	buildRouted(h)
+	return h
+}
+
+// unbuiltRoutedHarness returns the harness of [newRoutedHarness] before
+// it is built.
+func unbuiltRoutedHarness(t *testing.T, env config.EnvironmentConfig, tracker *runTracker) *runHarness {
 	t.Helper()
 	cfg := runConfig(t, map[string]any{"agent": map[string]any{"kind": "kind-a", "command": "a-cmd"}})
 	cfg.Tracker.InProgressState = "In Progress"
@@ -49,6 +59,16 @@ func newRoutedHarness(t *testing.T, env config.EnvironmentConfig, tracker *runTr
 		h.tracker = tracker
 	}
 	return h
+}
+
+// buildRouted builds h without a worker matcher, so a dispatched issue
+// is not held for a worker and its attempt fails its preparation, the
+// remote environment running nothing on this host; the dispatch
+// decision is what these tests read.
+func buildRouted(h *runHarness) {
+	h.t.Helper()
+	h.build()
+	h.o.remote = nil
 }
 
 func repoLabel(name string) string { return config.RepositoryLabelPrefix + name }
@@ -222,9 +242,9 @@ func TestDispatchesIssue(t *testing.T) {
 
 	listed := routedEnvironment("sortie", routedRepository("sortie", false), routedRepository("homelab", true))
 	noDefault := routedEnvironment("", routedRepository("homelab", false))
-	single := config.EnvironmentConfig{Kind: config.EnvironmentKindSmolvm}
+	single := config.EnvironmentConfig{Kind: config.EnvironmentKindRemote}
 	only := routedRepository("", false)
-	single.Smolvm.Repository, single.Smolvm.Repositories = &only, []config.SmolvmRepository{only}
+	single.Remote.Repository, single.Remote.Repositories = &only, []config.Repository{only}
 
 	tests := []struct {
 		name   string
@@ -264,12 +284,12 @@ func TestWorkflowShape_ShowsTheRepositoriesEachSortieRuns(t *testing.T) {
 		{
 			name: "p1",
 			env:  routedEnvironment("sortie", routedRepository("sortie", false), routedRepository("homelab", true)),
-			want: []ShapeRepository{{Name: "sortie", Dispatch: true, Default: true}, {Name: "homelab", Dispatch: false}},
+			want: []ShapeRepository{{Name: "sortie", Dispatch: true, Default: true, Requires: backendOnly()}, {Name: "homelab", Dispatch: false, Requires: backendOnly()}},
 		},
 		{
 			name: "taichi",
 			env:  routedEnvironment("", routedRepository("homelab", false)),
-			want: []ShapeRepository{{Name: "homelab", Dispatch: true}},
+			want: []ShapeRepository{{Name: "homelab", Dispatch: true, Requires: backendOnly()}},
 		},
 		{name: "no repository", env: config.EnvironmentConfig{}, want: []ShapeRepository{}},
 	}
@@ -293,6 +313,43 @@ func TestWorkflowShape_ShowsTheRepositoriesEachSortieRuns(t *testing.T) {
 				t.Errorf("wire repositories = %s, want %d entries", raw, len(tt.want))
 			}
 		})
+	}
+}
+
+// Under the remote kind, config.repositories serves what a worker must
+// declare to take a job of each repository, the backend among the
+// capabilities, so a client can match a queued job to the workers before
+// Sortie offers it; any other kind configures no repository.
+func TestWorkflowShape_ServesWhatEachRepositoryRequires(t *testing.T) {
+	t.Parallel()
+
+	homelab := routedRepository("homelab", false)
+	homelab.Requires = &config.RemoteRequirements{Capabilities: []string{"kvm", "nested"}, CPU: 4, MemGiB: 16, DiskGiB: 80}
+	sortie := routedRepository("sortie", false)
+	env := config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{
+		Backend: "smolvm", Requires: config.RemoteRequirements{CPU: 2, MemGiB: 4},
+		Repositories: []config.Repository{sortie, homelab}, DefaultRepository: "sortie",
+	}}
+	env.Remote.Repository = &env.Remote.Repositories[0]
+
+	got := shapeRepositories(env)
+	want := []ShapeRepository{
+		{Name: "sortie", Dispatch: true, Default: true, Requires: &worker.Requires{Capabilities: []string{"smolvm"}, CPU: 2, MemGiB: 4}},
+		{Name: "homelab", Dispatch: true, Requires: &worker.Requires{Capabilities: []string{"kvm", "nested", "smolvm"}, CPU: 4, MemGiB: 16, DiskGiB: 80}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("remote repositories = %+v, want %+v", got, want)
+	}
+	if homelab.Requires.Capabilities[len(homelab.Requires.Capabilities)-1] != "nested" {
+		t.Errorf("the configured capabilities were changed: %v", homelab.Requires.Capabilities)
+	}
+
+	raw, err := json.Marshal(shapeRepositories(config.EnvironmentConfig{Kind: config.EnvironmentKindLocal}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("local repositories = %s, want none", raw)
 	}
 }
 
@@ -395,4 +452,10 @@ func TestDispatchesIssue_SeededWorkspaceKeepsItsRepository(t *testing.T) {
 			t.Errorf("%s: dispatchesIssue = %v, want %v", tt.name, got, tt.want)
 		}
 	}
+}
+
+// backendOnly is what a worker must declare for a job of a repository
+// of [routedEnvironment]: the default backend alone.
+func backendOnly() *worker.Requires {
+	return &worker.Requires{Capabilities: []string{config.DefaultRemoteBackend}}
 }

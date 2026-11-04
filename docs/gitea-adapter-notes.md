@@ -92,7 +92,7 @@ Branch names are percent-encoded, slashes included. Deleting an already-absent b
 
 ## Opening a pull request for an issue branch
 
-The SCM adapter implements the optional `domain.PullRequestOpener`, whose `EnsurePullRequest` the repository export of the `smolvm` execution environment calls after Sortie pushes an issue branch.
+The SCM adapter implements the optional `domain.PullRequestOpener`, whose `EnsurePullRequest` the repository export of the `remote` execution environment calls after Sortie pushes an issue branch.
 
 **The list route has no head filter.** The adapter pages through `GET /repos/{owner}/{repo}/pulls?state=open`, most recently updated first, and matches the head itself: the head ref must equal the branch and, when the response names the head repository, that repository must be the target one (compared without case), so a fork's branch of the same name is never returned. A match is returned unchanged, with `Created` false. Otherwise the adapter creates the pull request.
 

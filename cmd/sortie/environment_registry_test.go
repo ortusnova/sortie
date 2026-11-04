@@ -14,7 +14,7 @@ import (
 func TestEnvironmentKindsRegistered(t *testing.T) {
 	t.Parallel()
 
-	want := []string{config.EnvironmentKindLocal, config.EnvironmentKindRemote, config.EnvironmentKindSmolvm}
+	want := []string{config.EnvironmentKindLocal, config.EnvironmentKindRemote}
 	if got := environment.Registry.Kinds(); !slices.Equal(got, want) {
 		t.Errorf("environment.Registry.Kinds() = %q, want %q", got, want)
 	}

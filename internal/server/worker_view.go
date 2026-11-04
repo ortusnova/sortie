@@ -60,7 +60,8 @@ type workerView struct {
 // know it.
 type runningWorkerView struct {
 	// Worker is the host the run runs on: the worker that holds its
-	// lease, its SSH host, or Sortie's own host.
+	// lease, its SSH host, or Sortie's own host. Under environment.kind
+	// remote a run no worker holds yet, still preparing its job, has none.
 	Worker string `json:"worker,omitempty"`
 	// Phase, Step and StepAt are what the job last reported through its
 	// worker's heartbeat.
@@ -127,6 +128,8 @@ func (s *Server) attachWorkerView(ctx context.Context, resp *stateResponse, snap
 		for _, l := range resp.Workers.Leases {
 			leases[l.Job] = l
 		}
+		resp.Running = withoutQueued(resp.Running, resp.Workers.Queue, leases)
+		resp.Counts.Running = len(resp.Running)
 	}
 	for i := range resp.Running {
 		row := &resp.Running[i]
@@ -144,6 +147,20 @@ func (s *Server) attachWorkerView(ctx context.Context, resp *stateResponse, snap
 	}
 	resp.Waits = s.waitsOf(resp, hostName)
 	resp.Pulls = s.pullsOf(snap.PendingReactions, hostName, snap.GeneratedAt)
+}
+
+// withoutQueued drops the rows whose remote job waits in the matcher's
+// queue for a worker: such a job runs nowhere and holds no agent slot,
+// and waits lists it with why it waits.
+func withoutQueued(rows []runningEntryResponse, queue []worker.Queued, leases map[string]worker.LeaseView) []runningEntryResponse {
+	queued := map[string]bool{}
+	for _, q := range queue {
+		queued[q.Job.ID] = true
+	}
+	return slices.DeleteFunc(rows, func(r runningEntryResponse) bool {
+		_, leased := leases[r.IssueIdentifier]
+		return queued[r.IssueIdentifier] && !leased
+	})
 }
 
 // ruleEstimate returns the median length of the rule's newest succeeded

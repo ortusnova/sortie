@@ -96,6 +96,7 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			{Name: "turn_timeout_ms", Type: FieldInt},
 			{Name: "read_timeout_ms", Type: FieldInt},
 			{Name: "stall_timeout_ms", Type: FieldInt},
+			{Name: "tool_call_timeout_ms", Type: FieldInt},
 			{Name: "max_concurrent_agents", Type: FieldInt},
 			{Name: "max_turns", Type: FieldInt},
 			{Name: "max_retry_backoff_ms", Type: FieldInt},
@@ -150,32 +151,6 @@ var knownFieldsRegistry = map[string]SectionSchema{
 		Fields: []FieldDef{
 			{Name: "kind", Type: FieldString},
 			{Name: "host_prefix", Type: FieldStringList},
-			{Name: "smolvm", Type: FieldMap, Nested: []FieldDef{
-				{Name: "binary", Type: FieldString},
-				{Name: "pack", Type: FieldString},
-				{Name: "cpus", Type: FieldInt},
-				{Name: "memory_mib", Type: FieldInt},
-				{Name: "storage_gib", Type: FieldInt},
-				{Name: "allow_hosts", Type: FieldStringList},
-				{Name: "credentials", Type: FieldSequence},
-				{Name: "repositories", Type: FieldSequence},
-				{Name: "default_repository", Type: FieldString},
-				{Name: "repository", Type: FieldMap, Nested: []FieldDef{
-					{Name: "name", Type: FieldString},
-					{Name: "url", Type: FieldString},
-					{Name: "base", Type: FieldString},
-					{Name: "branch_prefix", Type: FieldString},
-					{Name: "provider", Type: FieldString},
-					{Name: "project", Type: FieldString},
-					{Name: "max_bundle_mib", Type: FieldInt},
-				}},
-				{Name: "pass_env", Type: FieldStringList},
-				{Name: "ssh_agent", Type: FieldBool},
-				{Name: "nested", Type: FieldBool},
-				{Name: "net_backend", Type: FieldString},
-				{Name: "mounts", Type: FieldSequence},
-				{Name: "user", Type: FieldString},
-			}},
 			{Name: "remote", Type: FieldMap, Nested: remoteSchemaFields},
 		},
 	},
@@ -383,7 +358,7 @@ func ValidateFrontMatter(raw map[string]any, cfg ServiceConfig) []FrontMatterWar
 		}
 
 		// Descend into maps nested two or more levels deep (e.g.
-		// environment.smolvm.repository).
+		// environment.remote.requires).
 		for _, field := range schema.Fields {
 			nestedMap := extractSubMap(sectionMap, field.Name)
 			if nestedMap == nil {

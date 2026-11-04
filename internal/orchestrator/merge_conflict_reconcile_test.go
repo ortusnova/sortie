@@ -104,7 +104,7 @@ type statefulFingerprintStore struct {
 
 type fingerprintRecord struct {
 	fingerprint string
-	dispatched  bool
+	dispatches  int
 }
 
 var _ ReconcileStore = (*statefulFingerprintStore)(nil)
@@ -127,7 +127,7 @@ func (s *statefulFingerprintStore) UpsertReactionFingerprint(_ context.Context, 
 	// A changed fingerprint resets the dispatched flag, mirroring the
 	// persistence-layer upsert contract.
 	if rec.fingerprint != fingerprint {
-		rec.dispatched = false
+		rec.dispatches = 0
 	}
 	rec.fingerprint = fingerprint
 	s.fingerprints[key] = rec
@@ -140,7 +140,16 @@ func (s *statefulFingerprintStore) GetReactionFingerprint(_ context.Context, iss
 		return "", false, s.getErr
 	}
 	rec := s.fingerprints[issueID+":"+kind]
-	return rec.fingerprint, rec.dispatched, nil
+	return rec.fingerprint, rec.dispatches > 0, nil
+}
+
+func (s *statefulFingerprintStore) GetReactionDispatches(_ context.Context, issueID, kind string) (string, int, error) {
+	s.getCalls++
+	if s.getErr != nil {
+		return "", 0, s.getErr
+	}
+	rec := s.fingerprints[issueID+":"+kind]
+	return rec.fingerprint, rec.dispatches, nil
 }
 
 func (s *statefulFingerprintStore) MarkReactionDispatched(_ context.Context, issueID, kind string) error {
@@ -149,8 +158,11 @@ func (s *statefulFingerprintStore) MarkReactionDispatched(_ context.Context, iss
 		return s.markErr
 	}
 	key := issueID + ":" + kind
-	rec := s.fingerprints[key]
-	rec.dispatched = true
+	rec, ok := s.fingerprints[key]
+	if !ok {
+		return nil
+	}
+	rec.dispatches++
 	s.fingerprints[key] = rec
 	return nil
 }
@@ -397,7 +409,7 @@ func TestReconcileMergeConflicts_NotDirtyResets(t *testing.T) {
 			rkey := ReactionKey("MC-N1", ReactionKindMergeConflict)
 			state.ReactionAttempts[rkey] = 1 // pre-seeded prior-episode counter
 			store := newStatefulFingerprintStore()
-			store.fingerprints[rkey] = fingerprintRecord{fingerprint: "old-fp", dispatched: true}
+			store.fingerprints[rkey] = fingerprintRecord{fingerprint: "old-fp", dispatches: 1}
 			metrics := newMergeConflictMetricsSpy()
 			scm := &mergeabilitySCM{fn: func() (domain.PRMergeStatus, error) {
 				return domain.PRMergeStatus{Mergeability: tt.state, HeadSHA: "head-clean", BaseBranch: "main"}, nil
@@ -675,8 +687,8 @@ func TestReconcileMergeConflicts_CrossKindIsolation(t *testing.T) {
 	state.Claimed[issueID] = struct{}{}
 
 	store := newStatefulFingerprintStore()
-	store.fingerprints[ciKey] = fingerprintRecord{fingerprint: "ci-fp", dispatched: true}
-	store.fingerprints[reviewKey] = fingerprintRecord{fingerprint: "review-fp", dispatched: true}
+	store.fingerprints[ciKey] = fingerprintRecord{fingerprint: "ci-fp", dispatches: 1}
+	store.fingerprints[reviewKey] = fingerprintRecord{fingerprint: "review-fp", dispatches: 1}
 	metrics := newMergeConflictMetricsSpy()
 	scm := &mergeabilitySCM{fn: func() (domain.PRMergeStatus, error) {
 		return dirtyStatus("head-iso", "main"), nil
@@ -1322,7 +1334,7 @@ func TestHandleMergeConflictDirty_AttributionGatedReset(t *testing.T) {
 
 		inner := newStatefulFingerprintStore()
 		inner.fingerprints[issueID+":"+ReactionKindMergeConflict] = fingerprintRecord{
-			fingerprint: buildMergeConflictFingerprint("head-old"), dispatched: true,
+			fingerprint: buildMergeConflictFingerprint("head-old"), dispatches: 1,
 		}
 		store := &mcAttributionStore{statefulFingerprintStore: inner, countConfigured: true, count: 0}
 		metrics := newMergeConflictMetricsSpy()
@@ -1352,7 +1364,7 @@ func TestHandleMergeConflictDirty_AttributionGatedReset(t *testing.T) {
 
 		inner := newStatefulFingerprintStore()
 		inner.fingerprints[issueID+":"+ReactionKindMergeConflict] = fingerprintRecord{
-			fingerprint: buildMergeConflictFingerprint("head-old"), dispatched: true,
+			fingerprint: buildMergeConflictFingerprint("head-old"), dispatches: 1,
 		}
 		// countConfigured left false: the embedded default answers
 		// unknown via a non-nil error, matching every failure path.
@@ -1390,7 +1402,7 @@ func TestHandleMergeConflictDirty_SameHeadDedupPrecedesAttributionQuery(t *testi
 	// The stored fingerprint already matches the head this tick
 	// observes, and it was already dispatched for.
 	inner.fingerprints[issueID+":"+ReactionKindMergeConflict] = fingerprintRecord{
-		fingerprint: buildMergeConflictFingerprint("head-same"), dispatched: true,
+		fingerprint: buildMergeConflictFingerprint("head-same"), dispatches: 1,
 	}
 	store := &mcAttributionStore{statefulFingerprintStore: inner}
 	metrics := newMergeConflictMetricsSpy()
@@ -1758,4 +1770,168 @@ func (*mcAttributionStore) LatestRunFailureSignature(context.Context, string) (s
 
 func (*mcAttributionStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
 	return nil
+}
+
+// startMergeConflictRun does what the retry handler does when it starts
+// the queued rebase run: it frees the retry slot, counts the dispatch on
+// the stored fingerprint, and holds the issue as running.
+func startMergeConflictRun(t *testing.T, state *State, store *statefulFingerprintStore, issueID string) {
+	t.Helper()
+	if _, ok := state.RetryAttempts[issueID]; !ok {
+		t.Fatal("no rebase run queued, want one")
+	}
+	CancelRetry(state, issueID)
+	if err := store.MarkReactionDispatched(context.Background(), issueID, ReactionKindMergeConflict); err != nil {
+		t.Fatalf("MarkReactionDispatched: %v", err)
+	}
+	state.Running[issueID] = &RunningEntry{Identifier: issueID + "-ident", ReactionKind: ReactionKindMergeConflict}
+}
+
+// A restart finds a conflicting pull request whose head a previous
+// process marked dispatched, though no run of it is queued or running:
+// the run that took the mark ended, or never got past its start. The
+// rebuilt watch schedules a rebase run for the head a poll interval
+// later, rather than skipping it for ever.
+func TestReconcileMergeConflicts_StaleMarkAfterRestartSchedulesRun(t *testing.T) {
+	t.Parallel()
+
+	issueID := "MC-STALE"
+	state := stateWithMergeConflict(t, issueID, 92)
+	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
+	store := newStatefulFingerprintStore()
+	store.fingerprints[rkey] = fingerprintRecord{fingerprint: buildMergeConflictFingerprint("head-1"), dispatches: 1}
+	metrics := newMergeConflictMetricsSpy()
+	scm := &mergeabilitySCM{fn: func() (domain.PRMergeStatus, error) { return dirtyStatus("head-1", "main"), nil }}
+	now := mcBaseTime
+	params := mergeConflictParams(store, scm, nil)
+	params.NowFunc = func() time.Time { return now }
+
+	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+	if len(state.RetryAttempts) != 0 {
+		t.Fatalf("first pass queued a run, want it to wait one poll interval for the forge to report a pushed head")
+	}
+
+	now = now.Add(time.Minute)
+	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+	retry, ok := state.RetryAttempts[issueID]
+	if !ok || retry.ReactionKind != ReactionKindMergeConflict {
+		t.Fatalf("retry = %+v, want a merge-conflict run queued for the stale-marked head", retry)
+	}
+	if metrics.checks["dispatched"] != 1 {
+		t.Errorf(`IncMergeConflictChecks("dispatched") = %d, want 1`, metrics.checks["dispatched"])
+	}
+}
+
+// A rebase run that ends with the pull request still conflicting on the
+// same head is retried, at most mergeConflictRunsPerHead runs per head,
+// and only while no run of the issue is in flight. When the runs are
+// spent, the reaction escalates instead of waiting for ever, and a new
+// head ends the escalation and gets its own run.
+func TestReconcileMergeConflicts_SameHeadRunRetriedWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	issueID := "MC-SAME"
+	state := stateWithMergeConflict(t, issueID, 51)
+	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
+	store := newStatefulFingerprintStore()
+	metrics := newMergeConflictMetricsSpy()
+	head := "head-1"
+	scm := &mergeabilitySCM{fn: func() (domain.PRMergeStatus, error) { return dirtyStatus(head, "plan-bench"), nil }}
+	now := mcBaseTime
+	params := mergeConflictParams(store, scm, &ciTrackerStub{})
+	params.MergeConflictConfig.Escalation = "none"
+	params.MergeConflictConfig.MaxRetries = 2
+	params.NowFunc = func() time.Time { return now }
+	pass := func() {
+		t.Helper()
+		now = now.Add(time.Minute)
+		if entry, ok := state.PendingReactions[rkey]; ok {
+			entry.PendingRetryAt = time.Time{}
+		}
+		reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+		state.TrackerOpsWg.Wait()
+	}
+	// The watch is rebuilt while the run is in flight, as a restart
+	// that adopts the run does; the run's exit keeps that entry.
+	reseed := func() {
+		state.PendingReactions[rkey] = newMergeConflictPending(issueID, 51)
+	}
+
+	pass()
+	for run := 1; run <= mergeConflictRunsPerHead; run++ {
+		if got := metrics.checks["dispatched"]; got != run {
+			t.Fatalf("before run %d: dispatched = %d, want %d", run, got, run)
+		}
+		startMergeConflictRun(t, state, store, issueID)
+		reseed()
+		pass()
+		if len(state.RetryAttempts) != 0 {
+			t.Fatalf("run %d in flight: another run was queued, want none", run)
+		}
+		delete(state.Running, issueID)
+		pass()
+		if len(state.RetryAttempts) != 0 {
+			t.Fatalf("run %d just ended: a run was queued at once, want a poll interval's wait", run)
+		}
+		pass()
+	}
+
+	if got := metrics.checks["dispatched"]; got != mergeConflictRunsPerHead {
+		t.Fatalf("dispatched = %d, want %d (the runs one head gets)", got, mergeConflictRunsPerHead)
+	}
+	if len(state.RetryAttempts) != 0 {
+		t.Fatal("a run was queued past the head's runs")
+	}
+	assertEscalationBegan(t, state, rkey, EscalationTriggerUnresolved)
+	if state.ReactionAttempts[rkey] != 1 {
+		t.Errorf("ReactionAttempts = %d, want 1: runs on one head spend one rebase of max_retries", state.ReactionAttempts[rkey])
+	}
+
+	pass()
+	if got := metrics.checks["dispatched"]; got != mergeConflictRunsPerHead {
+		t.Errorf("standing escalation: dispatched = %d, want %d", got, mergeConflictRunsPerHead)
+	}
+	assertEscalationBegan(t, state, rkey, EscalationTriggerUnresolved)
+
+	head = "head-2"
+	pass()
+	if retry, ok := state.RetryAttempts[issueID]; !ok || retry.ReactionKind != ReactionKindMergeConflict {
+		t.Errorf("a new conflicting head got no run (retry %+v), want the escalation ended and a run queued", retry)
+	}
+}
+
+// A rebase run that pushed a merge of the base moves the head, and the
+// forge reports the pull request mergeable: the episode closes and no
+// further run is queued.
+func TestReconcileMergeConflicts_RunThatPushedAMergeResolves(t *testing.T) {
+	t.Parallel()
+
+	issueID := "MC-PUSHED"
+	state := stateWithMergeConflict(t, issueID, 58)
+	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
+	store := newStatefulFingerprintStore()
+	metrics := newMergeConflictMetricsSpy()
+	status := dirtyStatus("head-1", "plan-bench")
+	scm := &mergeabilitySCM{fn: func() (domain.PRMergeStatus, error) { return status, nil }}
+	now := mcBaseTime
+	params := mergeConflictParams(store, scm, nil)
+	params.NowFunc = func() time.Time { return now }
+
+	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+	startMergeConflictRun(t, state, store, issueID)
+	delete(state.Running, issueID)
+	state.PendingReactions[rkey] = newMergeConflictPending(issueID, 58)
+	status = domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: "merge-of-plan-bench", BaseBranch: "plan-bench"}
+	for range 2 {
+		now = now.Add(time.Minute)
+		makeDue(t, state, rkey)
+		reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+	}
+
+	if metrics.checks["dispatched"] != 1 || len(state.RetryAttempts) != 0 {
+		t.Errorf("dispatched = %d, retries = %d; want 1, 0", metrics.checks["dispatched"], len(state.RetryAttempts))
+	}
+	if metrics.checks["clear"] != 2 || store.has(issueID, ReactionKindMergeConflict) {
+		t.Errorf("clear = %d, fingerprint kept = %v; want the episode closed", metrics.checks["clear"], store.has(issueID, ReactionKindMergeConflict))
+	}
 }

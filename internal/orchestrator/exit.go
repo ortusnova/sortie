@@ -59,6 +59,7 @@ type WorkerExitStore interface {
 	RecordReactionActivity(ctx context.Context, records []persistence.ReactionActivity) error
 	SaveUsageLimitHold(ctx context.Context, hold persistence.UsageLimitHold) error
 	DeleteUsageLimitHold(ctx context.Context, agentKind string, modelOnly bool, model string) error
+	ReturnReactionDispatch(ctx context.Context, issueID, kind string) error
 }
 
 // HandleWorkerExitParams holds the dependencies for [HandleWorkerExit] that
@@ -366,6 +367,10 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 	// evidence policy changes this run's persisted status. Evidence is
 	// consulted only where the handoff conditions already hold, and only
 	// after the blocked and terminal dispositions are ruled out.
+	// A criteria review that found a criterion not met stops blocked here,
+	// so every disposition below treats it as the refusal it is.
+	applyCriteriaVerdict(ctx, params, entry, &workerResult, log)
+
 	var issueIsActive bool
 	var blockedSoftStop bool
 	var drivesIssue bool
@@ -488,6 +493,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		}
 	}
 
+	returnLostMergeConflictDispatch(ctx, params.Store, entry.ReactionKind, workerResult.IssueID, status, runError, log)
+
 	issueIdentity := issueIdentityOf(entry.Issue)
 
 	// Prefer workerResult.SessionID (authoritative from the adapter) over
@@ -561,6 +568,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 
 		EnvironmentImageSHA256: workerResult.EnvironmentInstance.ImageDigest,
 		ExportedCommit:         workerResult.ExportedCommit,
+		Worker:                 workerResult.Worker,
 	}
 	// A row recording no measurement must carry zero in all five token
 	// columns. The reconciliation above can populate them from a worker
@@ -1159,8 +1167,10 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 
 		// A fix session leaves the issue in the handoff state and releases
 		// its claim, but its push gives the pull request a new head, so the
-		// watches keyed on that head must start over.
-		fixExit := claimedAtExit && dispatchPostureForReactionKind(entry.ReactionKind) == PostureFix && !blockedSoftStop && !terminalSuppressed
+		// watches keyed on that head must start over. A parked story's
+		// live-proof job seeds none: the park holds the story until the
+		// supervisor acts on the job's result.
+		fixExit := claimedAtExit && dispatchPostureForReactionKind(entry.ReactionKind) == PostureFix && entry.ReactionKind != ReactionKindLiveProof && !blockedSoftStop && !terminalSuppressed
 		headWatchesAllowed := (reactionEnqueueAllowed || fixExit) && !criteriaFailed
 		var seededKinds []string
 
@@ -1545,6 +1555,17 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				log.Warn("worker run refused by usage limit, releasing claim",
 					slog.Time("resets_at", usageHold.ResetsAt),
 				)
+				delete(state.Claimed, workerResult.IssueID)
+
+			case entry.ReactionKind == ReactionKindLiveProof && openPlatformFault(state, failureSignature) != nil:
+				// A parked story's live-proof job would only fail the same
+				// way again; the park holds the story, and the supervisor
+				// requests the proof again once the fault is fixed.
+				log.Warn("live-proof job stopped on an open platform fault, not retrying",
+					slog.Any("error", workerResult.Error),
+					slog.String("platform_fault_id", openPlatformFault(state, failureSignature).ID),
+				)
+				CancelRetry(state, workerResult.IssueID)
 				delete(state.Claimed, workerResult.IssueID)
 
 			case heldByFault != nil:
@@ -2087,4 +2108,27 @@ func removeControlBytes(text string) string {
 		kept.WriteByte(b)
 	}
 	return kept.String()
+}
+
+// returnLostMergeConflictDispatch gives back the dispatch a merge-conflict
+// run took on its head when the run ended without doing its work for a
+// reason outside it: the service shut down under it, or its worker was
+// lost. A deploy then does not spend the runs one head gets. A run that
+// ended on its own, failed on its own, or stalled keeps its dispatch.
+func returnLostMergeConflictDispatch(ctx context.Context, store WorkerExitStore, reactionKind, issueID, status string, runError error, log *slog.Logger) {
+	if reactionKind != ReactionKindMergeConflict {
+		return
+	}
+	lost := status == "cancelled" && errors.Is(runError, errCancelShutdown)
+	if !lost && status == "failed" && runError != nil {
+		lost = failcause.RouteOf(runFailureSignature(runError)).Class == failcause.ClassWorkerLost
+	}
+	if !lost {
+		return
+	}
+	if err := store.ReturnReactionDispatch(ctx, issueID, reactionKind); err != nil {
+		log.Warn("failed to give back the dispatch of a lost merge conflict run",
+			slog.Any("error", err),
+		)
+	}
 }

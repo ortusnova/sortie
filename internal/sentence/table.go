@@ -133,6 +133,10 @@ var table = map[string]parts{
 		short: "Fixing #{{.PR}}{{if .Label}} for `{{.Label}}`{{end}}",
 		long:  "Fixing PR #{{.PR}}{{if .Label}}, as the `{{.Label}}` label asked{{end}}.",
 	},
+	"run_live_proof": {
+		short: "Live-proving #{{.PR}} while parked",
+		long:  "Running the live-proof job of PR #{{.PR}}, as the supervisor asked; the park stays in place.",
+	},
 
 	"retry_paused": {
 		short: "Retry {{count .Attempt}} paused: {{.Reason}}",
@@ -598,6 +602,12 @@ var table = map[string]parts{
 		long: "No agent event for at least {{elapsed .Silence}}; Sortie stops the session as stalled after " +
 			"{{duration .Timeout}} without one (`agent.stall_timeout_ms`).",
 	},
+	"stall_marker_tool_call": {
+		short: "In a tool call with no events for {{elapsed .Silence}}; Sortie stops it after {{duration .Timeout}}",
+		long: "The agent is in a tool call and sent no event for at least {{elapsed .Silence}}; while its worker " +
+			"shows the run alive, Sortie stops the session as stalled after {{duration .Timeout}} without one " +
+			"(`agent.tool_call_timeout_ms`).",
+	},
 	"stall_off": {text: "Stall detection is off; Sortie will not stop this session as stalled (`agent.stall_timeout_ms`)."},
 
 	"health_poll_unrun": {text: "Sortie has not polled the tracker yet."},
@@ -668,6 +678,7 @@ var runPhrases = map[string]runPhrase{
 	orchestrator.ReactionKindMergeConflict: {"Rebase run", "rebase run"},
 	orchestrator.ReactionKindLabelReview:   {"Label review run", "label review run"},
 	orchestrator.ReactionKindLabelFix:      {"Label fix run", "label fix run"},
+	orchestrator.ReactionKindLiveProof:     {"Live-proof job", "live-proof job"},
 }
 
 // kindWords names a reaction kind sentence-initial and inline, and holds the

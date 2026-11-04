@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -54,8 +55,26 @@ var Routes = []string{
 // StdioProtocol is the Upgrade token of the stdio flow.
 const StdioProtocol = "sortie-stdio/1"
 
+// StdioProtocolFiles is the Upgrade token of a worker that also answers
+// [FrameSortieFilesRequest] with [FrameSortieFiles], so Sortie reads the
+// agent's .sortie files between turns. A worker on [StdioProtocol] is
+// never sent the request.
+const StdioProtocolFiles = "sortie-stdio/2"
+
+// ErrNoSortieFiles reports an attempt whose worker cannot return the
+// agent's .sortie files before the session ends: it has no stream yet,
+// or it speaks [StdioProtocol].
+var ErrNoSortieFiles = errors.New("dataplane: the worker returns no .sortie files between turns")
+
 // MaxPRFile bounds the .sortie/pr.json a returned result carries.
 const MaxPRFile = 64 << 10
+
+// MaxStatusFile bounds the .sortie/status a returned result carries.
+const MaxStatusFile = 4 << 10
+
+// MaxCriteriaFile bounds the .sortie/criteria.json a returned result
+// carries.
+const MaxCriteriaFile = 64 << 10
 
 // MaxHandoffFile bounds the .sortie/handoff.json a returned result
 // carries.
@@ -86,6 +105,14 @@ type Result struct {
 	// PR is the agent's .sortie/pr.json, nil when the worker returned
 	// none.
 	PR []byte
+
+	// Status is the agent's .sortie/status, nil when the worker returned
+	// none.
+	Status []byte
+
+	// Criteria is the agent's .sortie/criteria.json, the verdict of a
+	// criteria review, nil when the worker returned none.
+	Criteria []byte
 
 	// Handoff is the agent's .sortie/handoff.json, nil when the worker
 	// returned none.
@@ -152,12 +179,20 @@ type Attempt struct {
 	sockDir  string
 	tools    *http.Transport
 
-	mu         sync.Mutex
-	result     *Result
-	resultSet  chan struct{}
-	worker     net.Conn
-	workerIn   *bufio.Reader
-	workerSet  chan struct{}
+	mu        sync.Mutex
+	result    *Result
+	resultSet chan struct{}
+	worker    net.Conn
+	workerIn  *bufio.Reader
+	workerSet chan struct{}
+	// workerFiles is set when the worker speaks StdioProtocolFiles.
+	workerFiles bool
+	// writeMu orders the frames written to the worker's stream.
+	writeMu sync.Mutex
+	// filesMu holds one files request at a time; files carries its
+	// answer.
+	filesMu    sync.Mutex
+	files      chan []byte
 	session    net.Conn
 	relaying   bool
 	toolBearer string
@@ -191,6 +226,7 @@ func (p *Plane) Open(job string, attempt int, opts Options) (*Attempt, error) {
 		plane: p, key: attemptKey{job: job, attempt: uint64(attempt)}, opts: opts, logger: logger,
 		listener: ln, sockDir: dir,
 		resultSet: make(chan struct{}), workerSet: make(chan struct{}), closed: make(chan struct{}),
+		files: make(chan []byte, 1),
 	}
 	a.tools = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -347,7 +383,7 @@ func (a *Attempt) acceptSession() {
 
 // attachWorker takes the worker's stdio stream, reporting false when the
 // attempt already has one or is closed.
-func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader) bool {
+func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader, files bool) bool {
 	a.mu.Lock()
 	select {
 	case <-a.closed:
@@ -359,7 +395,7 @@ func (a *Attempt) attachWorker(conn net.Conn, in *bufio.Reader) bool {
 		a.mu.Unlock()
 		return false
 	}
-	a.worker, a.workerIn = conn, in
+	a.worker, a.workerIn, a.workerFiles = conn, in, files
 	close(a.workerSet)
 	a.mu.Unlock()
 	a.startRelay()
@@ -378,16 +414,73 @@ func (a *Attempt) startRelay() {
 	session, worker, in := a.session, a.worker, a.workerIn
 	a.mu.Unlock()
 
-	// The session's frames, the agent's input, go to the worker as
-	// they are. When the session goes, as when Sortie stops it, the
-	// worker learns that the agent's input closed.
-	go func() {
-		_, _ = io.Copy(worker, session) //nolint:errcheck // either side closing ends the copy
-		if !a.isDetached() {
-			_ = WriteFrame(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
-		}
-	}()
+	go a.relaySession(session, worker)
 	go a.relayWorker(worker, in, session)
+}
+
+// relaySession forwards the session's frames, the agent's input, to the
+// worker. When the session closes the input or goes, as when Sortie
+// stops it, the worker learns that the agent's input closed, unless the
+// attempt is left with its worker: then the input stays open for the
+// process that adopts it. The session's own stdin-closed frame takes the
+// same check, since a stopping process closes the session's input
+// before it detaches the attempt.
+func (a *Attempt) relaySession(session, worker net.Conn) {
+	for {
+		typ, payload, err := ReadFrame(session)
+		if err != nil || typ != FrameStdin {
+			break
+		}
+		if a.writeWorker(worker, FrameStdin, payload) != nil {
+			return
+		}
+	}
+	if !a.isDetached() {
+		_ = a.writeWorker(worker, FrameStdinClosed, nil) //nolint:errcheck // the worker may be gone
+	}
+}
+
+// writeWorker writes one frame to the worker's stream.
+func (a *Attempt) writeWorker(worker net.Conn, typ byte, payload []byte) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return WriteFrame(worker, typ, payload)
+}
+
+// SortieFiles asks the worker for the agent's .sortie files as they are
+// now, as between two turns, and waits for its answer: each file the
+// agent wrote by its name in .sortie, a file it did not write left out.
+// A worker that cannot answer is [ErrNoSortieFiles]; one that does not
+// answer leaves the wait to ctx.
+func (a *Attempt) SortieFiles(ctx context.Context) (map[string][]byte, error) {
+	a.mu.Lock()
+	worker, capable := a.worker, a.workerFiles
+	a.mu.Unlock()
+	if worker == nil || !capable {
+		return nil, ErrNoSortieFiles
+	}
+	a.filesMu.Lock()
+	defer a.filesMu.Unlock()
+	select {
+	case <-a.files: // an answer to a request that gave up waiting
+	default:
+	}
+	if err := a.writeWorker(worker, FrameSortieFilesRequest, nil); err != nil {
+		return nil, fmt.Errorf("dataplane: ask the worker for the .sortie files: %w", err)
+	}
+	select {
+	case raw := <-a.files:
+		var answer map[string][]byte
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			return nil, fmt.Errorf("dataplane: the worker's .sortie files: %w", err)
+		}
+		maps.DeleteFunc(answer, func(_ string, v []byte) bool { return v == nil })
+		return answer, nil
+	case <-a.closed:
+		return nil, ErrClosed
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
 }
 
 // relayWorker forwards the worker's frames to the session until the
@@ -398,6 +491,13 @@ func (a *Attempt) relayWorker(worker net.Conn, in *bufio.Reader, session net.Con
 	defer worker.Close() //nolint:errcheck // the stream is done
 	for {
 		typ, payload, err := ReadFrame(in)
+		if err == nil && typ == FrameSortieFiles && a.speaksFiles() {
+			select {
+			case a.files <- payload:
+			default: // no request waits for it
+			}
+			continue
+		}
 		if err == nil && typ != FrameStdout && typ != FrameStderr && typ != FrameExit {
 			err = fmt.Errorf("dataplane: unexpected stdio frame type %q from the worker", typ)
 		}
@@ -412,6 +512,12 @@ func (a *Attempt) relayWorker(worker net.Conn, in *bufio.Reader, session net.Con
 			return
 		}
 	}
+}
+
+func (a *Attempt) speaksFiles() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.workerFiles
 }
 
 func (a *Attempt) broken(err error) {
@@ -450,13 +556,20 @@ func (p *Plane) Handler() http.Handler {
 }
 
 // flow admits a request only with a live token of flow for the job and
-// attempt its path names, and then only for an open attempt.
+// attempt its path names, and then only for an open attempt. The token
+// of that attempt once it ended answers 410.
 func (p *Plane) flow(flow jobtoken.Flow, h func(a *Attempt, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		job := r.PathValue("job")
 		attempt, err := strconv.ParseUint(r.PathValue("attempt"), 10, 64)
 		g, lookupErr := p.tokens.Lookup(bearer(r))
+		if lookupErr != nil && err == nil {
+			if e, ok := p.tokens.Ended(bearer(r)); ok && e.JobID == job && e.Attempt == attempt && e.Flow == flow {
+				problem(w, http.StatusGone, "job_gone", "the job's attempt has ended; release its machine")
+				return
+			}
+		}
 		if err != nil || lookupErr != nil || g.JobID != job || g.Attempt != attempt || g.Flow != flow {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sortie-job"`)
 			problem(w, http.StatusUnauthorized, "invalid_token", "the request carries no live "+string(flow)+" token of this job's attempt")
@@ -523,10 +636,10 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 	default:
 	}
 	unbounded(w)
-	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxHandoffFile+(64<<10))
+	r.Body = http.MaxBytesReader(w, r.Body, a.opts.MaxBundleBytes+MaxPRFile+MaxStatusFile+MaxCriteriaFile+MaxHandoffFile+(64<<10))
 	parts, err := r.MultipartReader()
 	if err != nil {
-		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr and handoff")
+		problem(w, http.StatusBadRequest, "invalid_result", "the result must be multipart/form-data with the parts bundle, pr, status, criteria and handoff")
 		return
 	}
 	var res Result
@@ -559,25 +672,26 @@ func receiveResult(a *Attempt, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			res.Bundle = path
-		case "pr":
-			body, err := io.ReadAll(io.LimitReader(part, MaxPRFile+1))
-			if err != nil || len(body) > MaxPRFile {
+		case "pr", "status", "criteria", "handoff":
+			name, limit, dst := part.FormName(), int64(MaxPRFile), &res.PR
+			switch name {
+			case "status":
+				limit, dst = MaxStatusFile, &res.Status
+			case "criteria":
+				limit, dst = MaxCriteriaFile, &res.Criteria
+			case "handoff":
+				limit, dst = MaxHandoffFile, &res.Handoff
+			}
+			body, err := io.ReadAll(io.LimitReader(part, limit+1))
+			if err != nil || int64(len(body)) > limit {
 				cleanup()
-				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", "the pr part exceeds 64 KiB")
+				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", fmt.Sprintf("the %s part exceeds %d bytes", name, limit))
 				return
 			}
-			res.PR = body
-		case "handoff":
-			body, err := io.ReadAll(io.LimitReader(part, MaxHandoffFile+1))
-			if err != nil || len(body) > MaxHandoffFile {
-				cleanup()
-				problem(w, http.StatusRequestEntityTooLarge, "invalid_result", "the handoff part exceeds 64 KiB")
-				return
-			}
-			res.Handoff = body
+			*dst = body
 		default:
 			cleanup()
-			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, handoff", part.FormName()))
+			problem(w, http.StatusBadRequest, "invalid_result", fmt.Sprintf("unknown result part %q; valid: bundle, pr, status, criteria, handoff", part.FormName()))
 			return
 		}
 	}
@@ -615,7 +729,11 @@ func (a *Attempt) saveBundle(r io.Reader) (string, int, string) {
 }
 
 func serveStdio(a *Attempt, w http.ResponseWriter, r *http.Request) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), StdioProtocol) {
+	protocol := StdioProtocol
+	switch upgrade := r.Header.Get("Upgrade"); {
+	case strings.EqualFold(upgrade, StdioProtocolFiles):
+		protocol = StdioProtocolFiles
+	case !strings.EqualFold(upgrade, StdioProtocol):
 		w.Header().Set("Upgrade", StdioProtocol)
 		problem(w, http.StatusUpgradeRequired, "upgrade_required", "the stdio flow needs Upgrade: "+StdioProtocol)
 		return
@@ -632,11 +750,11 @@ func serveStdio(a *Attempt, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{}) //nolint:errcheck // a stream has no deadline
-	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + StdioProtocol + "\r\n\r\n"); err != nil || rw.Flush() != nil {
+	if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n"); err != nil || rw.Flush() != nil {
 		_ = conn.Close() //nolint:errcheck // the worker is gone
 		return
 	}
-	if !a.attachWorker(conn, rw.Reader) {
+	if !a.attachWorker(conn, rw.Reader, protocol == StdioProtocolFiles) {
 		_ = conn.Close() //nolint:errcheck // a second stream is refused
 	}
 }

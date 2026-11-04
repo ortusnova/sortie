@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -52,6 +53,16 @@ func pullRequestTextFor(workspacePath string, issue domain.Issue, logger *slog.L
 		return text
 	}
 	return defaultPullRequestText(issue)
+}
+
+// pullRequestSuggestion returns the bytes of the workspace's
+// .sortie/pr.json, nil when there is none or it cannot be read.
+func pullRequestSuggestion(workspacePath string) []byte {
+	data, err := workspacekit.ReadSortieFile(workspacePath, pullRequestSuggestionFile, pullRequestSuggestionMaxBytes)
+	if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	return data
 }
 
 // readPullRequestSuggestion reads the agent's suggestion and reports

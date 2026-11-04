@@ -320,6 +320,12 @@ type AgentConfig struct {
 	MaxConcurrentByState map[string]int
 	MaxSessions          int
 
+	// ToolCallTimeoutMS replaces StallTimeoutMS as the stall timeout of
+	// a run inside a tool call whose worker shows the run alive, when it
+	// is the longer of the two. Zero gives a tool call no longer bound.
+	// Never negative.
+	ToolCallTimeoutMS int
+
 	// StopGraceMS is the period an adapter waits, after sending a
 	// catchable termination signal, for the agent to exit on its own
 	// before it force-terminates the process group. Always positive:
@@ -821,9 +827,6 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 	if err != nil {
 		return ServiceConfig{}, err
 	}
-	if err := checkSmolvmMountsOutsideRoot(environment, workspace.Root); err != nil {
-		return ServiceConfig{}, err
-	}
 	if err := refuseRemoteHooks(environment, hooks); err != nil {
 		return ServiceConfig{}, err
 	}
@@ -1274,6 +1277,26 @@ func buildAgentConfig(m map[string]any) (AgentConfig, error) {
 		stallTimeoutMS = parsed
 	}
 
+	// tool_call_timeout_ms: zero is a valid sentinel that gives a tool
+	// call no longer stall bound. Only default when the key is absent.
+	toolCallTimeoutMS := 5400000
+	if v, exists := m["tool_call_timeout_ms"]; exists && v != nil {
+		parsed, err := coerceInt(v)
+		if err != nil {
+			return AgentConfig{}, &ConfigError{
+				Field:   "agent.tool_call_timeout_ms",
+				Message: integerFaultMessage(err, fmt.Sprintf("invalid integer value: %v", v)),
+			}
+		}
+		if parsed < 0 {
+			return AgentConfig{}, &ConfigError{
+				Field:   "agent.tool_call_timeout_ms",
+				Message: "must be non-negative",
+			}
+		}
+		toolCallTimeoutMS = parsed
+	}
+
 	stopGraceMS := 5000
 	if v, exists := m["stop_grace_ms"]; exists && v != nil {
 		parsed, err := coerceInt(v)
@@ -1421,6 +1444,7 @@ func buildAgentConfig(m map[string]any) (AgentConfig, error) {
 		TurnTimeoutMS:          turnTimeoutMS,
 		ReadTimeoutMS:          readTimeoutMS,
 		StallTimeoutMS:         stallTimeoutMS,
+		ToolCallTimeoutMS:      toolCallTimeoutMS,
 		StopGraceMS:            stopGraceMS,
 		MaxConcurrentAgents:    maxConcurrent,
 		MaxTurns:               maxTurns,

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -256,6 +257,69 @@ func TestSupervisor_Merge(t *testing.T) {
 	}
 }
 
+// supervisorComments is a forge's conversation comments on the pull
+// request.
+type supervisorComments []domain.ReviewComment
+
+func (c supervisorComments) FetchPullRequestComments(context.Context, int, string, string) ([]domain.ReviewComment, error) {
+	return c, nil
+}
+
+// The supervisor's merge follows the story's latest criteria verdict: a
+// review that found every criterion met merges; one that left a
+// criterion to a live proof merges only once a live-proof job recorded
+// it proven at the pull request's head; one that found a criterion not
+// met, or recorded no verdict, never merges. CI alone is not enough:
+// before, a pull request whose live criterion was never proven merged
+// once its CI passed.
+func TestSupervisor_MergeFollowsTheCriteriaVerdict(t *testing.T) {
+	t.Parallel()
+	const head = "4d2c1aa9e1f0b7c3d5e6f7a8b9c0d1e2f3a4b5c6"
+	proven := func(sha string) domain.ReviewComment {
+		return domain.ReviewComment{ID: "c1", Reviewer: "ortus-kit", Body: "<!-- live-proof-result -->\nResult: proven\n" + LiveProofMarker + " " + sha + "\n"}
+	}
+	for _, tt := range []struct {
+		name     string
+		outcome  string
+		comments supervisorComments
+		noReader bool
+		code     string
+	}{
+		{name: "every criterion met", outcome: CriteriaOutcomeMet},
+		{name: "a live criterion proven at the head", outcome: CriteriaOutcomeLiveProof, comments: supervisorComments{proven(head[:12])}},
+		{name: "a live criterion never proven", outcome: CriteriaOutcomeLiveProof, code: "live_proof_unproven"},
+		{name: "a live criterion proven at an earlier head", outcome: CriteriaOutcomeLiveProof, comments: supervisorComments{proven("0123456789abcdef")}, code: "live_proof_unproven"},
+		{name: "a live criterion on a forge without comments", outcome: CriteriaOutcomeLiveProof, noReader: true, code: "live_proof_unproven"},
+		{name: "a criterion not met", outcome: CriteriaOutcomeRefused, comments: supervisorComments{proven(head)}, code: "criteria_not_met"},
+		{name: "no verdict", outcome: CriteriaOutcomeRefused, code: "criteria_not_met"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-11", 41))
+			h.tracker.labels = []string{config.ReviewCriteriaLabel}
+			h.forge.status.HeadSHA = head
+			if !tt.noReader {
+				h.o.prCommentReader = tt.comments
+			}
+			if err := h.store.UpsertCriteriaVerdict(t.Context(), persistence.CriteriaVerdict{
+				IssueID: "id-11", Outcome: tt.outcome, RecordedAt: time.Now(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := h.o.Supervisor().Merge(t.Context(), "id-11-ident")
+			if tt.code != "" {
+				if got.Status != SupervisorPrecondition || got.Code != tt.code || len(h.forge.merges) != 0 {
+					t.Errorf("merge = %+v with merges %v, want %s and none", got, h.forge.merges, tt.code)
+				}
+				return
+			}
+			if got.Status != SupervisorDone || len(h.forge.merges) != 1 || h.forge.merges[0] != head {
+				t.Errorf("merge = %+v with merges %v, want one at the head", got, h.forge.merges)
+			}
+		})
+	}
+}
+
 func TestSupervisor_MarkDraft(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-12", 51))
@@ -329,10 +393,157 @@ func TestSupervisor_FileIssueWaitsInTheBacklog(t *testing.T) {
 func TestSupervisor_RequestLiveProof(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, stateWithReviewReaction(t, "id-16", 71))
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "id-16-ident"); got.Status != SupervisorDone || got.PullRequest != "owner/repo#71" {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "id-16-ident", "criterion"); got.Status != SupervisorDone || got.PullRequest != "owner/repo#71" {
 		t.Errorf("live proof = %+v, want done on owner/repo#71", got)
 	}
-	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-404"); got.Status != SupervisorUnknownIssue {
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-404", "criterion"); got.Status != SupervisorUnknownIssue {
 		t.Errorf("live proof of an unknown issue = %+v, want unknown issue", got)
+	}
+}
+
+// supervisorFinder is a fake forge's open pull requests by owner/repo and
+// head branch.
+type supervisorFinder map[string]domain.PullRequest
+
+func (f supervisorFinder) FindOpenPullRequest(_ context.Context, owner, repo, head string) (domain.PullRequest, bool, error) {
+	pr, ok := f[owner+"/"+repo+":"+head]
+	return pr, ok, nil
+}
+
+// parkedStoryHarness is a harness with ONS-39 parked after its review,
+// routed by its label to the homelab repository.
+func parkedStoryHarness(t *testing.T, finder supervisorFinder) *supervisorHarness {
+	t.Helper()
+	state := stateWithParked("id-39", "ONS-39")
+	park := state.Parked["id-39"]
+	park.RuleName, park.AgentKind, park.TemplateID = "review", "agent-client-protocol", "review-template"
+	h := newSupervisorHarness(t, state)
+	cfg := gateConfig()
+	repos := []config.Repository{
+		{Name: "sortie", URL: "https://example.com/sortie.git", Base: "main", BranchPrefix: "sortie/", Provider: "github", Project: "o/sortie"},
+		{Name: "homelab", URL: "https://example.com/homelab.git", Base: "master", BranchPrefix: "sortie/", Provider: "github", Project: "o/homelab"},
+	}
+	cfg.Environment = config.EnvironmentConfig{Kind: config.EnvironmentKindRemote,
+		Remote: config.RemoteConfig{Repositories: repos, Repository: &repos[0], DefaultRepository: "sortie"}}
+	h.o.workflowManager = &stubWorkflowManager{config: cfg}
+	h.tracker.labels = []string{config.RepositoryLabelPrefix + "homelab", config.ReviewCriteriaLabel}
+	h.forge.status = domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: "4d2c1aa9e1f0b7c3d5e6f7a8b9c0d1e2f3a4b5c6"}
+	if finder != nil {
+		h.o.prFinder = finder
+	}
+	return h
+}
+
+// A live-proof request on a parked story, which Sortie watches no pull
+// request of, finds the story's pull request by its issue branch in the
+// repository the story routes to and starts the live-proof job on that
+// branch's head. The park stays in place.
+func TestSupervisor_RequestLiveProofOfAParkedStory(t *testing.T) {
+	t.Parallel()
+	h := parkedStoryHarness(t, supervisorFinder{"o/homelab:sortie/ONS-39": {Number: 155}})
+	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "the full vm chain needs Let's Encrypt staging")
+	if got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
+		t.Fatalf("live proof = %+v, want done on o/homelab#155", got)
+	}
+	var retry *RetryEntry
+	var park *ParkedEntry
+	onLoop(t, h.o, func() { retry, park = h.o.state.RetryAttempts["id-39"], h.o.state.Parked["id-39"] })
+	if park == nil {
+		t.Error("the park was lifted, want it kept while the job runs")
+	}
+	if retry == nil || retry.ReactionKind != ReactionKindLiveProof {
+		t.Fatalf("retry = %+v, want a live-proof job", retry)
+	}
+	if retry.Continuation != (ContinuationTarget{PRNumber: 155, Owner: "o", Repo: "homelab"}) {
+		t.Errorf("continuation = %+v, want o/homelab#155", retry.Continuation)
+	}
+	if retry.RuleName != "review" || retry.AgentKind != "agent-client-protocol" || retry.TemplateID != "review-template" {
+		t.Errorf("retry runs %q/%q/%q, want the parked run's rule, agent and template", retry.RuleName, retry.AgentKind, retry.TemplateID)
+	}
+	comments, _ := retry.ContinuationContext[reviewCommentsKey].([]map[string]any)
+	if len(comments) != 1 {
+		t.Fatalf("review_comments = %#v, want the job's request", retry.ContinuationContext[reviewCommentsKey])
+	}
+	body, _ := comments[0]["body"].(string)
+	for _, want := range []string{LiveProofRequestMarker + "\n", "Pull request: o/homelab#155\n", "Branch: sortie/ONS-39\n",
+		"Head: 4d2c1aa9e1f0b7c3d5e6f7a8b9c0d1e2f3a4b5c6\n", "Let's Encrypt staging"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("request body = %q, want it to hold %q", body, want)
+		}
+	}
+	if !strings.HasPrefix(body, LiveProofRequestMarker) {
+		t.Errorf("request body = %q, want it to open with the marker", body)
+	}
+
+	if again := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "again"); again.Status != SupervisorPrecondition || again.Code != "retry_scheduled" {
+		t.Errorf("second request while the job waits = %+v, want retry_scheduled", again)
+	}
+}
+
+// A parked story with no open pull request on its branch answers a clear
+// refusal and starts nothing; so does one whose pull request closed.
+func TestSupervisor_RequestLiveProofOfAParkedStoryWithoutAPullRequest(t *testing.T) {
+	t.Parallel()
+	noRun := func(h *supervisorHarness) {
+		t.Helper()
+		var retry *RetryEntry
+		onLoop(t, h.o, func() { retry = h.o.state.RetryAttempts["id-39"] })
+		if retry != nil {
+			t.Errorf("retry = %+v, want none", retry)
+		}
+	}
+	h := parkedStoryHarness(t, supervisorFinder{"o/sortie:sortie/ONS-39": {Number: 9}})
+	got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion")
+	if got.Status != SupervisorPrecondition || got.Code != "no_pull_request" || !strings.Contains(got.Message, "sortie/ONS-39") || !strings.Contains(got.Message, "o/homelab") {
+		t.Errorf("live proof = %+v, want no_pull_request naming the branch and repository", got)
+	}
+	noRun(h)
+
+	h = parkedStoryHarness(t, supervisorFinder{"o/homelab:sortie/ONS-39": {Number: 155}})
+	h.forge.status.Closed = true
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion"); got.Code != "pull_request_closed" {
+		t.Errorf("live proof of a closed pull request = %+v, want pull_request_closed", got)
+	}
+	noRun(h)
+
+	h = parkedStoryHarness(t, nil)
+	if got := h.o.Supervisor().RequestLiveProof(t.Context(), "ONS-39", "criterion"); got.Status != SupervisorUnsupported {
+		t.Errorf("live proof on a forge that cannot find pull requests = %+v, want unsupported", got)
+	}
+	noRun(h)
+}
+
+// Once the job records the live criterion proven at the head, the
+// supervisor merges the parked story's pull request, which it finds the
+// same way.
+func TestSupervisor_MergeOfAParkedStoryFollowsTheLiveProof(t *testing.T) {
+	t.Parallel()
+	const head = "4d2c1aa9e1f0b7c3d5e6f7a8b9c0d1e2f3a4b5c6"
+	for _, tt := range []struct {
+		name     string
+		comments supervisorComments
+		code     string
+	}{
+		{name: "proven at the head", comments: supervisorComments{{ID: "c1", Body: "<!-- live-proof-result -->\nResult: proven\n" + LiveProofMarker + " " + head + "\n"}}},
+		{name: "unproven", comments: supervisorComments{{ID: "c1", Body: "<!-- live-proof-result -->\nResult: unproven\n"}}, code: "live_proof_unproven"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := parkedStoryHarness(t, supervisorFinder{"o/homelab:sortie/ONS-39": {Number: 155}})
+			h.o.prCommentReader = tt.comments
+			if err := h.store.UpsertCriteriaVerdict(t.Context(), persistence.CriteriaVerdict{IssueID: "id-39", Outcome: CriteriaOutcomeLiveProof, RecordedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			got := h.o.Supervisor().Merge(t.Context(), "ONS-39")
+			if tt.code != "" {
+				if got.Code != tt.code || len(h.forge.merges) != 0 {
+					t.Errorf("merge = %+v with merges %v, want %s and none", got, h.forge.merges, tt.code)
+				}
+				return
+			}
+			if got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" || len(h.forge.merges) != 1 {
+				t.Errorf("merge = %+v with merges %v, want o/homelab#155 merged once", got, h.forge.merges)
+			}
+		})
 	}
 }

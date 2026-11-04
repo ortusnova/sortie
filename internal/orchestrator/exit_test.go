@@ -51,6 +51,8 @@ type mockExitStore struct {
 
 	absenceCountedIssueIDs []string
 
+	returnedDispatches []string
+
 	parkedIssues     []persistence.ParkedIssue
 	deletedParkedIDs []string
 	upsertParkedErr  error
@@ -174,6 +176,11 @@ func exitState(t *testing.T, issueID string, retryAttempt *int) *State {
 	}
 	state.Claimed[issueID] = struct{}{}
 	return state
+}
+
+func (m *mockExitStore) ReturnReactionDispatch(_ context.Context, issueID, kind string) error {
+	m.returnedDispatches = append(m.returnedDispatches, issueID+":"+kind)
+	return nil
 }
 
 // defaultExitParams returns params with NowFunc fixed at baseTime + 60s.
@@ -8415,6 +8422,63 @@ func TestHandleWorkerExit_LabelFixExit_ErrorStillRetries(t *testing.T) {
 	}
 }
 
+// A parked story's live-proof job ends with the park in place: it hands
+// nothing off, schedules no further run and seeds no watch, whether it
+// stops normally or blocked, so the supervisor decides on its result.
+func TestHandleWorkerExit_LiveProofExitKeepsThePark(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		result WorkerResult
+	}{
+		{name: "normal", result: WorkerResult{ExitKind: WorkerExitNormal}},
+		{name: "blocked", result: WorkerResult{ExitKind: WorkerExitNormal, SoftStop: true, SoftStopReason: string(workspace.StatusBlocked)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wsPath := t.TempDir()
+			writePRSCMMetadata(t, wsPath, 69, "corp", "api", "sortie/LP-1", "c0ffee")
+
+			store := &mockExitStore{}
+			tracker := &mockTrackerAdapter{}
+			state := exitStateWithIssue(t, "LP-1", "In Progress")
+			state.Running["LP-1"].ReactionKind = ReactionKindLiveProof
+			park := &ParkedEntry{Identifier: "LP-1-ident", Reason: parkReasonAgentBlocked, Label: "needs-human", ParkedAt: time.Now().Add(-time.Hour)}
+			state.Parked["LP-1"] = park
+
+			params := defaultExitParams(t, store)
+			params.TrackerAdapter = tracker
+			params.HandoffState = "Human Review"
+			params.ActiveStates = []string{"In Progress"}
+			params.CIProvider = &ciProviderStubExit{}
+			params.SCMAdapter = &scmAdapterStubExit{}
+			params.ReviewReactionConfigured = true
+			params.AutoMergeReactionConfigured = true
+			params.MergeCompletionReactionConfigured = true
+
+			result := tt.result
+			result.IssueID, result.Identifier, result.AgentAdapter, result.WorkspacePath = "LP-1", "LP-1-ident", "mock", wsPath
+			HandleWorkerExit(state, result, params)
+
+			if state.Parked["LP-1"] != park {
+				t.Errorf("park = %+v, want the park kept", state.Parked["LP-1"])
+			}
+			if len(tracker.transitionCalls) != 0 {
+				t.Errorf("TransitionIssue calls = %d, want none", len(tracker.transitionCalls))
+			}
+			if retry, ok := state.RetryAttempts["LP-1"]; ok {
+				t.Errorf("retry = %+v, want none", retry)
+			}
+			if _, claimed := state.Claimed["LP-1"]; claimed {
+				t.Error("claim still held, want released")
+			}
+			if len(state.PendingReactions) != 0 {
+				t.Errorf("pending reactions = %v, want none seeded on a parked story", state.PendingReactions)
+			}
+		})
+	}
+}
+
 // TestHandleWorkerExit_MergeCompletionEnqueue covers the merge-completion
 // seeding block. The clause imposes no branch requirement, unlike the
 // checkout-bearing kinds; the fixtures carry one only as the common case.
@@ -10735,4 +10799,55 @@ func (m *mockExitStore) LatestRunFailureSignature(_ context.Context, issueID str
 
 func (*mockExitStore) SavePlatformFault(context.Context, persistence.PlatformFault) error {
 	return nil
+}
+
+// A merge-conflict run that a shutdown or a lost worker ended gives its
+// dispatch back, so a deploy does not spend the runs its head gets; a
+// run that ended on its own, a stalled one, and a run of another kind
+// keep theirs.
+func TestHandleWorkerExit_MergeConflictRunLostToThePlatformGivesItsDispatchBack(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		kind     string
+		exit     WorkerExitKind
+		cause    error
+		err      error
+		wantBack bool
+	}{
+		{name: "service shutdown", kind: ReactionKindMergeConflict, exit: WorkerExitCancelled, cause: errCancelShutdown, wantBack: true},
+		{name: "worker daemon shut down", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("worker daemon shut down"), wantBack: true},
+		{name: "worker's lease expired", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("lease held by worker taichi expired"), wantBack: true},
+		{name: "ended on its own", kind: ReactionKindMergeConflict, exit: WorkerExitNormal},
+		{name: "stalled", kind: ReactionKindMergeConflict, exit: WorkerExitCancelled, cause: errCancelStall},
+		{name: "agent turn failed", kind: ReactionKindMergeConflict, exit: WorkerExitError, err: errors.New("agent turn 3: make test: exit status 2")},
+		{name: "another kind", kind: ReactionKindCI, exit: WorkerExitCancelled, cause: errCancelShutdown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &mockExitStore{}
+			state := exitState(t, "MC-LOST", nil)
+			state.Running["MC-LOST"].ReactionKind = tt.kind
+
+			HandleWorkerExit(state, WorkerResult{
+				IssueID:       "MC-LOST",
+				Identifier:    "MC-LOST-ident",
+				ExitKind:      tt.exit,
+				CancelCause:   tt.cause,
+				Error:         tt.err,
+				AgentAdapter:  "mock",
+				WorkspacePath: "/tmp/ws",
+			}, defaultExitParams(t, store))
+
+			want := []string(nil)
+			if tt.wantBack {
+				want = []string{"MC-LOST:" + ReactionKindMergeConflict}
+			}
+			if !slices.Equal(store.returnedDispatches, want) {
+				t.Errorf("dispatches given back = %v, want %v", store.returnedDispatches, want)
+			}
+		})
+	}
 }

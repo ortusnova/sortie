@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/sortie-ai/sortie/internal/config"
+	"github.com/sortie-ai/sortie/internal/worker"
 )
 
 // WorkflowShape reports the effective workflow shape served on the state API.
@@ -23,12 +24,18 @@ type WorkflowShape struct {
 }
 
 // ShapeRepository reports one repository the workflow opens: its name,
-// whether the process dispatches the issues that run in it, and whether
-// an issue that names no repository runs in it.
+// whether the process dispatches the issues that run in it, whether an
+// issue that names no repository runs in it, and, under the remote kind,
+// what a worker must declare to take a job of it.
 type ShapeRepository struct {
 	Name     string `json:"name"`
 	Dispatch bool   `json:"dispatch"`
 	Default  bool   `json:"default"`
+
+	// Requires is what the matcher requires of a worker for a job of the
+	// repository: its own requires, else environment.remote.requires,
+	// with the backend among the capabilities. Nil under any other kind.
+	Requires *worker.Requires `json:"requires"`
 }
 
 // ShapeTracker reports the tracker kind and project the poll loop's adapter was
@@ -235,11 +242,17 @@ func shapeRepositories(cfg config.EnvironmentConfig) []ShapeRepository {
 	}
 	set := cfg.RepositorySet()
 	for _, repo := range set.AllRepositories() {
-		repos = append(repos, ShapeRepository{
+		shape := ShapeRepository{
 			Name:     repo.Name,
 			Dispatch: !repo.ClosedToDispatch,
 			Default:  set.Repository != nil && set.Repository.Name == repo.Name,
-		})
+		}
+		if isRemoteKind(cfg) {
+			rc := cfg.Remote
+			rc.Repository = &repo
+			shape.Requires = new(remoteRequires(rc))
+		}
+		repos = append(repos, shape)
 	}
 	return repos
 }

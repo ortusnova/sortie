@@ -71,7 +71,7 @@ A signal before the run settles starts the usual drain, a second signal abandons
 An issue is dispatch-eligible only if all are true:
 
 - It has `id`, `identifier`, `title`, and `state`.
-- Under a smolvm environment with repositories, the repository it runs in is listed and open to dispatch: the repository its existing workspace was seeded from, when that workspace records one, and otherwise its `sortie-repository:<name>` label names a listed entry without `dispatch: false`, or it carries no such label and `default_repository` (or the single `repository` block) gives it one. A workspace seeded from a repository the workflow no longer lists keeps the issue a candidate, and its preparation fails. An issue that fails this rule belongs to another Sortie on the same tracker project and is dropped from the candidates before any other rule, so it is neither claimed, moved, commented on, held, recorded, run, nor counted against `max_sessions`. It is logged at debug level, naming the issue and the reason, on the first poll that drops it, and again only when the reason changes or after a poll that did not drop it. A retry whose issue now fails it releases its claim without a dispatch.
+- Under a remote environment with repositories, the repository it runs in is listed and open to dispatch: the repository its existing workspace was seeded from, when that workspace records one, and otherwise its `sortie-repository:<name>` label names a listed entry without `dispatch: false`, or it carries no such label and `default_repository` (or the single `repository` block) gives it one. A workspace seeded from a repository the workflow no longer lists keeps the issue a candidate, and its preparation fails. An issue that fails this rule belongs to another Sortie on the same tracker project and is dropped from the candidates before any other rule, so it is neither claimed, moved, commented on, held, recorded, run, nor counted against `max_sessions`. It is logged at debug level, naming the issue and the reason, on the first poll that drops it, and again only when the reason changes or after a poll that did not drop it. A retry whose issue now fails it releases its claim without a dispatch.
 - Its state is in `active_states` and not in `terminal_states`.
 - It is not already in `running`.
 - It is not already in `claimed`.
@@ -155,7 +155,7 @@ Stopped failure routing:
   | `repository_access` | platform | `permission to ... denied`, `repository not found`, the SCM not-found kind | `Give <host>'s <forge> account write access to the repository` |
   | `agent_runtime` | platform | the `agent_not_found` kind, `executable file not found`, `command not found` | `Install the agent runtime on <host>, or correct the agent command in WORKFLOW.md` |
   | `workflow_config` | platform | `no_seed`, `configures no repository`, hooks under the remote kind, a repository closed to dispatch or no longer listed, a prompt render error | `Correct WORKFLOW.md on <host>: the cause names the setting` |
-  | `worker_lost` | platform | an expired worker lease, a worker that ended the attempt without returning the branch or before the session started, a broken stdio stream | none: Sortie's own check clears it |
+  | `worker_lost` | platform | an expired worker lease, a worker that ended the attempt without returning the branch or before the session started, a broken stdio stream, a worker daemon that shut down under the run | none: Sortie's own check clears it |
   | `environment` | platform | a workspace preparation failure of the execution environment | none |
   | `story_tests` | story | `make test`, `make lint`, `make check`, `make vet`; `tests failed`; `FAIL` | none |
   | `story_turn` | story | the `turn_failed`, `turn_timeout`, `turn_incomplete`, `turn_token_limit`, and `turn_request_limit` kinds | none |
@@ -284,7 +284,8 @@ Part A: Stall detection
 - For each running issue, compute `elapsed_ms` since:
   - `last_agent_timestamp` if any event has been seen, else
   - `started_at`
-- If `elapsed_ms > agent.stall_timeout_ms`, terminate the worker unconditionally, then queue a retry when the retry slot is free or defer to the incumbent already occupying it, re-emitting the cancellation warning on every stalled tick either way (Section 7.5).
+- The stall timeout is `agent.stall_timeout_ms`, except while the run has a tool call open (from its `tool_started` event to the `tool_result` with the same call ID or the end of its turn, Section 10.3) and its worker shows the run alive: then it is `agent.tool_call_timeout_ms` when that is longer. Under `environment.kind: remote` the worker shows the run alive while the job's lease is current, renewed by the worker's heartbeats; under every other kind the worker is this process and always does. A worker that stops heartbeating takes `agent.stall_timeout_ms`, and its lease expires under the lease rule as before.
+- If `elapsed_ms` exceeds the stall timeout, terminate the worker unconditionally, then queue a retry when the retry slot is free or defer to the incumbent already occupying it, re-emitting the cancellation warning on every stalled tick either way (Section 7.5).
 - If `stall_timeout_ms <= 0`, skip stall detection entirely.
 
 Part B: Tracker state refresh

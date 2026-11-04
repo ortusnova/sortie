@@ -15,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/waittest"
@@ -100,8 +102,8 @@ func (f *fixture) do(method, path, token, contentType string, body io.Reader) re
 const seedPath = Prefix + "bundles/jobs/ONS-30/attempts/1/seed"
 
 // remote-runs: Seed. The seed is served to the job's live bundles token
-// only; another job's token, another flow's, an ended one, or none
-// answers 401 and serves nothing.
+// only; another job's token, another flow's, or none answers 401, an
+// ended one 410, and none serves anything.
 func TestSeedOnlyForTheJobsBundlesToken(t *testing.T) {
 	f := newFixture(t)
 	seed := filepath.Join(t.TempDir(), "seed.bundle")
@@ -127,8 +129,36 @@ func TestSeedOnlyForTheJobsBundlesToken(t *testing.T) {
 		}
 	}
 	f.issuer.OnLeaseEnd("ONS-30")
-	if resp := f.do(http.MethodGet, seedPath, own["bundles"], "", nil); resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("ended token: %d, want 401", resp.StatusCode)
+	if resp := f.do(http.MethodGet, seedPath, own["bundles"], "", nil); resp.StatusCode != http.StatusGone || bytes.Contains(resp.Body, []byte("bundle bytes")) {
+		t.Errorf("ended token: %d %q, want 410 serving nothing", resp.StatusCode, resp.Body)
+	}
+}
+
+// A worker that dials the stream of an attempt that ended is told the
+// job is gone, not that its token is wrong, so it releases the machine;
+// a token Sortie never minted still answers 401.
+func TestAnEndedAttemptIsGone(t *testing.T) {
+	f := newFixture(t)
+	f.open(1, Options{})
+	own := f.mint("ONS-30", 1)
+	f.issuer.OnLeaseEnd("ONS-30")
+	path := Prefix + "stdio/jobs/ONS-30/attempts/1"
+	resp := f.do(http.MethodGet, path, own["stdio"], "", nil)
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	_ = json.Unmarshal(resp.Body, &body)
+	if resp.StatusCode != http.StatusGone || body.Error.Code != "job_gone" {
+		t.Fatalf("stdio with an ended token: %d %s, want 410 job_gone", resp.StatusCode, resp.Body)
+	}
+	if resp := f.do(http.MethodGet, Prefix+"stdio/jobs/ONS-30/attempts/2", own["stdio"], "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an ended token on another attempt: %d, want 401", resp.StatusCode)
+	}
+	if resp := f.do(http.MethodGet, path, own["usage"], "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an ended token of another flow: %d, want 401", resp.StatusCode)
+	}
+	if resp := f.do(http.MethodGet, path, "never-minted", "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("a token never minted: %d, want 401", resp.StatusCode)
 	}
 }
 
@@ -144,6 +174,12 @@ func TestSeedOfAnotherAttemptRefused(t *testing.T) {
 // dialStdio opens the stdio stream of ONS-30 attempt 1 as a worker does.
 func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 	f.t.Helper()
+	return f.dialStdioAs(token, StdioProtocol)
+}
+
+// dialStdioAs opens the stream as a worker that asks for protocol.
+func (f *fixture) dialStdioAs(token, protocol string) (net.Conn, *bufio.Reader) {
+	f.t.Helper()
 	u, _ := url.Parse(f.srv.URL)
 	conn, err := net.Dial("tcp", u.Host)
 	if err != nil {
@@ -151,7 +187,7 @@ func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 	}
 	f.t.Cleanup(func() { _ = conn.Close() })
 	req := "GET " + Prefix + "stdio/jobs/ONS-30/attempts/1 HTTP/1.1\r\nHost: " + u.Host +
-		"\r\nAuthorization: Bearer " + token + "\r\nConnection: Upgrade\r\nUpgrade: " + StdioProtocol + "\r\n\r\n"
+		"\r\nAuthorization: Bearer " + token + "\r\nConnection: Upgrade\r\nUpgrade: " + protocol + "\r\n\r\n"
 	if _, err := conn.Write([]byte(req)); err != nil {
 		f.t.Fatal(err)
 	}
@@ -161,8 +197,8 @@ func (f *fixture) dialStdio(token string) (net.Conn, *bufio.Reader) {
 		f.t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		f.t.Fatalf("stdio upgrade: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), protocol) {
+		f.t.Fatalf("stdio upgrade: %d %q", resp.StatusCode, resp.Header.Get("Upgrade"))
 	}
 	return conn, in
 }
@@ -325,6 +361,30 @@ func TestResultCarriesTheHandoffFile(t *testing.T) {
 	}
 }
 
+// The worker returns the agent's status and a review's criteria verdict
+// beside the pull request suggestion; an oversized status is refused.
+func TestResultCarriesTheStatusAndCriteria(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{MaxBundleBytes: 64})
+	tok := f.mint("ONS-30", 1)["bundles"]
+
+	ct, body := multipartBody(t, map[string][]byte{"status": bytes.Repeat([]byte("s"), MaxStatusFile+1)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status: %d, want 413", resp.StatusCode)
+	}
+	ct, body = multipartBody(t, map[string][]byte{"bundle": []byte("b"), "status": []byte("blocked\nwhy\n"), "criteria": []byte(`{"criteria":[]}`)})
+	if resp := f.do(http.MethodPost, resultPath, tok, ct, body); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("result: %d, want 204", resp.StatusCode)
+	}
+	res, err := a.Result(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Status) != "blocked\nwhy\n" || string(res.Criteria) != `{"criteria":[]}` || res.PR != nil {
+		t.Fatalf("status %q, criteria %q, pr %q", res.Status, res.Criteria, res.PR)
+	}
+}
+
 func TestResultWaitEndsWithTheAttempt(t *testing.T) {
 	f := newFixture(t)
 	a := f.open(1, Options{})
@@ -395,8 +455,8 @@ const mcpPath = Prefix + "mcp/jobs/ONS-30/attempts/1"
 // remote-runs: A tool call from taichi. A request with the attempt's
 // live mcp token reaches the tool server of the attempt's own session at
 // /mcp, carrying that server's bearer and not the job token; a token of
-// another job, attempt or flow, an ended one, or none answers 401 and
-// reaches nothing.
+// another job, attempt or flow, or none answers 401, an ended one 410,
+// and none reaches anything.
 func TestMCPReachesTheAttemptsOwnToolServer(t *testing.T) {
 	f := newFixture(t)
 	a := f.open(1, Options{})
@@ -428,12 +488,15 @@ func TestMCPReachesTheAttemptsOwnToolServer(t *testing.T) {
 
 	refused := map[string]string{"another job's token": other["mcp"], "another flow's token": own["stdio"], "no token": ""}
 	attempt2 := f.mint("ONS-30", 2)
-	refused["another attempt's token"], refused["an ended token"] = attempt2["mcp"], own["mcp"]
+	refused["another attempt's token"] = attempt2["mcp"]
 	for name, tok := range refused {
 		resp := f.do(http.MethodPost, mcpPath, tok, "application/json", strings.NewReader(call))
 		if resp.StatusCode != http.StatusUnauthorized || bytes.Contains(resp.Body, []byte("session-bearer")) {
 			t.Errorf("%s: %d %s, want 401 reaching nothing", name, resp.StatusCode, resp.Body)
 		}
+	}
+	if resp := f.do(http.MethodPost, mcpPath, own["mcp"], "application/json", strings.NewReader(call)); resp.StatusCode != http.StatusGone || bytes.Contains(resp.Body, []byte("session-bearer")) {
+		t.Errorf("an ended token: %d %s, want 410 reaching nothing", resp.StatusCode, resp.Body)
 	}
 
 	a.Close()
@@ -481,5 +544,116 @@ func TestDetachLeavesTheWorkerWithoutStdinClosed(t *testing.T) {
 	case err := <-broke:
 		t.Fatalf("a detached attempt reported a broken stream: %v", err)
 	default:
+	}
+}
+
+// While the process stops, its agent adapter closes the bridge's input
+// before the attempt is detached, and the bridge sends its own
+// stdin-closed frame. Keep then holds that frame back: the worker that
+// got it would end the agent, report the run and delete its machine,
+// and the process that adopts the attempt would find it gone.
+func TestKeepHoldsBackTheBridgesStdinClosed(t *testing.T) {
+	f := newFixture(t)
+	var keep atomic.Bool
+	a := f.open(1, Options{Keep: keep.Load})
+	conn, in := f.dialStdio(f.mint("ONS-30", 1)["stdio"])
+	b := startBridge(a)
+	if _, err := b.stdin.Write([]byte("prompt\n")); err != nil {
+		t.Fatal(err)
+	}
+	if typ, _, err := ReadFrame(in); err != nil || typ != FrameStdin {
+		t.Fatalf("worker got %q %v, want the prompt", typ, err)
+	}
+
+	keep.Store(true)
+	_ = b.stdin.Close()
+	frames := make(chan byte, 4)
+	go func() {
+		for {
+			typ, _, err := ReadFrame(in)
+			if err != nil {
+				close(frames)
+				return
+			}
+			frames <- typ
+		}
+	}()
+	a.Detach()
+	for typ := range frames {
+		if typ == FrameStdinClosed {
+			t.Fatal("the worker was told the agent's input closed while the attempt is kept")
+		}
+	}
+	_ = conn.Close()
+	waittest.Receive(t, b.done, "bridge exit after the detach")
+}
+
+// A worker that speaks sortie-stdio/2 returns the agent's .sortie files
+// whenever Sortie asks between turns: the request reaches it as an S
+// frame, its F answer reaches Sortie and never the session.
+func TestSortieFilesBetweenTurns(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	conn, in := f.dialStdioAs(f.mint("ONS-30", 1)["stdio"], StdioProtocolFiles)
+	b := startBridge(a)
+
+	type answer struct {
+		files map[string][]byte
+		err   error
+	}
+	got := make(chan answer, 1)
+	go func() {
+		files, err := a.SortieFiles(context.Background())
+		got <- answer{files, err}
+	}()
+	typ, payload, err := ReadFrame(in)
+	if err != nil || typ != FrameSortieFilesRequest || len(payload) != 0 {
+		t.Fatalf("worker got %q %q %v, want the files request", typ, payload, err)
+	}
+	if err := WriteFrame(conn, FrameSortieFiles, []byte(`{"criteria.json":"eyJjcml0ZXJpYSI6W119","status":null}`)); err != nil {
+		t.Fatal(err)
+	}
+	ans := waittest.Receive(t, got, "the agent's .sortie files")
+	if ans.err != nil || string(ans.files["criteria.json"]) != `{"criteria":[]}` || len(ans.files) != 1 {
+		t.Fatalf("files %q %v, want the criteria verdict alone", ans.files, ans.err)
+	}
+
+	// The stream goes on: the agent's output still reaches the session,
+	// and nothing of the files answer did.
+	if err := WriteFrame(conn, FrameStdout, []byte("reply\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(b.stdout).ReadString('\n')
+	if err != nil || line != "reply\n" {
+		t.Fatalf("bridge stdout %q %v", line, err)
+	}
+}
+
+// A worker on sortie-stdio/1 is never sent a frame it does not know:
+// asking it for the files answers ErrNoSortieFiles at once.
+func TestSortieFilesNotAskedOfAnOlderWorker(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	_, _ = f.dialStdio(f.mint("ONS-30", 1)["stdio"])
+	if err := a.WaitStdio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SortieFiles(context.Background()); !errors.Is(err, ErrNoSortieFiles) {
+		t.Fatalf("err = %v, want ErrNoSortieFiles", err)
+	}
+}
+
+// A worker that does not answer leaves the request to its context.
+func TestSortieFilesWaitEndsWithTheContext(t *testing.T) {
+	f := newFixture(t)
+	a := f.open(1, Options{})
+	_, _ = f.dialStdioAs(f.mint("ONS-30", 1)["stdio"], StdioProtocolFiles)
+	if err := a.WaitStdio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := a.SortieFiles(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the deadline", err)
 	}
 }

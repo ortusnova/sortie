@@ -11,14 +11,14 @@ import (
 
 func repositoriesConfig(providers ...string) config.ServiceConfig {
 	cfg := repositoryConfig("")
-	repos := make([]config.SmolvmRepository, 0, len(providers))
+	repos := make([]config.Repository, 0, len(providers))
 	for i, p := range providers {
-		repos = append(repos, config.SmolvmRepository{
+		repos = append(repos, config.Repository{
 			Name: string(rune('a' + i)), URL: "https://example.com/org/" + string(rune('a'+i)) + ".git", Base: "main",
 			BranchPrefix: "sortie/", Provider: p, Project: "org/x", MaxBundleMiB: 512,
 		})
 	}
-	cfg.Environment.Smolvm = config.SmolvmConfig{Repositories: repos, DefaultRepository: "a", Repository: &repos[0]}
+	cfg.Environment.Remote.Repositories, cfg.Environment.Remote.DefaultRepository, cfg.Environment.Remote.Repository = repos, "a", &repos[0]
 	return cfg
 }
 
@@ -30,11 +30,11 @@ func TestCheckRepositoryProvider_Repositories(t *testing.T) {
 	}
 	err := checkRepositoryProvider(repositoriesConfig("github", "gitea"))
 	ce, ok := errors.AsType[*config.ConfigError](err)
-	if !ok || ce.Field != "environment.smolvm.repositories[1].provider" || !strings.Contains(ce.Message, "environment.smolvm.repositories[0].provider") {
+	if !ok || ce.Field != "environment.remote.repositories[1].provider" || !strings.Contains(ce.Message, "environment.remote.repositories[0].provider") {
 		t.Errorf("mixed providers: error = %v, want one naming both entries", err)
 	}
 	err = checkRepositoryProvider(repositoriesConfig("", "nosuchforge"))
-	if ce, ok := errors.AsType[*config.ConfigError](err); !ok || ce.Field != "environment.smolvm.repositories[1].provider" {
+	if ce, ok := errors.AsType[*config.ConfigError](err); !ok || ce.Field != "environment.remote.repositories[1].provider" {
 		t.Errorf("unknown provider: error = %v", err)
 	}
 }
@@ -45,9 +45,9 @@ func TestCheckRepositoryProvider_RepositoriesWithoutDefault(t *testing.T) {
 	t.Parallel()
 
 	cfg := repositoriesConfig("github", "gitea")
-	cfg.Environment.Smolvm.DefaultRepository, cfg.Environment.Smolvm.Repository = "", nil
+	cfg.Environment.Remote.DefaultRepository, cfg.Environment.Remote.Repository = "", nil
 	err := checkRepositoryProvider(cfg)
-	if ce, ok := errors.AsType[*config.ConfigError](err); !ok || ce.Field != "environment.smolvm.repositories[1].provider" {
+	if ce, ok := errors.AsType[*config.ConfigError](err); !ok || ce.Field != "environment.remote.repositories[1].provider" {
 		t.Errorf("mixed providers: error = %v, want the second entry named", err)
 	}
 }
@@ -58,16 +58,10 @@ func TestWorkflowRepositoriesForPlanSync(t *testing.T) {
 	t.Parallel()
 
 	withDefault := repositoriesConfig("", "")
-	withDefault.Environment.Kind = config.EnvironmentKindSmolvm
-	withDefault.Environment.Smolvm.Repositories[1].ClosedToDispatch = true
+	withDefault.Environment.Remote.Repositories[1].ClosedToDispatch = true
 	noDefault := withDefault
-	noDefault.Environment.Smolvm.DefaultRepository, noDefault.Environment.Smolvm.Repository = "", nil
+	noDefault.Environment.Remote.DefaultRepository, noDefault.Environment.Remote.Repository = "", nil
 	local := config.ServiceConfig{}
-	remote := config.ServiceConfig{Environment: config.EnvironmentConfig{Kind: config.EnvironmentKindRemote, Remote: config.RemoteConfig{
-		Repositories: withDefault.Environment.Smolvm.Repositories, DefaultRepository: "a", Repository: withDefault.Environment.Smolvm.Repository,
-	}}}
-	remoteNoDefault := remote
-	remoteNoDefault.Environment.Remote.DefaultRepository, remoteNoDefault.Environment.Remote.Repository = "", nil
 
 	for _, tt := range []struct {
 		name     string
@@ -78,8 +72,6 @@ func TestWorkflowRepositoriesForPlanSync(t *testing.T) {
 		{"default", withDefault, []string{"a", "b"}, false},
 		{"no default", noDefault, []string{"a", "b"}, true},
 		{"no repositories", local, []string{}, false},
-		{"remote default", remote, []string{"a", "b"}, false},
-		{"remote no default", remoteNoDefault, []string{"a", "b"}, true},
 	} {
 		current := func() config.ServiceConfig { return tt.cfg }
 		if got := workflowRepositories(current)(); !slices.Equal(got, tt.names) {

@@ -245,7 +245,11 @@ func Stall(e *orchestrator.SnapshotRunningEntry, c Context) (Status, bool) {
 	if e.QuietAt.IsZero() || c.Now.Before(e.QuietAt) {
 		return Status{}, false
 	}
-	return status("stall_marker", map[string]any{
+	name := "stall_marker"
+	if e.StallToolCallBound {
+		name = "stall_marker_tool_call"
+	}
+	return status(name, map[string]any{
 		"Silence": c.Now.Sub(e.StallReference).Seconds(),
 		"Timeout": e.StallAt.Sub(e.StallReference).Seconds(),
 	}), true
@@ -295,6 +299,7 @@ var continuationTemplates = map[string]string{
 	orchestrator.ReactionKindBotReview:     "run_bot_review_fix",
 	orchestrator.ReactionKindLabelReview:   "run_label_review",
 	orchestrator.ReactionKindLabelFix:      "run_label_fix",
+	orchestrator.ReactionKindLiveProof:     "run_live_proof",
 }
 
 // retryTemplates names the retry template of each recorded retry trigger.

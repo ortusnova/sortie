@@ -167,16 +167,22 @@ type runningEntryResponse struct {
 	// DispatchID keys the run's retained events.
 	DispatchID string `json:"dispatch_id"`
 
-	// QuietAt and StallAt are half and all of agent.stall_timeout_ms after
-	// the last event, else after the start; both are null with stall
-	// detection off. StallText and StallTextFull are null until QuietAt
-	// has passed and with stall detection off, and StallOffText is null
-	// while it is on.
+	// QuietAt and StallAt are half and all of the stall timeout after the
+	// last event, else after the start: agent.tool_call_timeout_ms while a
+	// tool call is open and the run's worker shows it alive, else
+	// agent.stall_timeout_ms. Both are null with stall detection off.
+	// StallText and StallTextFull are null until QuietAt has passed and
+	// with stall detection off, and StallOffText is null while it is on.
 	QuietAt       *time.Time `json:"quiet_at"`
 	StallAt       *time.Time `json:"stall_at"`
 	StallText     *string    `json:"stall_text"`
 	StallTextFull *string    `json:"stall_text_full"`
 	StallOffText  *string    `json:"stall_off_text"`
+
+	// InToolCallSince is when the earliest tool call still open began, null
+	// while the agent is in no tool call or its adapter reports no tool
+	// call starts.
+	InToolCallSince *time.Time `json:"in_tool_call_since"`
 	holdFields
 	runningWorkerView
 }
@@ -822,6 +828,7 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 		DispatchID:          e.DispatchID,
 		QuietAt:             utcOrNil(e.QuietAt),
 		StallAt:             utcOrNil(e.StallAt),
+		InToolCallSince:     utcOrNil(e.InToolCallSince),
 		WorkspacePath:       e.WorkspacePath,
 		Repository:          e.Repository,
 		SSHHost:             e.SSHHost,

@@ -572,13 +572,20 @@ func (o *Orchestrator) closeHandoffPart(ctx context.Context, p *HandoffPart, res
 
 // handoffRepository returns the configured repository that p names, by
 // name or by its owner/repo project.
-func handoffRepository(cfg config.ServiceConfig, named string) (config.SmolvmRepository, bool) {
+func handoffRepository(cfg config.ServiceConfig, named string) (config.Repository, bool) {
 	for _, r := range cfg.Environment.RepositorySet().AllRepositories() {
 		if (r.Name != "" && strings.EqualFold(r.Name, named)) || (r.Project != "" && strings.EqualFold(r.Project, named)) {
 			return r, true
 		}
 	}
-	return config.SmolvmRepository{}, false
+	return config.Repository{}, false
+}
+
+// listsRepositories reports whether the repositories list, rather than
+// the single repository block, configures s, so an issue names its
+// repository by label.
+func listsRepositories(s config.RepositorySet) bool {
+	return len(s.Repositories) > 0 && (s.DefaultRepository != "" || s.Repository == nil)
 }
 
 // fileHandoffChange files p, a change in another repository, as an issue
@@ -623,7 +630,7 @@ func (o *Orchestrator) fileHandoffChange(ctx context.Context, cfg config.Service
 		log.Warn("hand-off change could not be filed, trying again on the next poll", slog.Any("error", err))
 		return
 	}
-	if repo.Name != "" && cfg.Environment.RepositorySet().ListsRepositories() {
+	if repo.Name != "" && listsRepositories(cfg.Environment.RepositorySet()) {
 		if err := o.trackerAdapter.AddLabel(tctx, created.ID, config.RepositoryLabelPrefix+repo.Name); err != nil {
 			log.Warn("hand-off change filed without its repository label", slog.String("work_issue", created.Identifier), slog.Any("error", err))
 		}
