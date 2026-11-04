@@ -163,6 +163,12 @@ type HandleRetryTimerParams struct {
 	// attempt and takes no slot. Nil holds none.
 	WorkerWait func(domain.Issue) *WorkerHold
 
+	// EgressHold returns the hold an invalid egress policy of the
+	// re-fetched issue's repository gives its remote job, and nil when
+	// the policy is valid or not read. A retry it holds keeps its attempt
+	// and takes no slot. Nil holds none.
+	EgressHold func(domain.Issue) *EgressHold
+
 	// WorkflowFile is the base filename of the active WORKFLOW.md file.
 	WorkflowFile string
 
@@ -885,6 +891,25 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			)
 
 			reschedule(nextAttempt, delayMS, "no available SSH hosts")
+			return
+		}
+	}
+
+	if params.EgressHold != nil {
+		if hold := params.EgressHold(issue); hold != nil {
+			if params.HostPool != nil && host != "" {
+				params.HostPool.ReleaseHost(issueID)
+			}
+			rearmHeld(time.Now().Add(time.Duration(params.PollIntervalMS) * time.Millisecond))
+			if entry, ok := state.RetryAttempts[issueID]; ok {
+				entry.noStateObserved = popped.noStateObserved
+				entry.EgressHold = hold
+			}
+			log.Debug("the retry's remote job is held by its repository's egress policy, rechecking",
+				slog.Int("attempt", popped.Attempt),
+				slog.String("reason", hold.Text()),
+				slog.Int64("delay_ms", int64(params.PollIntervalMS)),
+			)
 			return
 		}
 	}

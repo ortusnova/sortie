@@ -1,0 +1,11 @@
+# The hosts a job on this repository reaches, beyond the agent harness's.
+# The format is docs/egress.schema.json; see "Job egress policy" in
+# docs/workflow-reference.md.
+version: 1
+hosts:
+  - host: proxy.golang.org
+    reason: go build, go test and the lint tools download the module dependencies and the pinned Go toolchain
+  - host: sum.golang.org
+    reason: the go command checks each downloaded module against the checksum database
+  - host: registry.npmjs.org
+    reason: make ui-build and make ui-check install the dashboard's npm dependencies

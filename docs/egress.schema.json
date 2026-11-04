@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ortusnova/sortie/blob/main/docs/egress.schema.json",
+  "title": "Sortie egress policy",
+  "description": "The egress of a repository's jobs, in .sortie/egress.yaml at the repository root, and the hosts of the agent harness under environment.remote.egress in WORKFLOW.md. Sortie also refuses a duplicate entry (the same host, the same udp cidr and port, or the same private cidr), a CIDR with host bits set, a port range that starts above its end, and an address with an octet above 255, which this schema cannot state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "hosts"],
+  "properties": {
+    "version": {
+      "description": "The format version.",
+      "const": 1
+    },
+    "hosts": {
+      "description": "The hosts the jobs reach through the egress proxy.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/host" }
+    },
+    "udp": {
+      "description": "The UDP destinations the jobs reach directly.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/udp" }
+    },
+    "private": {
+      "description": "The private ranges the jobs reach.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/private" }
+    }
+  },
+  "$defs": {
+    "reason": {
+      "description": "Why the jobs reach the entry. Must say something.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "cidr": {
+      "description": "An IPv4 or IPv6 network in CIDR notation, such as 10.0.0.0/8.",
+      "type": "string",
+      "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f:]*:[0-9a-f:.]*)/[0-9]{1,3}$"
+    },
+    "privateCidr": {
+      "description": "A private range in CIDR notation: inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or fc00::/7, so never loopback or link-local.",
+      "type": "string",
+      "pattern": "^(10(\\.[0-9]{1,3}){3}/([89]|[12][0-9]|3[0-2])|172\\.(1[6-9]|2[0-9]|3[01])(\\.[0-9]{1,3}){2}/(1[2-9]|2[0-9]|3[0-2])|192\\.168(\\.[0-9]{1,3}){2}/(1[6-9]|2[0-9]|3[0-2])|f[cd][0-9a-f]{0,2}:[0-9a-f:]*/([7-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))$"
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "reason"],
+      "properties": {
+        "host": {
+          "description": "A lowercase DNS name, or *. followed by a name of at least two labels. No port, no IP literal, no bare *.",
+          "type": "string",
+          "maxLength": 255,
+          "pattern": "^(\\*\\.([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)$",
+          "not": { "pattern": "(^|\\.)[0-9]+$" }
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "udp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "port", "reason"],
+      "properties": {
+        "cidr": { "$ref": "#/$defs/cidr" },
+        "port": {
+          "description": "A port N, or a range N-M, of ports from 1 to 65535.",
+          "anyOf": [
+            { "type": "integer", "minimum": 1, "maximum": 65535 },
+            { "type": "string", "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$" }
+          ]
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "private": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "reason"],
+      "properties": {
+        "cidr": { "$ref": "#/$defs/privateCidr" },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    }
+  }
+}

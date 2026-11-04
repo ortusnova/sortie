@@ -2955,6 +2955,7 @@ func contractEnclosingFuncName(file *ast.File, pos token.Pos) string {
 // workspacekit.
 var contractAnchorSortieDirSites = []contractSiteEntry{
 	{importPath: "github.com/sortie-ai/sortie/internal/workspace", name: "handoffEvidencePathspecs", reason: "Git pathspec"},
+	{importPath: "github.com/sortie-ai/sortie/internal/egress", name: "treePath", reason: "Git tree path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/orchestrator", name: "GenerateMCPConfig", reason: "returned path"},
 	{importPath: "github.com/sortie-ai/sortie/internal/agent/mcpconfig", name: "readConfigFile", reason: "location check"},
 	{importPath: "github.com/sortie-ai/sortie/internal/orchestrator", name: "RunWorkerAttempt", reason: "exported summary path"},

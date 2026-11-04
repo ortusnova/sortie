@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sortie-ai/sortie/internal/egress"
 )
 
 // Protocol is the worker API protocol version this package serves.
@@ -160,6 +162,30 @@ type Run struct {
 	// bundles flow.
 	SeedPath    string          `json:"seed_path"`
 	Credentials []RunCredential `json:"credentials"`
+	// Egress is what the job's machine may reach. A worker runs no job
+	// whose offer lacks it.
+	Egress Egress `json:"egress"`
+}
+
+// Egress is the egress policy of a job: the policy of its agent harness,
+// the workflow's, and of its repository, read at the tip of the
+// repository's base branch, with the hosts of the workflow's credential
+// bindings. It holds no credential.
+type Egress struct {
+	Source          EgressSource  `json:"source"`
+	Harness         egress.Policy `json:"harness"`
+	Repository      egress.Policy `json:"repository"`
+	CredentialHosts []string      `json:"credential_hosts"`
+}
+
+// EgressSource names where the repository policy was read: the
+// repository's name, its base branch, the commit read and the file.
+// Empty for a job with no repository.
+type EgressSource struct {
+	Repository string `json:"repository"`
+	Branch     string `json:"branch"`
+	Commit     string `json:"commit"`
+	File       string `json:"file"`
 }
 
 // RunCredential tells the worker which variable stands for a

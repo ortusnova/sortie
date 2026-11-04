@@ -106,3 +106,39 @@ func TestManager_RefusesTheRemovedSmolvmKind(t *testing.T) {
 		t.Errorf("after the refused reload: kind %q, interval %d; want the previous remote workflow", cfg.Environment.Kind, cfg.Polling.IntervalMS)
 	}
 }
+
+// job-egress-policy: A malformed harness list. A workflow whose
+// environment.remote.egress has a host with no reason is refused at start
+// and at reload, naming that entry, and a reload keeps the previous
+// workflow's harness hosts.
+func TestManager_RemoteRefusesAMalformedHarnessList(t *testing.T) {
+	t.Parallel()
+
+	const entry = "environment.remote.egress.hosts[1].reason"
+	valid := "    egress:\n      version: 1\n      hosts:\n        - { host: models.opencode.ai, reason: the agent harness's models }\n"
+	malformed := valid + "        - { host: opencode.ai }\n"
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	mustWriteFile(t, path, remoteWorkflow(5000, malformed, ""))
+	if _, err := NewManager(path, testLogger()); err == nil || !strings.Contains(err.Error(), entry) {
+		t.Fatalf("NewManager() error = %v, want one naming %s", err, entry)
+	}
+
+	mustWriteFile(t, path, remoteWorkflow(5000, valid, ""))
+	mgr, err := NewManager(path, testLogger())
+	if err != nil {
+		t.Fatalf("NewManager(valid harness list) error = %v", err)
+	}
+	if hosts := mgr.Config().Environment.Remote.Egress.HostNames(); len(hosts) != 1 || hosts[0] != "models.opencode.ai" {
+		t.Fatalf("harness hosts = %v, want models.opencode.ai", hosts)
+	}
+
+	mustWriteFile(t, path, remoteWorkflow(9000, malformed, ""))
+	if err := mgr.Reload(); err == nil || !strings.Contains(err.Error(), entry) {
+		t.Fatalf("Reload() error = %v, want one naming %s", err, entry)
+	}
+	cfg := mgr.Config()
+	if hosts := cfg.Environment.Remote.Egress.HostNames(); cfg.Polling.IntervalMS != 5000 || len(hosts) != 1 {
+		t.Errorf("after the refused reload: interval %d, harness hosts %v; want the previous workflow", cfg.Polling.IntervalMS, hosts)
+	}
+}

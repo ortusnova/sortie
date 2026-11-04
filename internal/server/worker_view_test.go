@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -429,5 +430,42 @@ func TestStateServesTheJobsNoWorkerCanTake(t *testing.T) {
 			w["reason"] != "worker p1: no nested virtualization; worker taichi: 92.04 of 200 GiB disk free" || w["release"] != "worker taichi frees a slot" {
 			t.Errorf("waits[%d] = %v, want %s waiting for taichi since %s", i, w, want.id, want.since)
 		}
+	}
+}
+
+// job-egress-policy: A typo merged. An issue held because its
+// repository's egress policy is invalid shows egress policy invalid in
+// GET /api/v1/state, with the repository, the commit, the file and the
+// entry, and it waits on no worker.
+func TestStateServesAnEgressHold(t *testing.T) {
+	t.Parallel()
+
+	hold := &orchestrator.EgressHold{Repository: "homelab", Branch: "main", Commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+		File: ".sortie/egress.yaml", Entry: "hosts[0].host", Error: `"ghcr.io:443" has a port: write the DNS name alone`}
+	snap := orchestrator.RuntimeSnapshotResult{
+		GeneratedAt: viewNow,
+		Held: []orchestrator.SnapshotHeldEntry{{IssueID: "id-30", Identifier: "ONS-30",
+			Hold: orchestrator.SnapshotHold{Reason: orchestrator.SkipEgressInvalid, Since: viewNow.Add(-time.Minute), Egress: hold}}},
+		Retrying: []orchestrator.SnapshotRetryEntry{{IssueID: "id-31", Identifier: "ONS-31", Attempt: 2, DueAtMS: viewNow.UnixMilli(),
+			EgressHold: hold}},
+	}
+	ts := viewServer(t, Params{SnapshotFn: fixedSnapshot(snap)})
+
+	body := getJSONMap(t, ts.URL+"/api/v1/state")
+	want := map[string]any{"repository": "homelab", "branch": "main", "commit": hold.Commit, "file": ".sortie/egress.yaml",
+		"entry": "hosts[0].host", "error": hold.Error, "text": hold.Text()}
+	got := rows(t, body, "held")[0]["hold"].(map[string]any)
+	if got["reason"] != "egress_invalid" || !reflect.DeepEqual(got["egress"], want) ||
+		!strings.HasPrefix(got["reason_text"].(string), "Egress policy invalid: homelab at "+hold.Commit+", .sortie/egress.yaml hosts[0].host: ") {
+		t.Errorf("hold = %v", got)
+	}
+	if !strings.HasPrefix(hold.Text(), "egress policy invalid: repository homelab at main commit "+hold.Commit) {
+		t.Errorf("Text() = %q", hold.Text())
+	}
+	if retry := rows(t, body, "retrying")[0]; !reflect.DeepEqual(retry["egress_hold"], want) {
+		t.Errorf("retrying[0].egress_hold = %v, want %v", retry["egress_hold"], want)
+	}
+	if waits := rows(t, body, "waits"); len(waits) != 0 {
+		t.Errorf("waits = %v, want none: the hold waits on no worker", waits)
 	}
 }
