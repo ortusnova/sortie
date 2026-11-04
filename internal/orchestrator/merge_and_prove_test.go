@@ -438,6 +438,12 @@ func TestMergeAndProve_NotProvenReverts(t *testing.T) {
 		t.Error("the story moved before the revert merged")
 	}
 
+	f.forge.setCI(101, "")
+	f.tick(t, deployed.Add(31*time.Minute))
+	if merged := f.forge.mergedPulls(); !slices.Equal(merged, []int{1}) {
+		t.Fatalf("merged = %v, want the revert held until its CI passes, not merged with no checks yet", merged)
+	}
+
 	f.forge.setCI(101, "success")
 	f.tick(t, deployed.Add(33*time.Minute))
 	if merged := f.forge.mergedPulls(); !slices.Equal(merged, []int{1, 101}) {

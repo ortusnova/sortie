@@ -729,7 +729,8 @@ func (o *Orchestrator) startRevert(ctx context.Context, cfg config.ServiceConfig
 }
 
 // revertStep opens the revert pull request of the merge once, and merges
-// it once its CI passes.
+// it once its CI passes. A revert with no checks yet waits: the forge
+// may not have started them when it was just opened.
 func (o *Orchestrator) revertStep(ctx context.Context, cfg config.ServiceConfig, e *MergeAndProveEntry) {
 	log := logging.WithIssue(o.logger, e.IssueID, e.Identifier)
 	pr := e.PullRequest
@@ -773,8 +774,8 @@ func (o *Orchestrator) revertStep(ctx context.Context, cfg config.ServiceConfig,
 		e.Waiting = "the revert's CI read failed: " + err.Error()
 		return
 	}
-	if ci != "success" && ci != "" {
-		e.Waiting = fmt.Sprintf("the CI of the revert %s is %s", formatPullRequest(revert), ci)
+	if ci != "success" {
+		e.Waiting = fmt.Sprintf("the CI of the revert %s is %s", formatPullRequest(revert), cmp.Or(ci, "not started"))
 		return
 	}
 	strategy := o.autoMergeConfig.Strategy
