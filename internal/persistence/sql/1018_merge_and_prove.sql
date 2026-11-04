@@ -1,4 +1,4 @@
--- Migration 1017 (fork range): stories merged, proven after deploy, or reverted
+-- Migration 1018 (fork range): stories merged, proven after deploy, or reverted
 --
 -- One row per story the supervisor sent through merge-and-prove, until its
 -- run through the queue ends (proven or reverted, or given up). seq orders

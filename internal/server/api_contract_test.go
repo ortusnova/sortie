@@ -392,7 +392,8 @@ func TestAPIContract(t *testing.T) {
 	c, err := newContract(
 		reflect.TypeFor[stateResponse](), reflect.TypeFor[issueDetailResponse](), reflect.TypeFor[runsResponse](), reflect.TypeFor[issueGroupsResponse](),
 		reflect.TypeFor[runstats.Report](), reflect.TypeFor[refreshResponse](), reflect.TypeFor[retryNowResponse](), reflect.TypeFor[checkNowResponse](),
-		reflect.TypeFor[acknowledgeResponse](), reflect.TypeFor[supervisorResultResponse](), reflect.TypeFor[supervisorQuestionResponse](), reflect.TypeFor[errorResponse](),
+		reflect.TypeFor[acknowledgeResponse](), reflect.TypeFor[supervisorResultResponse](), reflect.TypeFor[supervisorQuestionResponse](), reflect.TypeFor[supervisorWithdrawResponse](),
+		reflect.TypeFor[supervisorIssueResponse](), reflect.TypeFor[errorResponse](),
 		reflect.TypeFor[healthResponse](), reflect.TypeFor[readyResponse](), reflect.TypeFor[runEventsResponse](),
 		agentEventType, reflect.TypeFor[runEndedFrame](), reflect.TypeFor[runResetFrame](),
 		reflect.TypeFor[pricesResponse](),

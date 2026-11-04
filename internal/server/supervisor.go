@@ -25,10 +25,11 @@ type SupervisorActions interface {
 	FixRun(ctx context.Context, identifier, message string) orchestrator.SupervisorResult
 	MarkDraft(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	Merge(ctx context.Context, identifier string) orchestrator.SupervisorResult
-	FileIssue(ctx context.Context, title, body string) orchestrator.SupervisorResult
+	FileIssue(ctx context.Context, issue orchestrator.SupervisorIssue) orchestrator.SupervisorIssueResult
 	RequestLiveProof(ctx context.Context, identifier, criterion string) orchestrator.SupervisorResult
 	MergeAndProve(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	AskPerson(ctx context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult
+	WithdrawQuestion(ctx context.Context, w orchestrator.SupervisorWithdrawal) orchestrator.SupervisorWithdrawResult
 }
 
 var _ SupervisorActions = orchestrator.Supervisor{}
@@ -75,6 +76,7 @@ const (
 	supervisorActionHold        = "hold"
 	supervisorActionReleaseHold = "release_hold"
 	supervisorActionAsk         = "ask_person"
+	supervisorActionWithdraw    = "withdraw_question"
 )
 
 // supervisorCtxKey marks the context of a request the supervisor token
@@ -149,7 +151,7 @@ func (s *Server) recordSupervised(action string, next http.HandlerFunc) http.Han
 func (s *Server) refuseSupervisor(w http.ResponseWriter, r *http.Request) {
 	evidence, _ := readEvidence(r)
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, merge and prove, or ask a person")
+	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, merge and prove, ask a person, or withdraw its own question")
 	action := r.Method + " " + r.URL.Path
 	if r.Pattern != "" {
 		action = r.Pattern
@@ -356,7 +358,11 @@ func (s *Server) writeSupervisorResult(w http.ResponseWriter, r *http.Request, s
 		})
 	case orchestrator.SupervisorUnknownIssue:
 		status = http.StatusNotFound
-		writeErrorJSON(w, s.logger, status, "issue_not_found", result.Message)
+		code := "issue_not_found"
+		if result.Code != "" {
+			code = result.Code
+		}
+		writeErrorJSON(w, s.logger, status, code, result.Message)
 	case orchestrator.SupervisorPrecondition:
 		status = http.StatusConflict
 		if result.Code == "invalid_request" {
@@ -392,8 +398,6 @@ type supervisorRequest struct {
 	PullRequest string `json:"pull_request"`
 	Commit      string `json:"commit"`
 	Message     string `json:"message"`
-	Title       string `json:"title"`
-	Body        string `json:"body"`
 }
 
 // supervisorHandler returns the handler of one supervisor action route,
@@ -446,10 +450,8 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 			return sup.MergeAndProve(ctx, id)
 		})))
 	mux.HandleFunc("/api/v1/supervisor/questions", s.supervisorRoute(supervisorActionAsk, s.handleSupervisorQuestion))
-	mux.HandleFunc("/api/v1/issues", s.supervisorRoute(supervisorActionFileIssue, s.supervisorHandler(supervisorActionFileIssue,
-		func(ctx context.Context, sup SupervisorActions, _ string, req supervisorRequest) orchestrator.SupervisorResult {
-			return sup.FileIssue(ctx, req.Title, req.Body)
-		})))
+	mux.HandleFunc("/api/v1/supervisor/questions/{id}/withdraw", s.supervisorRoute(supervisorActionWithdraw, s.handleWithdrawQuestion))
+	mux.HandleFunc("/api/v1/issues", s.supervisorRoute(supervisorActionFileIssue, s.handleFileIssue))
 }
 
 // supervisorGrantCap returns the cap of a session grant r asks for: the

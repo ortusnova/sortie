@@ -437,6 +437,10 @@ type Orchestrator struct {
 	mergeCompletionReactionConfigured bool
 	handoffParkingLabel               string
 
+	// supervisorIssueMu serializes the supervisor's filings, so two of
+	// the same issue cannot both miss the other.
+	supervisorIssueMu sync.Mutex
+
 	// environments resolves the execution environment of the current
 	// configuration for workers, cleanups, and reaction triage.
 	environments *environmentResolver

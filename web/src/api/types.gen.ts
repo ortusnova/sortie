@@ -662,6 +662,8 @@ export interface PlatformFaultResponse {
   last_check_error: string;
   next_check_at: string;
   checking: boolean;
+  question_kind: string | null;
+  raised_by: string | null;
 }
 
 export interface PlatformFaultStoryResponse {
@@ -1376,8 +1378,22 @@ export interface SupervisorBudgetResponse {
   tokens_limit: number;
 }
 
+export interface SupervisorIssueResponse {
+  action: string;
+  issue_identifier: string;
+  issue_id: string;
+  existing: boolean;
+  pull_request: string | null;
+  merge_commit: string | null;
+}
+
 export interface SupervisorQuestionResponse {
   action: string;
+  existing: boolean;
+  platform_fault: PlatformFaultResponse;
+}
+
+export interface SupervisorReplacementResponse {
   existing: boolean;
   platform_fault: PlatformFaultResponse;
 }
@@ -1418,6 +1434,12 @@ export interface SupervisorTriggerResponse {
   issue_identifier: string | null;
   detail: string;
   at: string;
+}
+
+export interface SupervisorWithdrawResponse {
+  action: string;
+  platform_fault: PlatformFaultResponse;
+  replacement: SupervisorReplacementResponse | null;
 }
 
 export interface TableInForceResponse {

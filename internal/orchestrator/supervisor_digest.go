@@ -79,6 +79,8 @@ type digestPlatformFault struct {
 	Detail       string   `json:"detail,omitempty"`
 	PersonAction string   `json:"person_action,omitempty"`
 	Where        string   `json:"where,omitempty"`
+	QuestionKind string   `json:"question_kind,omitempty"`
+	RaisedBy     string   `json:"raised_by,omitempty"`
 	ActionDone   bool     `json:"action_done"`
 	Stories      []string `json:"stories"`
 }
@@ -159,7 +161,9 @@ func buildSupervisorDigest(state *State, now time.Time) supervisorDigest {
 		d.BudgetHeld = append(d.BudgetHeld, digestBudgetHold{Identifier: e.Identifier, Reason: e.Reason})
 	}
 	for _, f := range snapshotPlatformFaults(state) {
-		fault := digestPlatformFault{ID: f.ID, Class: f.Class, Cause: f.Cause, Detail: f.Detail, ActionDone: !f.ActionDoneAt.IsZero(), Stories: []string{}}
+		fault := digestPlatformFault{ID: f.ID, Class: f.Class, Cause: f.Cause, Detail: f.Detail, ActionDone: !f.ActionDoneAt.IsZero(),
+			QuestionKind: f.QuestionKind, RaisedBy: f.RaisedBy, Stories: []string{},
+		}
 		if f.Action != nil {
 			fault.PersonAction, fault.Where = f.Action.Action, f.Action.Where
 		}

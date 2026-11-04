@@ -493,7 +493,10 @@ One row per request the supervisor token makes to a control route, written by th
 | `action_done_by`   | TEXT    | Who marked it done, as the request named them |
 | `last_check_at`    | TEXT    | RFC 3339 UTC of the latest check; empty before the first |
 | `last_check_error` | TEXT    | The error of the latest check, credentials masked; empty when it passed or none ran |
-| `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed; empty while the fault is open. A resolved row is kept and never loaded again |
+| `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed or the withdrawal; empty while the fault is open. A resolved row is kept and never loaded again |
+| `question_kind`    | TEXT    | For a `supervisor_question`, its action kind: `credential`, `key`, `approval`, `decision`, `host_action`, or `live_proof`; empty otherwise and for a question raised before migration 1017 |
+| `raised_by`        | TEXT    | For a `supervisor_question`, who raised it: `supervisor` (the supervisor token) or `operator` (the control token); empty otherwise. Migration 1017 sets `supervisor` on the questions raised before it |
+| `withdrawn`        | TEXT    | The evidence, masked, on which the supervisor withdrew its question; empty unless it did |
 
 **`platform_fault_holds`**: the stories an open platform fault holds out of dispatch (migration 1009)
 
@@ -505,7 +508,20 @@ One row per request the supervisor token makes to a control route, written by th
 | `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
 | `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
 
-Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
+Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked, followed by what each question that joined it checked and its evidence. Columns `question_kind`, `raised_by`, and `withdrawn` are added by migration 1017. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
+
+**`supervisor_issues`**: the issues the supervisor filed (migration 1017)
+
+| Column       | Type             | Notes |
+| ------------ | ---------------- | ----- |
+| `issue_id`   | TEXT PRIMARY KEY | Tracker-internal ID of the filed issue |
+| `identifier` | TEXT NOT NULL    | Its human-readable key |
+| `kind`       | TEXT NOT NULL    | `platform_defect` or `follow_up` |
+| `stories`    | TEXT NOT NULL    | The identifiers of the stories it concerns, sorted and comma-separated; empty for none |
+| `signature`  | TEXT NOT NULL    | The fault signature it names, folded to lower case and single spaces; empty for none |
+| `filed_at`   | TEXT NOT NULL    | RFC 3339 timestamp with nanoseconds, in UTC |
+
+One row per issue `POST /api/v1/issues` created. A later filing reads every row, and joins, as a comment, the newest whose kind and stories, or whose signature, match and that the tracker still shows open. Rows are never deleted: a closed issue's row matches nothing once the tracker shows it in a terminal state.
 
 **`standing_holds`**: leases on issues that are not running (migration 1010)
 
@@ -567,7 +583,7 @@ The event loop writes a row when a session starts, and the session's goroutine r
 
 The event loop writes the row when a run's exit records the part and at each change of its status. At startup every row is loaded before the first tick, so a story stays out of Done across a restart and a part recorded again by a later run is recognized; a `job` part that was `working` is loaded as `pending`, because its check job did not outlive the process, and is queued again. Rows are never deleted.
 
-**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1017)
+**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1018)
 
 | Column                | Type             | Notes |
 | --------------------- | ---------------- | ----- |
