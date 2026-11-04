@@ -23,6 +23,8 @@ func TestSupervisorConfig(t *testing.T) {
 				SweepIntervalMS:   DefaultSupervisorSweepIntervalMS,
 				MaxSessionsPerDay: DefaultSupervisorMaxSessionsPerDay,
 				MaxTokensPerDay:   DefaultSupervisorMaxTokensPerDay,
+				QuietSweepMS:      DefaultSupervisorQuietSweepMS,
+				NoopLimit:         DefaultSupervisorNoopLimit,
 			},
 		},
 		{
@@ -30,8 +32,12 @@ func TestSupervisorConfig(t *testing.T) {
 			section: map[string]any{
 				"agent": "codex", "prompt": "/etc/sortie/supervisor.md",
 				"sweep_interval_ms": 600000, "max_sessions_per_day": "12", "max_tokens_per_day": 500000,
+				"quiet_sweep_ms": 3600000, "noop_limit": 5,
 			},
-			want: SupervisorConfig{Agent: "codex", Prompt: "/etc/sortie/supervisor.md", SweepIntervalMS: 600000, MaxSessionsPerDay: 12, MaxTokensPerDay: 500000},
+			want: SupervisorConfig{
+				Agent: "codex", Prompt: "/etc/sortie/supervisor.md", SweepIntervalMS: 600000, MaxSessionsPerDay: 12, MaxTokensPerDay: 500000,
+				QuietSweepMS: 3600000, NoopLimit: 5,
+			},
 		},
 		{name: "not a map", section: "on", wantField: "supervisor"},
 		{name: "no agent", section: map[string]any{"prompt": "supervisor.md"}, wantField: "supervisor.agent"},
@@ -39,6 +45,8 @@ func TestSupervisorConfig(t *testing.T) {
 		{name: "a zero sweep", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "sweep_interval_ms": 0}, wantField: "supervisor.sweep_interval_ms"},
 		{name: "a negative session budget", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "max_sessions_per_day": -1}, wantField: "supervisor.max_sessions_per_day"},
 		{name: "a text token budget", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "max_tokens_per_day": "lots"}, wantField: "supervisor.max_tokens_per_day"},
+		{name: "a zero quiet sweep", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "quiet_sweep_ms": 0}, wantField: "supervisor.quiet_sweep_ms"},
+		{name: "a zero no-op limit", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "noop_limit": 0}, wantField: "supervisor.noop_limit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

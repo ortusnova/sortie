@@ -58,10 +58,14 @@ func (f *fakeSupervisorPause) snapshot() (orchestrator.RuntimeSnapshotResult, er
 		Pause:       f.pause,
 		LastTrigger: &park,
 		LastSession: &orchestrator.SupervisorSession{
-			StartedAt: day.Add(8 * time.Hour), EndedAt: day.Add(8*time.Hour + time.Minute),
+			ID: 74, StartedAt: day.Add(8 * time.Hour), EndedAt: day.Add(8*time.Hour + time.Minute),
 			Triggers: []orchestrator.SupervisorTrigger{park}, TriggerCount: 1,
-			Outcome: orchestrator.SupervisorOutcomeCompleted, Tokens: 1200,
+			Outcome: orchestrator.SupervisorOutcomeCompleted, Tokens: 1200, Digest: "4f2a9c01d3e5b778", Actions: 0,
 		},
+		Suspended: []orchestrator.SupervisorSuspension{{
+			Kind: orchestrator.SupervisorTriggerIdleSlot, Digest: "9e0b7f1c2a3d4e5f", Sessions: 3,
+			Since: day.Add(6 * time.Hour), At: day.Add(7 * time.Hour),
+		}},
 		Budget: orchestrator.SupervisorBudget{
 			Day: day, ResetsAt: day.Add(24 * time.Hour),
 			SessionsUsed: 3, SessionsLimit: 48, TokensUsed: 4200, TokensLimit: 2_000_000,
@@ -153,11 +157,25 @@ func TestSupervisorState_ServesStatusLastTriggerAndBudget(t *testing.T) {
 		t.Errorf("budget = %v, want 3 of 48 sessions and 4200 of 2000000 tokens", budget)
 	}
 	last, _ := sup["last_session"].(map[string]any)
-	if last["outcome"] != "completed" || last["tokens"] != float64(1200) || last["trigger_count"] != float64(1) {
+	if last["outcome"] != "completed" || last["tokens"] != float64(1200) || last["trigger_count"] != float64(1) ||
+		last["id"] != float64(74) || last["digest"] != "4f2a9c01d3e5b778" || last["actions"] != float64(0) {
 		t.Errorf("last_session = %v, want the completed park session", last)
 	}
 	if pending, _ := sup["pending_triggers"].([]any); pending == nil || len(pending) != 0 {
 		t.Errorf("pending_triggers = %#v, want []", sup["pending_triggers"])
+	}
+	digest, _ := sup["last_digest"].(map[string]any)
+	if digest["digest"] != "4f2a9c01d3e5b778" || digest["session_id"] != float64(74) ||
+		digest["session_started_at"] != "2026-11-03T08:00:00Z" || digest["trigger_kind"] != "park" {
+		t.Errorf("last_digest = %v, want the last session's digest", digest)
+	}
+	suspended, _ := sup["suspended_triggers"].([]any)
+	if len(suspended) != 1 {
+		t.Fatalf("suspended_triggers = %#v, want idle_slot", sup["suspended_triggers"])
+	}
+	if s, _ := suspended[0].(map[string]any); s["kind"] != "idle_slot" || s["digest"] != "9e0b7f1c2a3d4e5f" || s["sessions"] != float64(3) ||
+		s["since"] != "2026-11-03T06:00:00Z" || s["suspended_at"] != "2026-11-03T07:00:00Z" {
+		t.Errorf("suspended_triggers[0] = %v, want idle_slot after 3 no-ops", s)
 	}
 }
 

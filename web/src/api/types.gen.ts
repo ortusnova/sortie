@@ -1348,6 +1348,13 @@ export interface SupervisorBudgetResponse {
   tokens_limit: number;
 }
 
+export interface SupervisorDigestResponse {
+  digest: string;
+  session_id: number | null;
+  session_started_at: string;
+  trigger_kind: string;
+}
+
 export interface SupervisorQuestionResponse {
   action: string;
   existing: boolean;
@@ -1365,6 +1372,8 @@ export interface SupervisorResponse {
   pending_triggers: SupervisorTriggerResponse[] | null;
   budget: SupervisorBudgetResponse;
   next_sweep_at: string | null;
+  last_digest: SupervisorDigestResponse | null;
+  suspended_triggers: SupervisorSuspensionResponse[] | null;
 }
 
 export interface SupervisorResultResponse {
@@ -1376,6 +1385,7 @@ export interface SupervisorResultResponse {
 }
 
 export interface SupervisorSessionResponse {
+  id: number | null;
   started_at: string;
   ended_at: string | null;
   outcome: string | null;
@@ -1383,6 +1393,16 @@ export interface SupervisorSessionResponse {
   tokens: number;
   trigger_count: number;
   triggers: SupervisorTriggerResponse[] | null;
+  digest: string | null;
+  actions: number | null;
+}
+
+export interface SupervisorSuspensionResponse {
+  kind: string;
+  digest: string;
+  sessions: number;
+  since: string;
+  suspended_at: string;
 }
 
 export interface SupervisorTriggerResponse {

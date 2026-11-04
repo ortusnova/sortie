@@ -1,14 +1,15 @@
 package orchestrator
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -85,8 +86,12 @@ type SupervisorPause struct {
 
 // SupervisorSession is one supervisor session: running while EndedAt is
 // zero. Triggers holds what started it; a session read back from the
-// store holds its first trigger, and TriggerCount counts them all.
+// store holds its first trigger, and TriggerCount counts them all. ID is
+// its stored row, 0 when it was not stored. Digest is the state digest it
+// started on. Actions counts the supervisor actions Sortie took in it, -1
+// while it runs or when they were not counted.
 type SupervisorSession struct {
+	ID           int64
 	StartedAt    time.Time
 	EndedAt      time.Time
 	Triggers     []SupervisorTrigger
@@ -94,6 +99,19 @@ type SupervisorSession struct {
 	Outcome      string
 	Error        string
 	Tokens       int64
+	Digest       string
+	Actions      int
+}
+
+// SupervisorSuspension is a trigger kind that starts no session until the
+// state digest differs from Digest: its last Sessions sessions, the first
+// started at Since, took no action on that digest. At is when it began.
+type SupervisorSuspension struct {
+	Kind     string
+	Digest   string
+	Sessions int
+	Since    time.Time
+	At       time.Time
 }
 
 // SupervisorBudget is the supervisor's spend in the current UTC day
@@ -119,6 +137,7 @@ type SupervisorSnapshot struct {
 	Pending     []SupervisorTrigger
 	Budget      SupervisorBudget
 	NextSweepAt time.Time
+	Suspended   []SupervisorSuspension // sorted by kind
 }
 
 // supervisorRun is the running supervisor session.
@@ -126,8 +145,19 @@ type supervisorRun struct {
 	rowID     int64
 	startedAt time.Time
 	triggers  []SupervisorTrigger
+	digest    string
+	quiet     bool  // a quiet sweep: the digest is the last session's
+	mark      int64 // the newest supervisor action before it started; -1 when unknown
 	tokens    atomic.Int64
 	cancel    context.CancelCauseFunc
+}
+
+// noopStreak counts the consecutive sessions of one trigger kind that
+// took no action on one state digest.
+type noopStreak struct {
+	digest string
+	count  int
+	since  time.Time
 }
 
 // supervisorState is the event loop's record of the supervisor. Only the
@@ -148,20 +178,27 @@ type supervisorState struct {
 	unavailable  string
 	budgetLogged time.Time
 	stalledSeen  map[string]time.Time
-	idleSeen     string
+	readySince   map[string]time.Time // owner/repo#number@head of each ready pull request to when it was first seen ready
+	noops        map[string]*noopStreak
+	suspended    map[string]*SupervisorSuspension
 }
 
 func newSupervisorState() *supervisorState {
-	return &supervisorState{stalledSeen: map[string]time.Time{}}
+	return &supervisorState{
+		stalledSeen: map[string]time.Time{}, readySince: map[string]time.Time{},
+		noops: map[string]*noopStreak{}, suspended: map[string]*SupervisorSuspension{},
+	}
 }
 
 // supervisorSessionStore records the supervisor's sessions.
 // [persistence.Store] implements it.
 type supervisorSessionStore interface {
 	StartSupervisorSession(ctx context.Context, session persistence.SupervisorSession) (int64, error)
-	EndSupervisorSession(ctx context.Context, id int64, endedAt time.Time, outcome, errText string, tokens int64) error
+	EndSupervisorSession(ctx context.Context, id int64, endedAt time.Time, outcome, errText string, tokens int64, actions int) error
 	SupervisorUsageSince(ctx context.Context, since time.Time) (persistence.SupervisorUsage, error)
-	LatestSupervisorSession(ctx context.Context) (persistence.SupervisorSession, bool, error)
+	RecentSupervisorSessions(ctx context.Context, limit int) ([]persistence.SupervisorSession, error)
+	LastSupervisorActionID(ctx context.Context) (int64, error)
+	SupervisorActionsDoneAfter(ctx context.Context, afterID int64) (int, error)
 }
 
 var _ supervisorSessionStore = (*persistence.Store)(nil)
@@ -246,26 +283,23 @@ func noteStalledReactions(state *State, now time.Time) {
 	}
 }
 
-// noteIdleSlot starts a supervisor session when a dispatch pass left a
-// story slot free and dispatched nothing while stories are held, once per
-// set of held stories.
+// noteIdleSlot asks for a supervisor session when a dispatch pass left a
+// story slot free and dispatched nothing while stories are held. Whether
+// one starts is the state digest's to decide, so a pass that finds the
+// same stories held for the same reasons starts none. It also keeps the
+// time each ready pull request was first seen ready.
 func noteIdleSlot(state *State, dispatched int, now time.Time) {
 	s := state.supervisor
 	if s == nil || !s.enabled {
 		return
 	}
+	observeSupervisorWake(state, now)
 	held := heldStoryIDs(state)
 	idle := dispatched == 0 && state.dispatchPause == nil && len(held) > 0 &&
 		GlobalAvailableSlots(state.MaxConcurrentAgents, AgentsRunning(state.Running)) > 0
 	if !idle {
-		s.idleSeen = ""
 		return
 	}
-	fingerprint := strings.Join(held, "\x00")
-	if fingerprint == s.idleSeen {
-		return
-	}
-	s.idleSeen = fingerprint
 	noteSupervisorTrigger(state, SupervisorTrigger{
 		Kind:   SupervisorTriggerIdleSlot,
 		Detail: fmt.Sprintf("a story slot is free, nothing was dispatched, and %d stories are held", len(held)),
@@ -339,16 +373,108 @@ func (o *Orchestrator) loadSupervisorUsage(ctx context.Context, now time.Time) {
 	} else {
 		s.sessionsUsed, s.tokensUsed = usage.Sessions, usage.Tokens
 	}
-	if latest, found, err := store.LatestSupervisorSession(ctx); err == nil && found {
-		s.last = &SupervisorSession{
-			StartedAt: latest.StartedAt, EndedAt: latest.EndedAt, TriggerCount: latest.Triggers,
-			Triggers: []SupervisorTrigger{{Kind: latest.TriggerKind, Identifier: latest.TriggerIssue, Detail: latest.TriggerDetail, At: latest.StartedAt}},
-			Outcome:  latest.Outcome, Error: latest.Error, Tokens: latest.Tokens,
-		}
-		if s.last.Outcome == "" {
-			s.last.Outcome = SupervisorOutcomeCancelled
-		}
+	recent, err := store.RecentSupervisorSessions(ctx, supervisorStreakWindow)
+	if err != nil {
+		o.logger.Warn("supervisor sessions read failed, starting with no last digest", slog.Any("error", err))
+		return
 	}
+	var prev *persistence.SupervisorSession
+	for i := range recent {
+		row := &recent[i]
+		quiet := row.TriggerKind == SupervisorTriggerSweep && prev != nil && row.Digest != "" && row.Digest == prev.Digest
+		s.noteSessionNoops(row.TriggerKind, row.Digest, quiet, row.Outcome, row.Actions, row.StartedAt, cmp.Or(row.EndedAt, row.StartedAt))
+		prev = row
+	}
+	if prev == nil {
+		return
+	}
+	s.last = &SupervisorSession{
+		ID: prev.ID, StartedAt: prev.StartedAt, EndedAt: prev.EndedAt, TriggerCount: prev.Triggers,
+		Triggers: []SupervisorTrigger{{Kind: prev.TriggerKind, Identifier: prev.TriggerIssue, Detail: prev.TriggerDetail, At: prev.StartedAt}},
+		Outcome:  prev.Outcome, Error: prev.Error, Tokens: prev.Tokens, Digest: prev.Digest, Actions: prev.Actions,
+	}
+	if s.last.Outcome == "" {
+		s.last.Outcome = SupervisorOutcomeCancelled
+	}
+}
+
+// supervisorStreakWindow is how many of the newest stored sessions a
+// restart reads to rebuild the no-op streaks.
+const supervisorStreakWindow = 64
+
+// noteSessionNoops applies one ended session of the trigger kind kind,
+// started at startedAt on digest, to that kind's no-op streak, and returns
+// the suspension it began, nil when it began none. A quiet sweep, a
+// session a pause or a stop cut short, and one whose actions were not
+// counted leave the streak alone; a session that took an action ends it.
+func (s *supervisorState) noteSessionNoops(kind, digest string, quiet bool, outcome string, actions int, startedAt, now time.Time) *SupervisorSuspension {
+	switch {
+	case quiet, digest == "", actions < 0, outcome == "", outcome == SupervisorOutcomePaused, outcome == SupervisorOutcomeCancelled:
+		return nil
+	case actions > 0:
+		delete(s.noops, kind)
+		return nil
+	}
+	streak := s.noops[kind]
+	if streak == nil || streak.digest != digest {
+		streak = &noopStreak{digest: digest, since: startedAt}
+		s.noops[kind] = streak
+	}
+	streak.count++
+	limit := max(s.cfg.NoopLimit, 1)
+	if streak.count < limit {
+		return nil
+	}
+	if held, ok := s.suspended[kind]; ok && held.Digest == digest {
+		held.Sessions = streak.count
+		return nil
+	}
+	suspension := &SupervisorSuspension{Kind: kind, Digest: digest, Sessions: streak.count, Since: streak.since, At: now.UTC()}
+	s.suspended[kind] = suspension
+	return suspension
+}
+
+// admitSupervisorTriggers keeps of the waiting triggers those that start a
+// session on digest, the state digest now: none when digest is the last
+// session's, except a sweep once supervisor.quiet_sweep_ms has passed
+// since that session started; and none of a suspended kind while digest
+// is the one it was suspended on. A trigger of a suspended kind on another
+// digest lifts the suspension. It reports whether the session it admits is
+// a quiet sweep. Must run on the event loop.
+func (o *Orchestrator) admitSupervisorTriggers(digest string, now time.Time) (quiet bool) {
+	s := o.state.supervisor
+	changed := s.last == nil || s.last.Digest != digest
+	quietDue := s.last == nil || !now.Before(s.last.StartedAt.Add(time.Duration(s.cfg.QuietSweepMS)*time.Millisecond))
+	kept := make([]SupervisorTrigger, 0, len(s.pending))
+	var dropped []string
+	for _, t := range s.pending {
+		quietSweep := !changed && quietDue && t.Kind == SupervisorTriggerSweep
+		if held, ok := s.suspended[t.Kind]; ok {
+			if held.Digest != digest {
+				delete(s.suspended, t.Kind)
+				delete(s.noops, t.Kind)
+				o.logger.Info("supervisor trigger kind resumed: the state digest changed",
+					slog.String("supervisor_trigger", t.Kind), slog.String("suspended_digest", held.Digest), slog.String("digest", digest))
+			} else if !quietSweep {
+				dropped = append(dropped, t.Kind)
+				continue
+			}
+		}
+		if !changed && !quietSweep {
+			dropped = append(dropped, t.Kind)
+			continue
+		}
+		if quietSweep {
+			t.Detail = "the quiet sweep: the state digest is unchanged since the last session"
+		}
+		kept = append(kept, t)
+	}
+	if len(dropped) > 0 {
+		o.logger.Debug("supervisor triggers started no session: the state digest is unchanged or their kind is suspended",
+			slog.String("digest", digest), slog.Any("supervisor_triggers", dropped))
+	}
+	s.pending = kept
+	return !changed && len(kept) > 0
 }
 
 // budgetStop returns why the daily budget starts no session, or "".
@@ -414,6 +540,12 @@ func (o *Orchestrator) superviseOnLoop(ctx context.Context, now time.Time) {
 	if s.run != nil || s.pause != nil || len(s.pending) == 0 {
 		return
 	}
+	digest := supervisorStateDigest(o.state, now)
+	quiet := o.admitSupervisorTriggers(digest, now)
+	if len(s.pending) == 0 {
+		o.notifyObservers()
+		return
+	}
 	if reason := o.unavailableReason(sc); reason != "" {
 		if reason != s.unavailable {
 			o.logger.Error("supervisor session not started", slog.String("reason", reason), slog.Int("triggers", len(s.pending)))
@@ -433,26 +565,31 @@ func (o *Orchestrator) superviseOnLoop(ctx context.Context, now time.Time) {
 		o.notifyObservers()
 		return
 	}
-	o.startSupervisorSession(ctx, sc, now)
+	o.startSupervisorSession(ctx, sc, now, digest, quiet)
 }
 
-// startSupervisorSession starts a session for every kept trigger. Must
-// run on the event loop.
-func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.SupervisorConfig, now time.Time) {
+// startSupervisorSession starts a session on the state digest for every
+// kept trigger. Must run on the event loop.
+func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.SupervisorConfig, now time.Time, digest string, quiet bool) {
 	s := o.state.supervisor
 	adapter, _ := o.agentAdapterByKind(sc.Agent)
 	triggers := s.pending
 	s.pending = nil
 	runCtx, cancel := context.WithCancelCause(ctx)
-	run := &supervisorRun{startedAt: now.UTC(), triggers: triggers, cancel: cancel}
+	run := &supervisorRun{startedAt: now.UTC(), triggers: triggers, digest: digest, quiet: quiet, mark: -1, cancel: cancel}
 	s.run = run
 	s.sessionsUsed++
 
 	first := triggers[0]
 	if store, ok := o.store.(supervisorSessionStore); ok {
+		if mark, err := store.LastSupervisorActionID(ctx); err != nil {
+			o.logger.Warn("supervisor action mark read failed, the session's actions go uncounted", slog.Any("error", err))
+		} else {
+			run.mark = mark
+		}
 		id, err := store.StartSupervisorSession(ctx, persistence.SupervisorSession{
 			TriggerKind: first.Kind, TriggerIssue: first.Identifier, TriggerDetail: redact.Mask(first.Detail),
-			Triggers: len(triggers), StartedAt: run.startedAt,
+			Triggers: len(triggers), Digest: digest, StartedAt: run.startedAt,
 		})
 		if err != nil {
 			o.logger.Error("supervisor session record failed", slog.Any("error", err))
@@ -477,6 +614,8 @@ func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.Sup
 	log := o.logger.With(slog.String("supervisor_trigger", first.Kind), slog.Int("triggers", len(triggers)))
 	log.Info("supervisor session started",
 		slog.String("agent_kind", sc.Agent),
+		slog.String("digest", digest),
+		slog.Bool("quiet_sweep", quiet),
 		slog.Int("sessions_today", s.sessionsUsed),
 		slog.Int64("tokens_today", s.tokensUsed),
 	)
@@ -485,10 +624,20 @@ func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.Sup
 	o.supervisorWg.Go(func() {
 		result := o.runSupervisorSession(runCtx, run, launch, log)
 		cancel(nil)
-		if store, ok := o.store.(supervisorSessionStore); ok && run.rowID != 0 {
+		result.actions = persistence.SupervisorActionsUnknown
+		if store, ok := o.store.(supervisorSessionStore); ok {
 			endCtx, endCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			if err := store.EndSupervisorSession(endCtx, run.rowID, result.endedAt, result.outcome, redact.Mask(result.err), result.tokens); err != nil {
-				log.Error("supervisor session end record failed", slog.Any("error", err))
+			if run.mark >= 0 {
+				if n, err := store.SupervisorActionsDoneAfter(endCtx, run.mark); err != nil {
+					log.Warn("supervisor session actions read failed", slog.Any("error", err))
+				} else {
+					result.actions = n
+				}
+			}
+			if run.rowID != 0 {
+				if err := store.EndSupervisorSession(endCtx, run.rowID, result.endedAt, result.outcome, redact.Mask(result.err), result.tokens, result.actions); err != nil {
+					log.Error("supervisor session end record failed", slog.Any("error", err))
+				}
 			}
 			endCancel()
 		}
@@ -509,12 +658,13 @@ func (o *Orchestrator) endSupervisorSession(ctx context.Context, run *supervisor
 		s.tokensUsed += result.tokens
 	}
 	s.last = &SupervisorSession{
-		StartedAt: run.startedAt, EndedAt: result.endedAt, Triggers: run.triggers, TriggerCount: len(run.triggers),
-		Outcome: result.outcome, Error: redact.Mask(result.err), Tokens: result.tokens,
+		ID: run.rowID, StartedAt: run.startedAt, EndedAt: result.endedAt, Triggers: run.triggers, TriggerCount: len(run.triggers),
+		Outcome: result.outcome, Error: redact.Mask(result.err), Tokens: result.tokens, Digest: run.digest, Actions: result.actions,
 	}
 	attrs := []any{
 		slog.String("outcome", result.outcome),
 		slog.Int64("tokens", result.tokens),
+		slog.Int("actions", result.actions),
 		slog.Duration("duration", result.endedAt.Sub(run.startedAt)),
 	}
 	if result.err != "" {
@@ -522,6 +672,10 @@ func (o *Orchestrator) endSupervisorSession(ctx context.Context, run *supervisor
 		log.Warn("supervisor session ended", attrs...)
 	} else {
 		log.Info("supervisor session ended", attrs...)
+	}
+	kind := run.triggers[0].Kind
+	if suspension := s.noteSessionNoops(kind, run.digest, run.quiet, result.outcome, result.actions, run.startedAt, result.endedAt); suspension != nil {
+		o.publishLoopSuspected(ctx, suspension, log)
 	}
 	o.notifyObservers()
 	o.superviseOnLoop(ctx, time.Now())
@@ -549,6 +703,30 @@ type supervisorResult struct {
 	outcome string
 	err     string
 	tokens  int64
+	actions int // the supervisor actions Sortie took in the session; -1 when not counted
+}
+
+// publishLoopSuspected logs that a trigger kind is suspended and publishes
+// supervisor.loop_suspected. The event names no story, so it never goes to
+// tracker_comment.
+func (o *Orchestrator) publishLoopSuspected(ctx context.Context, suspension *SupervisorSuspension, log *slog.Logger) {
+	log.Warn("supervisor loop suspected: the trigger kind starts no session until the state digest changes",
+		slog.String("suspended_trigger", suspension.Kind),
+		slog.String("digest", suspension.Digest),
+		slog.Int("sessions", suspension.Sessions),
+	)
+	if o.router == nil {
+		return
+	}
+	_, delivery := o.router.Route(orchestratorNotification(domain.EventSupervisorLoopSuspected, "", domain.NotificationEnvelope{},
+		domain.SupervisorLoopSuspectedFacts{
+			TriggerKind: suspension.Kind, Digest: suspension.Digest, Sessions: suspension.Sessions, Since: suspension.Since,
+		})).SplitTrackerComment()
+	if delivery.Empty() {
+		log.Info("supervisor loop suspicion had no destination", slog.String("event_type", string(domain.EventSupervisorLoopSuspected)))
+		return
+	}
+	deliverDetached(ctx, &o.state.TrackerOpsWg, delivery, log, nil)
 }
 
 // supervisorPromptOf renders the supervisor's prompt file for launch.
@@ -683,9 +861,13 @@ func snapshotSupervisor(state *State) *SupervisorSnapshot {
 	if s.run != nil {
 		tokens := s.run.tokens.Load()
 		snap.Running = &SupervisorSession{
-			StartedAt: s.run.startedAt, Triggers: slices.Clone(s.run.triggers), TriggerCount: len(s.run.triggers), Tokens: tokens,
+			ID: s.run.rowID, StartedAt: s.run.startedAt, Triggers: slices.Clone(s.run.triggers), TriggerCount: len(s.run.triggers), Tokens: tokens,
+			Digest: s.run.digest, Actions: persistence.SupervisorActionsUnknown,
 		}
 		snap.Budget.TokensUsed += tokens
+	}
+	for _, kind := range slices.Sorted(maps.Keys(s.suspended)) {
+		snap.Suspended = append(snap.Suspended, *s.suspended[kind])
 	}
 	switch {
 	case s.pause != nil:
