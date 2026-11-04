@@ -484,6 +484,9 @@ type fakeWorker struct {
 	toolCalls []toolCall
 	// noNested checks in without nested virtualization.
 	noNested bool
+	// handoff is the .sortie/handoff.json the worker returns beside the
+	// bundle; nil returns none.
+	handoff []byte
 	// files speaks sortie-stdio/2: it answers Sortie's request for the
 	// agent's .sortie files between turns.
 	files bool
@@ -761,6 +764,10 @@ func (w *fakeWorker) giveBack() {
 			part, _ := mw.CreateFormFile(f.part, f.name)
 			_, _ = part.Write(data)
 		}
+	}
+	if w.handoff != nil {
+		part, _ := mw.CreateFormFile("handoff", "handoff.json")
+		_, _ = part.Write(w.handoff)
 	}
 	_ = mw.Close()
 	f := w.offer.Flows["bundles"]
@@ -1109,6 +1116,19 @@ func TestRemoteRunUsage(t *testing.T) {
 	HandleWorkerExit(o.state, result, defaultExitParams(t, store))
 	if len(store.runHistories) != 1 || store.runHistories[0].InputTokens != 12000 || store.runHistories[0].OutputTokens != 3000 {
 		t.Errorf("run history %+v, want 12000 input and 3000 output tokens", store.runHistories)
+	}
+}
+
+// The hand-off a worker returns beside the bundle reaches the run's exit
+// as the parts the session recorded.
+func TestRemoteRunHandsOnTheReturnedHandoff(t *testing.T) {
+	f := newGitFixture(t)
+	run := runRemoteONS30(t, f, func(w *fakeWorker) { w.handoff = []byte(homelabProof) }, nil)
+	if run.result.ExitKind != WorkerExitNormal {
+		t.Fatalf("result %v %v", run.result.ExitKind, run.result.Error)
+	}
+	if got := run.result.HandoffParts; len(got) != 1 || got[0].ID != "live-chain" || got[0].Kind != HandoffKindJob {
+		t.Errorf("hand-off parts = %+v, want the part the worker returned", got)
 	}
 }
 

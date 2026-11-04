@@ -33,7 +33,9 @@ func (o *Orchestrator) completeMerged(ctx context.Context, cfg config.ServiceCon
 // included. A moved candidate keeps its slot in the result with the target
 // state, so the park and budget bookkeeping of this tick sees it end; a
 // candidate whose move failed is left out of this tick and tried again on
-// the next. A running issue is left to its run. A store without the
+// the next. A candidate with an open hand-off part is left out of the tick
+// without a move until its parts close. A running issue is left to its
+// run. A store without the
 // records, or a failed read, changes nothing.
 func completeMergedCandidates(
 	ctx context.Context,
@@ -81,6 +83,11 @@ func completeMergedCandidates(
 			continue
 		}
 		issueLog := logging.WithIssue(log, issue.ID, issue.Identifier)
+		if handoffOpen(state, issue.ID) {
+			issueLog.Debug("merged issue kept out of the done state and this tick: a hand-off part is open",
+				slog.String("pull_request", merged.PR))
+			continue
+		}
 		if err := tracker.TransitionIssue(ctx, issue.ID, targetState); err != nil {
 			issueLog.Warn("merged issue could not be moved to the done state, holding it until the next tick",
 				slog.String("target_state", targetState),

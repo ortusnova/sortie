@@ -871,6 +871,12 @@
             }
           ]
         },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "free": {
           "$ref": "#/$defs/Free"
         },
@@ -1290,6 +1296,78 @@
         "tokens_unmeasured_runs",
         "cost_unpriced_runs",
         "cost_partial_runs"
+      ],
+      "type": "object"
+    },
+    "HandoffPartResponse": {
+      "properties": {
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "check": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "job_attempt": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "need": {
+          "type": "string"
+        },
+        "platform_fault_id": {
+          "type": "string"
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "work_identifier": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id",
+        "issue_identifier",
+        "id",
+        "kind",
+        "need",
+        "check",
+        "capabilities",
+        "repository",
+        "status",
+        "job_attempt",
+        "work_identifier",
+        "platform_fault_id",
+        "result",
+        "recorded_at",
+        "updated_at"
       ],
       "type": "object"
     },
@@ -2127,6 +2205,9 @@
         },
         "issue": {
           "$ref": "#/$defs/Issue"
+        },
+        "kind": {
+          "type": "string"
         },
         "priority": {
           "anyOf": [
@@ -5979,6 +6060,12 @@
           "format": "date-time",
           "type": "string"
         },
+        "handoff_parts": {
+          "items": {
+            "$ref": "#/$defs/HandoffPartResponse"
+          },
+          "type": "array"
+        },
         "health": {
           "$ref": "#/$defs/StateHealthResponse"
         },
@@ -6157,6 +6244,7 @@
         "rate_limits",
         "dispatch_paused",
         "platform_faults",
+        "handoff_parts",
         "supervisor",
         "waits",
         "pulls",

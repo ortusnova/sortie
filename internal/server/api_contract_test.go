@@ -68,7 +68,8 @@ var contractEnums = map[reflect.Type]map[string][]string{
 }
 
 var contractNeverNull = map[reflect.Type][]string{
-	reflect.TypeFor[stateResponse](): {"rate_limits", "waits", "pulls"},
+	reflect.TypeFor[stateResponse]():       {"rate_limits", "waits", "pulls", "handoff_parts"},
+	reflect.TypeFor[handoffPartResponse](): {"capabilities"},
 }
 
 var dateTime = contractNode{"string", map[string]any{"type": "string", "format": "date-time"}}

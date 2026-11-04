@@ -505,7 +505,7 @@ One row per request the supervisor token makes to a control route, written by th
 | `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
 | `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
 
-Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked.
+Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
 
 **`standing_holds`**: leases on issues that are not running (migration 1010)
 
@@ -539,6 +539,33 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 | `tokens`         | INTEGER NOT NULL    | Tokens less cache reads the session spent |
 
 The event loop writes a row when a session starts, and the session's goroutine records its end. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the newest row, which `GET /api/v1/state` serves as `last_session` until a session ends. Rows are never deleted.
+
+**`handoff_parts`**: the parts of a story a session could not do, from `.sortie/handoff.json` (Section 21.5) (migration 1015)
+
+| Column            | Type             | Notes |
+| ----------------- | ---------------- | ----- |
+| `issue_id`        | TEXT NOT NULL    | Tracker-internal ID of the story; part of the primary key |
+| `part_id`         | TEXT NOT NULL    | The part's ID, as the session wrote it or derived; part of the primary key |
+| `identifier`      | TEXT NOT NULL    | Human-readable ticket key of the story |
+| `kind`            | TEXT NOT NULL    | `job`, `pull_request`, or `person` |
+| `need`            | TEXT NOT NULL    | What the part needs |
+| `how_to_check`    | TEXT NOT NULL    | How to check it; for a `job`, the command a worker runs |
+| `capabilities`    | TEXT NOT NULL    | JSON list of the capabilities a worker must declare to run a `job` part; `[]` for none |
+| `repository`      | TEXT NOT NULL    | The repository a `pull_request` part changes; empty otherwise |
+| `patch`           | TEXT NOT NULL    | The change a `pull_request` part carries; may be empty |
+| `action`          | TEXT NOT NULL    | The person action a `person` part names; may be empty |
+| `action_where`    | TEXT NOT NULL    | Where to take it; may be empty |
+| `status`          | TEXT NOT NULL    | `pending`, `working`, `fault`, or `done` |
+| `job_attempt`     | INTEGER NOT NULL | How many times the part's check was queued |
+| `work_issue_id`   | TEXT NOT NULL    | The tracker-internal ID of the issue a `pull_request` part was filed as; empty before |
+| `work_identifier` | TEXT NOT NULL    | That issue's key |
+| `fault_id`        | TEXT NOT NULL    | The `platform_faults.id` that holds the part; empty when none does |
+| `result`          | TEXT NOT NULL    | What closed the part, or its last failure, masked |
+| `recorded_at`     | TEXT NOT NULL    | RFC 3339 UTC of the run exit that recorded the part |
+| `updated_at`      | TEXT NOT NULL    | RFC 3339 UTC of the last change |
+| `done_at`         | TEXT NOT NULL    | RFC 3339 UTC of its close; empty while it is open |
+
+The event loop writes the row when a run's exit records the part and at each change of its status. At startup every row is loaded before the first tick, so a story stays out of Done across a restart and a part recorded again by a later run is recognized; a `job` part that was `working` is loaded as `pending`, because its check job did not outlive the process, and is queued again. Rows are never deleted.
 
 ### 19.3 Migration Strategy
 

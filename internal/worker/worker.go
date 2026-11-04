@@ -72,10 +72,15 @@ type Declaration struct {
 	// Unmanaged lists the machines on the worker's host that no Sortie
 	// started; nil when the worker does not say.
 	Unmanaged []Unmanaged `json:"unmanaged,omitzero"`
+	// Capabilities lists what else the worker offers a job, such as a
+	// host it reaches that other workers' egress refuses; nil when it
+	// says nothing more.
+	Capabilities []string `json:"capabilities,omitzero"`
 }
 
 // has reports whether the declaration includes capability c: its OS,
-// its architecture, "kvm", "nested", or one of its backends.
+// its architecture, "kvm", "nested", one of its backends, or one of its
+// declared capabilities.
 func (d Declaration) has(c string) bool {
 	switch c {
 	case "kvm":
@@ -83,13 +88,13 @@ func (d Declaration) has(c string) bool {
 	case "nested":
 		return d.Nested
 	}
-	return c == d.OS || c == d.Arch || slices.Contains(d.Backends, c)
+	return c == d.OS || c == d.Arch || slices.Contains(d.Backends, c) || slices.Contains(d.Capabilities, c)
 }
 
 // spare counts the capabilities the declaration includes that r does
 // not need.
 func (d Declaration) spare(r Requires) int {
-	caps := append([]string{d.OS, d.Arch}, d.Backends...)
+	caps := append(append([]string{d.OS, d.Arch}, d.Backends...), d.Capabilities...)
 	if d.KVM {
 		caps = append(caps, "kvm")
 	}
@@ -205,11 +210,20 @@ func SeedPath(jobID string, attempt int) string {
 	return "/jobs/" + url.PathEscape(jobID) + "/attempts/" + strconv.Itoa(attempt) + "/seed"
 }
 
+// JobKindCheck is the kind of a job that runs one check a session could
+// not run itself: the worker runs the run descriptor's command in the
+// job's machine, with no agent, no seed and no flows, and reports
+// whether it exited zero.
+const JobKindCheck = "check"
+
 // Job is one attempt of a run handed to the matcher by the remote
-// environment kind. Its ID is the issue identifier.
+// environment kind. Its ID is the issue identifier, or for a check job
+// the check's own ID.
 type Job struct {
 	ID      string `json:"id"`
 	Attempt int    `json:"attempt"`
+	// Kind is empty for an agent run and [JobKindCheck] for a check.
+	Kind string `json:"kind,omitempty"`
 	// Priority is the plan priority; lower runs first and nil runs
 	// after every set priority.
 	Priority *int     `json:"priority"`
@@ -774,6 +788,20 @@ func (m *Matcher) Placeable(r Requires, ahead ...Requires) ([]string, bool) {
 		return nil, true
 	}
 	return waiting(probe, workers), false
+}
+
+// Capable reports whether a checked-in worker that is not gone declares
+// every capability in caps, whatever it has free now. A job that no
+// such worker exists for would wait for a worker that may never come.
+func (m *Matcher) Capable(caps []string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, w := range m.workersLocked() {
+		if !w.Gone && !slices.ContainsFunc(caps, func(c string) bool { return !w.Declaration.has(c) }) {
+			return true
+		}
+	}
+	return false
 }
 
 // Queued reports whether jobID waits in the queue: submitted, and no
