@@ -41,7 +41,8 @@ type platformFaultStoryResponse struct {
 
 // platformFaultResponse is an open platform fault, as /api/v1/state and
 // the action-done route serve it. PersonAction is null for a fault
-// Sortie's own check clears.
+// Sortie's own check clears. QuestionKind and RaisedBy are null for a
+// fault that is not a question raised through the supervisor's route.
 type platformFaultResponse struct {
 	ID             string                       `json:"id"`
 	Class          string                       `json:"class"`
@@ -56,6 +57,8 @@ type platformFaultResponse struct {
 	LastCheckError string                       `json:"last_check_error"`
 	NextCheckAt    time.Time                    `json:"next_check_at"`
 	Checking       bool                         `json:"checking"`
+	QuestionKind   *string                      `json:"question_kind"`
+	RaisedBy       *string                      `json:"raised_by"`
 }
 
 // platformFaultDoneResponse answers the action-done route. Resolved
@@ -86,6 +89,8 @@ func toPlatformFaultResponse(f orchestrator.SnapshotPlatformFault) platformFault
 		LastCheckError: f.LastCheckError,
 		NextCheckAt:    f.NextCheckAt.UTC(),
 		Checking:       f.Checking,
+		QuestionKind:   nonEmpty(f.QuestionKind),
+		RaisedBy:       nonEmpty(f.RaisedBy),
 	}
 	if f.Action != nil {
 		resp.PersonAction = &personActionResponse{
