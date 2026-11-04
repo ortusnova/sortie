@@ -215,7 +215,7 @@ func applyCriteriaVerdict(ctx context.Context, params HandleWorkerExitParams, en
 		log.Info("criteria review waits for a live proof; auto-merge will not merge")
 		if params.TrackerAdapter != nil {
 			comment := "Sortie does not merge this story's pull request: its review settles these criteria only by a live proof:\n\n" +
-				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once it is proven at the pull request's head, the supervisor merges it."
+				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once a comment on the pull request records it proven at its head (`" + LiveProofMarker + " <head sha>`), the supervisor merges it."
 			if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 				log.Warn("live-proof hold comment failed", slog.Any("error", err))
 			}

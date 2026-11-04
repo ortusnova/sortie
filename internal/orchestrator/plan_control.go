@@ -360,10 +360,27 @@ func planClickProofs(cfg config.ServiceConfig, reader domain.PullRequestCommentR
 // clickProofsRecord reports whether body holds a click-proofs record line
 // and returns the lower-cased commit it names. Markdown code ticks and
 // quote marks around the line are ignored.
-func clickProofsRecord(body string) (string, bool) {
+func clickProofsRecord(body string) (string, bool) { return recordLine(body, ClickProofsMarker) }
+
+// LiveProofMarker opens the line of a pull request comment that records
+// a story's live criteria proven by a live-proof job, at the head commit
+// the job ran:
+//
+//	sortie:live-proof proven <head sha>
+const LiveProofMarker = "sortie:live-proof proven"
+
+// liveProofRecord reports whether body holds a live-proof record line
+// and returns the lower-cased commit it names.
+func liveProofRecord(body string) (string, bool) { return recordLine(body, LiveProofMarker) }
+
+// recordLine reports whether body holds a line of marker, two words,
+// followed by a commit of at least seven hex digits, and returns that
+// commit lower-cased. Markdown code ticks and quote marks around the line
+// are ignored.
+func recordLine(body, marker string) (string, bool) {
 	for line := range strings.Lines(body) {
 		fields := strings.Fields(strings.Trim(strings.TrimSpace(line), "`>* "))
-		if len(fields) < 3 || !strings.EqualFold(fields[0]+" "+fields[1], ClickProofsMarker) {
+		if len(fields) < 3 || !strings.EqualFold(fields[0]+" "+fields[1], marker) {
 			continue
 		}
 		sha := strings.ToLower(strings.Trim(fields[2], "`.,;:"))
