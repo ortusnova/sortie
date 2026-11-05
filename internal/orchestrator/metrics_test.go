@@ -36,6 +36,7 @@ type spyMetrics struct {
 	dispatchTransitions   []string
 	toolCalls             []toolCallCall
 	pollDurations         []float64
+	loopHolds             []loopHoldCall
 	workerDurations       []workerDurCall
 	sshHostUsage          []sshHostUsageCall
 	trackerComments       []trackerCommentCall
@@ -79,6 +80,11 @@ type workerDurCall struct {
 type sshHostUsageCall struct {
 	host  string
 	count int
+}
+
+type loopHoldCall struct {
+	handler string
+	seconds float64
 }
 
 type toolCallCall struct {
@@ -190,6 +196,12 @@ func (s *spyMetrics) IncToolCalls(tool string, result string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.toolCalls = append(s.toolCalls, toolCallCall{tool, result})
+}
+
+func (s *spyMetrics) ObserveLoopHold(handler string, seconds float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loopHolds = append(s.loopHolds, loopHoldCall{handler, seconds})
 }
 
 func (s *spyMetrics) ObservePollDuration(seconds float64) {

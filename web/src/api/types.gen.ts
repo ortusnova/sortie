@@ -433,6 +433,8 @@ export interface IssueDetailResponse {
   status_text: string;
   status_text_full: string;
   next_outcomes: NextOutcomeResponse[] | null;
+  snapshot_age_ms: number;
+  snapshot_stale: boolean;
 }
 
 export interface IssueGroupResponse {
@@ -453,6 +455,8 @@ export interface IssueGroupResponse {
 export interface IssueGroupsResponse {
   groups: IssueGroupResponse[] | null;
   next_cursor: string | null;
+  snapshot_age_ms: number;
+  snapshot_stale: boolean;
 }
 
 export interface IssueHistoryResponse {
@@ -505,6 +509,14 @@ export interface LeaseView {
   step?: string;
   phase?: string;
   step_at?: string;
+}
+
+export interface LoopResponse {
+  busy_now_ms: number;
+  busy_handler: string | null;
+  max_hold_ms_5m: number;
+  slowest_handler_5m: string | null;
+  slow_holds_10m: number;
 }
 
 export interface Machine {
@@ -1329,6 +1341,9 @@ export interface StateResponse {
   config?: ConfigResponse;
   health?: StateHealthResponse;
   workers?: State;
+  loop: LoopResponse;
+  snapshot_age_ms: number;
+  snapshot_stale: boolean;
   host?: Host;
   waits: WaitResponse[];
   pulls: PullWaitResponse[];

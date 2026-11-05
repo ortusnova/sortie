@@ -106,6 +106,12 @@ type Metrics interface {
 	// cycle in seconds (sortie_poll_duration_seconds histogram).
 	ObservePollDuration(seconds float64)
 
+	// ObserveLoopHold records how long one event loop iteration held the
+	// loop, in seconds. handler names the handler and the phase that held
+	// it longest, such as "tick/reconcile.review_comments"
+	// (sortie_event_loop_hold_seconds{handler} histogram).
+	ObserveLoopHold(handler string, seconds float64)
+
 	// ObserveWorkerDuration records the wall-clock time of a worker
 	// session in seconds. exitType is "normal", "error", or
 	// "cancelled" (sortie_worker_duration_seconds{exit_type}
@@ -265,6 +271,7 @@ func (*NoopMetrics) IncDispatchTransitions(string)                         {}
 func (*NoopMetrics) IncTrackerComments(string, string)                     {}
 func (*NoopMetrics) IncToolCalls(string, string)                           {}
 func (*NoopMetrics) ObservePollDuration(float64)                           {}
+func (*NoopMetrics) ObserveLoopHold(string, float64)                       {}
 func (*NoopMetrics) ObserveWorkerDuration(string, float64)                 {}
 func (*NoopMetrics) SetSSHHostUsage(string, int)                           {}
 func (*NoopMetrics) IncCIStatusChecks(string)                              {}

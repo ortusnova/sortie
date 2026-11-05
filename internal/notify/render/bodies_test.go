@@ -597,6 +597,17 @@ func TestLoopSuspectedBody(t *testing.T) {
 	}
 }
 
+func TestLoopSlowBody(t *testing.T) {
+	t.Parallel()
+
+	got := loopSlowBody(domain.PlatformLoopSlowFacts{Handler: "tick/reconcile.review_comments", Hold: 6234567 * time.Microsecond, SlowHolds: 2, Window: 10 * time.Minute})
+	want := "Sortie's event loop was held over 5 seconds 2 times in the last 10 minutes; the latest hold lasted 6.235s, in tick/reconcile.review_comments. " +
+		"While it is held, Sortie applies no agent event, worker exit or control request, and its API serves the last snapshot it built."
+	if got != want {
+		t.Errorf("loopSlowBody() = %q, want %q", got, want)
+	}
+}
+
 func TestBuiltin_TitleWithoutAnIssue(t *testing.T) {
 	t.Parallel()
 

@@ -403,6 +403,7 @@ The backend packages obey the adapter-family boundary rules: no cross-adapter im
 | `hold.expired` | a poll tick finds a lease on an issue that is not running past its expiry with no renewal (Section 13.7); the body names the holder, the reason, the last evidence, and the last renewal | `warning` |
 | `story.reverted` | merge-and-prove merges the revert of a story not proven after deploy by its deadline, or a poll tick finds a merged pull request on the forge that reverts a story's merge (Section 5.3.14); the body names the story's pull request and merge commit, the revert, who merged it, the reason, and the state the story returned to | `warning` |
 | `supervisor.loop_suspected` | `supervisor.noop_limit` consecutive supervisor sessions of one trigger kind took no action on the same state digest (Section 5.3.12); the body names the trigger kind, the digest, the sessions, and when the first started; the event names no issue and no `tracker_comment` destination receives it | `warning` |
+| `platform.loop_slow` | a second hold of Sortie's event loop over 5 seconds within 10 minutes (Section 13); the body names the number of such holds, the latest hold's length, and the handler and phase that held it; it routes again only once 10 minutes have passed, names no issue, and no `tracker_comment` destination receives it | `warning` |
 | `agent.message` | the agent calls `notify_operator` | set by the agent |
 
 A cancelled run publishes no session event.

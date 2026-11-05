@@ -77,6 +77,10 @@ type stateResponse struct {
 	// under environment.kind remote; omitted under any other kind.
 	Workers *worker.State `json:"workers,omitempty"`
 
+	// Loop is how long the event loop holds its work.
+	Loop loopResponse `json:"loop"`
+
+	snapshotFreshness
 	workerView
 	supervisorView
 }
@@ -758,6 +762,8 @@ type issueDetailResponse struct {
 
 	NextOutcomes []nextOutcomeResponse `json:"next_outcomes"`
 	situation    sentence.Situation    // recorded by buildIssueDetail; never serialized
+
+	snapshotFreshness
 }
 
 // nextOutcomeResponse is the JSON wire format for one next outcome: a
@@ -1576,6 +1582,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		resp.Health = toStateHealthResponse(*health, words)
 	}
 	resp.Workers = s.workersState()
+	resp.snapshotFreshness = freshnessOf(snap, time.Now())
+	resp.Loop = toLoopResponse(snap.Loop)
 	s.attachWorkerView(r.Context(), &resp, snap)
 	s.attachActivePRLoops(r, &resp, snap, words.Shape)
 	s.attachSupervisorActions(r.Context(), &resp)
@@ -1637,6 +1645,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	for _, outcome := range sentence.NextOutcomes(detail.situation, words) {
 		detail.NextOutcomes = append(detail.NextOutcomes, nextOutcomeResponse(outcome))
 	}
+	detail.snapshotFreshness = freshnessOf(snap, time.Now())
 	writeJSON(w, s.logger, http.StatusOK, detail)
 
 	s.logger.Debug("request served",

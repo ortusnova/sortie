@@ -384,3 +384,11 @@ func loopSuspectedBody(f domain.SupervisorLoopSuspectedFacts) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// loopSlowBody returns the text of a platform.loop_slow event: what held
+// Sortie's event loop, for how long, and how often in the window.
+func loopSlowBody(f domain.PlatformLoopSlowFacts) string {
+	return fmt.Sprintf("Sortie's event loop was held over 5 seconds %d times in the last %d minutes; the latest hold lasted %s, in %s. "+
+		"While it is held, Sortie applies no agent event, worker exit or control request, and its API serves the last snapshot it built.",
+		f.SlowHolds, int(f.Window.Minutes()), f.Hold.Round(time.Millisecond), f.Handler)
+}

@@ -194,6 +194,17 @@ type SupervisorLoopSuspectedFacts struct {
 	Since       time.Time
 }
 
+// PlatformLoopSlowFacts is the content of platform.loop_slow: the event
+// loop held its work for over 5 seconds again within Window. Handler names
+// what held the latest such hold longest, and SlowHolds counts those holds
+// in Window.
+type PlatformLoopSlowFacts struct {
+	Handler   string
+	Hold      time.Duration
+	SlowHolds int
+	Window    time.Duration
+}
+
 func (SessionStartedFacts) messageFacts()            {}
 func (SessionCompletedFacts) messageFacts()          {}
 func (SessionStoppedFacts) messageFacts()            {}
@@ -212,6 +223,7 @@ func (BudgetHeldFacts) messageFacts()                {}
 func (SessionEscalatedFacts) messageFacts()          {}
 func (HoldExpiredFacts) messageFacts()               {}
 func (SupervisorLoopSuspectedFacts) messageFacts()   {}
+func (PlatformLoopSlowFacts) messageFacts()          {}
 
 // StoryRevertedFacts is the content of story.reverted: a story's merge
 // that a merged pull request reverted, so the story is no longer done.

@@ -63,6 +63,11 @@ type planGraphResponse struct {
 	PlanStates *planStates     `json:"plan_states"`
 	Nodes      []planGraphNode `json:"nodes"`
 	Edges      []planGraphEdge `json:"edges"`
+
+	// SnapshotAgeMS and SnapshotStale describe the runtime snapshot the
+	// nodes' runtime comes from; null when the graph read none.
+	SnapshotAgeMS *int64 `json:"snapshot_age_ms"`
+	SnapshotStale *bool  `json:"snapshot_stale"`
 }
 
 type planStates struct {
@@ -296,9 +301,11 @@ func (s *Server) handlePlanGraph(w http.ResponseWriter, r *http.Request) {
 		project = s.planProjects.Default()
 	}
 	var snap orchestrator.RuntimeSnapshotResult
+	var freshness *snapshotFreshness
 	if s.snapshotFn != nil && dispatched {
 		if got, err := s.snapshotFn(); err == nil {
 			snap = got
+			freshness = new(freshnessOf(got, time.Now()))
 		}
 	}
 	runtime := runtimeByIssue(snap)
@@ -315,6 +322,10 @@ func (s *Server) handlePlanGraph(w http.ResponseWriter, r *http.Request) {
 		Capabilities: t.Capabilities(),
 		Nodes:        make([]planGraphNode, 0, len(issues)),
 		Edges:        []planGraphEdge{},
+	}
+	if freshness != nil {
+		resp.SnapshotAgeMS = &freshness.SnapshotAgeMS
+		resp.SnapshotStale = &freshness.SnapshotStale
 	}
 	byID := make(map[string]domain.PlanIssue, len(issues))
 	for _, i := range issues {

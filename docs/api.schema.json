@@ -1919,6 +1919,12 @@
             }
           ]
         },
+        "snapshot_age_ms": {
+          "type": "integer"
+        },
+        "snapshot_stale": {
+          "type": "boolean"
+        },
         "status": {
           "type": "string"
         },
@@ -1970,7 +1976,9 @@
         "pr_loop",
         "status_text",
         "status_text_full",
-        "next_outcomes"
+        "next_outcomes",
+        "snapshot_age_ms",
+        "snapshot_stale"
       ],
       "type": "object"
     },
@@ -2074,11 +2082,19 @@
               "type": "null"
             }
           ]
+        },
+        "snapshot_age_ms": {
+          "type": "integer"
+        },
+        "snapshot_stale": {
+          "type": "boolean"
         }
       },
       "required": [
         "groups",
-        "next_cursor"
+        "next_cursor",
+        "snapshot_age_ms",
+        "snapshot_stale"
       ],
       "type": "object"
     },
@@ -2306,6 +2322,47 @@
         "attempt",
         "worker",
         "expires"
+      ],
+      "type": "object"
+    },
+    "LoopResponse": {
+      "properties": {
+        "busy_handler": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "busy_now_ms": {
+          "type": "integer"
+        },
+        "max_hold_ms_5m": {
+          "type": "integer"
+        },
+        "slow_holds_10m": {
+          "type": "integer"
+        },
+        "slowest_handler_5m": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "busy_now_ms",
+        "busy_handler",
+        "max_hold_ms_5m",
+        "slowest_handler_5m",
+        "slow_holds_10m"
       ],
       "type": "object"
     },
@@ -6341,6 +6398,9 @@
         "host": {
           "$ref": "#/$defs/Host"
         },
+        "loop": {
+          "$ref": "#/$defs/LoopResponse"
+        },
         "merge_and_prove": {
           "$ref": "#/$defs/MergeAndProveResponse"
         },
@@ -6434,6 +6494,12 @@
             }
           ]
         },
+        "snapshot_age_ms": {
+          "type": "integer"
+        },
+        "snapshot_stale": {
+          "type": "boolean"
+        },
         "spend_ceiling": {
           "$ref": "#/$defs/SpendCeilingResponse"
         },
@@ -6507,6 +6573,9 @@
         "handoff_parts",
         "merge_and_prove",
         "supervisor",
+        "loop",
+        "snapshot_age_ms",
+        "snapshot_stale",
         "waits",
         "pulls",
         "supervisor_actions"

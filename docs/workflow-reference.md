@@ -1715,6 +1715,7 @@ The catalog is closed. Validation accepts exactly these names and rejects any ot
 | `hold.expired` | A lease on an issue that is not running ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)) reached its `until` without a renewal. The body names the holder, the reason, the last evidence, and when it was last renewed. A destination receives it only when its `events` lists it. | `warning` |
 | `story.reverted` | A merged pull request reverts a story's merge: the revert merge-and-prove merged because the change was not proven after deploy by its deadline, or one someone else merged on the forge ([Section 2.15](#215-merge_and_prove--merge-prove-after-deploy-or-revert)). The body names the story's pull request and merge commit, the revert, who merged it, the reason, and the state the story returned to. A destination receives it only when its `events` lists it. | `warning` |
 | `supervisor.loop_suspected` | `supervisor.noop_limit` consecutive supervisor sessions of one trigger kind took no action on the same state digest, and that kind starts no session until the digest changes ([A loop of no-ops](#213-supervisor--supervisor-session)). It names no issue: the body names the trigger kind, the digest, the number of sessions, and when the first of them started. A destination receives it only when its `events` lists it; `tracker_comment` never receives it. | `warning` |
+| `platform.loop_slow` | Sortie's event loop was held over 5 seconds a second time within 10 minutes, typically by a slow forge or tracker read in the poll tick ([Snapshot freshness and loop holds](#get-apiv1state--runtime-snapshot)). It names no issue: the body names the number of such holds, the latest hold's length, and the handler and phase that held it, such as `tick/reconcile.review_comments`. It is routed again only once 10 minutes have passed. A destination receives it only when its `events` lists it; `tracker_comment` never receives it. | `warning` |
 | `session.escalated` | A caller acting for a running session, normally an ACP broker relaying an agent's question or permission request, posts to `POST /api/v1/{identifier}/escalate` ([Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token)). At most one per issue per 60 seconds. The caller's text arrives masked of registered secrets as `agent_text`, and the event carries the kind, the run's rule, and the session link. A destination receives it only when its `events` lists it; nothing subscribes to it implicitly. | `warning` |
 | `agent.message` | The agent calls `notify_operator`. | Set by the agent. |
 
@@ -3390,9 +3391,28 @@ Returns the system-wide runtime state including running sessions, retry queue, b
     "workflow": {"file": "WORKFLOW.md", "status": "fail", "checked_at": "2026-02-24T20:15:03Z", "last_success_at": "2026-02-24T20:14:32Z", "consecutive_failures": 2, "failing_since": "2026-02-24T20:14:51Z", "error": "config: agent.turn_timeout_ms: must be greater than 0"},
     "poll": {"status": "fail", "checked_at": "2026-02-24T20:15:04Z", "last_success_at": "2026-02-24T20:14:33Z", "consecutive_failures": 1, "failing_since": "2026-02-24T20:15:04Z", "outcome": "preflight_failed", "next_poll_at": "2026-02-24T20:15:34Z", "summary_text": "The latest poll stopped at the dispatch preflight before reading the tracker; the last successful poll was 57s ago."},
     "scm": {"provider": "github", "status": "pass", "checked_at": "2026-02-24T20:15:04Z", "last_success_at": "2026-02-24T20:15:04Z", "consecutive_failures": 0, "failing_since": null}
-  }
+  },
+  "snapshot_age_ms": 3,
+  "snapshot_stale": false,
+  "loop": {"busy_now_ms": 0, "busy_handler": null, "max_hold_ms_5m": 1840, "slowest_handler_5m": "tick/reconcile.review_comments", "slow_holds_10m": 0}
 }
 ```
+
+**Snapshot freshness and loop holds:**
+
+Sortie's event loop builds the snapshot this route serves, between the other work it does one item at a time: a poll tick, a worker exit, an agent event. The route waits at most 750 ms for it. When the loop is still busy after that, for example while a poll tick waits on a slow forge read, the route answers `200` with the last snapshot the loop built instead of failing, and says so:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `snapshot_stale` | boolean | `true` when the loop did not answer in time and this is the last snapshot it built; `false` for a snapshot built for this request. |
+| `snapshot_age_ms` | integer | The age of the snapshot served, from its `generated_at` to the response. `generated_at` stays when the snapshot was built. |
+| `loop.busy_now_ms`, `loop.busy_handler` | integer, string or `null` | How long the loop's current hold has lasted, and what holds it; `0` and `null` while the loop waits for work. |
+| `loop.max_hold_ms_5m`, `loop.slowest_handler_5m` | integer, string or `null` | The longest hold of 100 ms or more that ended in the last 5 minutes, and what held it; `0` and `null` without one. |
+| `loop.slow_holds_10m` | integer | The holds over 5 seconds that ended in the last 10 minutes. |
+
+A handler is named `<handler>` or `<handler>/<phase>`, after the phase of the hold that took longest. The handlers are `tick` (the poll tick, timed or asked for by `POST /api/v1/refresh`), `worker_exit`, `retry_timer`, `agent_event`, `self_review`, `turn_started`, `issue_read`, `unaccounted_turns`, `snapshot`, `action`, `control`, `lease_sweep`, and `stream_broken`. A poll tick names its phase, such as `fetch_candidates`, `dispatch`, `health_checks`, `park_records`, `merge_and_prove`, or a reconcile pass such as `reconcile.review_comments`. A hold over 2 seconds logs a warning `event loop held` with the handler, and a second hold over 5 seconds within 10 minutes publishes [`platform.loop_slow`](#event-catalog). `sortie_event_loop_hold_seconds{handler}` on `/metrics` counts every hold.
+
+Only a request that comes before the loop built its first snapshot, just after startup, answers `503` with `snapshot_unavailable` when the loop does not answer in time. The per-issue detail and `GET /api/v1/runs/issues` read the snapshot the same way and serve `snapshot_stale` and `snapshot_age_ms` too; `GET /api/v1/plan/graph` serves them as well, `null` when it read no snapshot.
 
 **Per-session fields:**
 
@@ -4642,7 +4662,7 @@ Sortie reads the state before run history, as the per-issue route does, so a run
 | --------- | ------ | ------------ |
 | An unknown parameter, a parameter given more than once, a `limit` that is not an integer from 1 to 50, or a `cursor` that is not an integer of 1 or more | 400 | `invalid_parameter`; the message names the parameter and the rule, for example `parameter "limit" must be an integer from 1 to 50`. Nothing is read. |
 | Run history or the outcomes of the served issues cannot be read, or the server has none | 503 | `history_unavailable` |
-| The runtime snapshot cannot be read | 503 | `snapshot_unavailable` |
+| The event loop has built no runtime snapshot yet and does not answer within 750 ms | 503 | `snapshot_unavailable` |
 | A method other than `GET` | 405 | `method_not_allowed` |
 
 A client that disconnects gets no response, and the reads stop.
@@ -5763,6 +5783,7 @@ The endpoint uses a dedicated `prometheus.Registry` (not the Go default global) 
 | `sortie_issue_parks_total`                      | Counter   | `reason`                    | Issue park events (`agent_blocked`, `handoff_absence`, `repeated_failure`). |
 | `sortie_tool_calls_total`                       | Counter   | `tool`, `result`            | Agent tool call completions by tool and result. `tool` is the name the runtime gives the tool, `{server}.{tool}` for an MCP or dynamic tool, the call's kind when the runtime names none, and `other` when the name holds anything but ASCII letters, digits, `_`, `-`, `.`, and `:`. A command is never a label. |
 | `sortie_poll_duration_seconds`                  | Histogram | —                           | Wall-clock time per poll cycle.                                |
+| `sortie_event_loop_hold_seconds`                | Histogram | `handler`                   | Time one event loop iteration held the loop, by the handler and phase that held it longest ([Snapshot freshness and loop holds](#get-apiv1state--runtime-snapshot)). |
 | `sortie_worker_duration_seconds`                | Histogram | `exit_type`                 | Worker session wall-clock time.                                |
 | `sortie_build_info`                             | Gauge     | `version`, `go_version`     | Always `1`; carries build metadata as labels.                  |
 | `sortie_ssh_host_usage`                         | Gauge     | `host`                      | Current session count per SSH host.                            |
