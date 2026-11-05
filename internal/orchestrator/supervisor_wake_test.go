@@ -49,6 +49,14 @@ func TestSupervisorWake_DigestTracksWhatTheSupervisorCanActOn(t *testing.T) {
 			state.PendingReactions["id-7:ci"] = &PendingReaction{IssueID: "id-7", Kind: ReactionKindCI, KindData: &CIReactionData{PRNumber: 7, Owner: "o", Repo: "r"}}
 		},
 		"a hold's since moves on": func() { state.Held["id-5"].Since = now },
+		"a story is held by a blocker": func() {
+			state.Held["id-10"] = &HeldEntry{Identifier: "ONS-10", Reason: SkipBlockedBy, Blockers: []HeldBlocker{{BlockerRef: domain.BlockerRef{ID: "id-5"}}}}
+		},
+		"a fix job runs": func() { state.Running["id-11"] = &RunningEntry{Identifier: "ONS-11", ReactionKind: ReactionKindCI} },
+		"a live-proof job runs": func() {
+			state.Running["id-12"] = &RunningEntry{Identifier: "ONS-12", ReactionKind: ReactionKindLiveProof}
+		},
+		"a fix job ends": func() { delete(state.Running, "id-11") },
 	}
 	for name, change := range unchanged {
 		change()
@@ -66,7 +74,7 @@ func TestSupervisorWake_DigestTracksWhatTheSupervisorCanActOn(t *testing.T) {
 		{"a story parks", func() {
 			state.Parked["id-4"] = &ParkedEntry{Identifier: "ONS-4", Reason: "agent_blocked", ParkedAt: now}
 		}},
-		{"its question ages", func() { state.Parked["id-4"].ParkedAt = now.Add(-supervisorQuestionAlertAge) }},
+		{"its live-proof job ends", func() { noteLiveProofEnded(state, "id-4") }},
 		{"a pull request is ready", func() { state.PendingReactions["id-3:review"] = readyReviewEntry("id-3", 3, "head-1") }},
 		{"its head moves", func() { state.PendingReactions["id-3:review"].LastCheck.HeadSHA = "head-2" }},
 		{"it conflicts", func() {
@@ -78,11 +86,9 @@ func TestSupervisorWake_DigestTracksWhatTheSupervisorCanActOn(t *testing.T) {
 		{"a fault opens", func() {
 			state.PlatformFaults["pf-1"] = &PlatformFault{ID: "pf-1", Class: PlatformFaultClassSupervisorQuestion, RecordedAt: now, Action: &failcause.PersonAction{Action: "approve", Where: "here"}}
 		}},
-		{"the question ages", func() { state.PlatformFaults["pf-1"].RecordedAt = now.Add(-supervisorQuestionAlertAge) }},
 		{"a person marks it done", func() { state.PlatformFaults["pf-1"].ActionDoneAt = now }},
-		{"a fix job runs", func() { state.Running["id-3"] = &RunningEntry{Identifier: "ONS-3", ReactionKind: ReactionKindReview} }},
-		{"a live-proof job runs", func() {
-			state.Running["id-2"] = &RunningEntry{Identifier: "ONS-2", ReactionKind: ReactionKindLiveProof}
+		{"another question opens", func() {
+			state.PlatformFaults["pf-2"] = &PlatformFault{ID: "pf-2", Class: PlatformFaultClassSupervisorQuestion, RecordedAt: now, Action: &failcause.PersonAction{Action: "renew", Where: "there"}}
 		}},
 	}
 	seen := map[string]string{base: "the start"}
@@ -93,6 +99,22 @@ func TestSupervisorWake_DigestTracksWhatTheSupervisorCanActOn(t *testing.T) {
 			t.Errorf("%s left the digest of %s", c.name, prev)
 		}
 		seen[got] = c.name
+	}
+
+	// No supervisor rule acts on how long a question waits: only a person
+	// answers it, and the park or the question already changed the digest.
+	last := supervisorStateDigest(state, now)
+	for name, change := range map[string]func(){
+		"a parked story's question ages": func() { state.Parked["id-4"].ParkedAt = now.Add(-5 * time.Hour) },
+		"a question for a person ages":   func() { state.PlatformFaults["pf-2"].RecordedAt = now.Add(-5 * time.Hour) },
+		"the parked story's proof starts": func() {
+			state.Running["id-4"] = &RunningEntry{Identifier: "ONS-4", ReactionKind: ReactionKindLiveProof}
+		},
+	} {
+		change()
+		if got := supervisorStateDigest(state, now); got != last {
+			t.Errorf("%s changed the digest", name)
+		}
 	}
 }
 
@@ -426,4 +448,204 @@ func TestSupervisor_TheQuietSweep(t *testing.T) {
 			t.Fatalf("quiet sweeps suspended %+v, want none", snap.Suspended)
 		}
 	}
+}
+
+// blockedHold is the hold of a story that waits on the blockers ids.
+func blockedHold(identifier string, ids ...string) *HeldEntry {
+	e := &HeldEntry{Identifier: identifier, Reason: SkipBlockedBy}
+	for _, id := range ids {
+		e.Blockers = append(e.Blockers, HeldBlocker{BlockerRef: domain.BlockerRef{ID: id, Identifier: strings.ToUpper(id), State: "In Progress"}})
+	}
+	return e
+}
+
+// conflictEntry is a merge-conflict watch of owner/repo#number whose last
+// check found it conflicting at head.
+func conflictEntry(issueID string, number int, head string, at time.Time) *PendingReaction {
+	return &PendingReaction{
+		IssueID: issueID, Kind: ReactionKindMergeConflict, KindData: &MergeConflictReactionData{PRNumber: number, Owner: "owner", Repo: "repo"},
+		LastCheck: &ReactionCheck{ObservedAt: at, HeadSHA: head, Mergeability: &MergeabilityCheck{Mergeable: new(false)}},
+	}
+}
+
+// A story held only by its blockers is not one the supervisor can act on,
+// so it starts no idle_slot session, until a blocker's pull request
+// conflicts or waits ready past supervisorReadyAge.
+func TestSupervisor_IdleSlotIgnoresStoriesHeldOnlyByBlockers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	state := NewState(1000, 4, 0, nil, AgentTotals{})
+	state.supervisor = newSupervisorState()
+	state.supervisor.enabled = true
+	state.Held = map[string]*HeldEntry{
+		"id-5": blockedHold("ONS-5", "id-b1"),
+		"id-6": blockedHold("ONS-6", "id-b1", "id-b2"),
+		"id-7": {Identifier: "ONS-7", Reason: SkipBlockersNotRead},
+		"id-8": {Identifier: "ONS-8", Reason: SkipBlockersUnresolved},
+		"id-9": {Identifier: "ONS-9", Reason: SkipBlockersIncomplete},
+	}
+	idle := func(at time.Time) []SupervisorTrigger {
+		state.supervisor.pending = nil
+		noteIdleSlot(state, 0, at)
+		return state.supervisor.pending
+	}
+
+	if got := idle(now); len(got) != 0 {
+		t.Fatalf("stories held only by blockers noted %v, want nothing", triggerKinds(got))
+	}
+	state.PendingReactions[ReactionKey("id-b1", ReactionKindReview)] = readyReviewEntry("id-b1", 1, "head-1")
+	if got := idle(now.Add(time.Minute)); len(got) != 0 {
+		t.Fatalf("a blocker's pull request ready for a minute noted %v, want nothing", triggerKinds(got))
+	}
+	got := idle(now.Add(time.Minute + supervisorReadyAge))
+	if len(got) != 1 || got[0].Kind != SupervisorTriggerIdleSlot || !strings.Contains(got[0].Detail, "2 stories are held") {
+		t.Fatalf("a blocker's pull request ready past %v noted %+v, want idle_slot for its 2 stories", supervisorReadyAge, got)
+	}
+
+	delete(state.PendingReactions, ReactionKey("id-b1", ReactionKindReview))
+	if got := idle(now.Add(time.Hour)); len(got) != 0 {
+		t.Fatalf("after the pull request left: noted %v, want nothing", triggerKinds(got))
+	}
+	state.PendingReactions[ReactionKey("id-b2", ReactionKindMergeConflict)] = conflictEntry("id-b2", 2, "head-2", now)
+	if got := idle(now.Add(time.Hour)); len(got) != 1 || !strings.Contains(got[0].Detail, "1 stories are held") {
+		t.Fatalf("a blocker's conflicting pull request noted %+v, want idle_slot for its one story", got)
+	}
+
+	delete(state.PendingReactions, ReactionKey("id-b2", ReactionKindMergeConflict))
+	state.Held["id-10"] = &HeldEntry{Identifier: "ONS-10", Reason: SkipEgressInvalid}
+	if got := idle(now.Add(time.Hour)); len(got) != 1 || !strings.Contains(got[0].Detail, "1 stories are held") {
+		t.Fatalf("a story held for another reason noted %+v, want idle_slot for it alone", got)
+	}
+}
+
+// Scenario "Blocked stories and runs that come and go" replays p1 on
+// 2026-11-05: up to twelve stories wait on four blockers that are in
+// progress or in review, a slot is free, the blockers' runs and fix jobs
+// start and end, and the questions for a person grow old. None of that
+// starts a session. The state first seen starts one, the one actual change
+// (a blocker's pull request that conflicts) one more, and on an unchanged
+// state the quiet sweep runs once per supervisor.quiet_sweep_ms.
+func TestScenario_BlockedStoriesAndRunsThatComeAndGo(t *testing.T) {
+	t.Parallel()
+	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Agent.MaxConcurrentAgents = 8 })
+	h.run()
+
+	start := time.Now()
+	blockers := []string{"id-b1", "id-b2", "id-b3", "id-b4"}
+	h.onLoop(func(context.Context) {
+		s := h.o.state
+		for i := range 7 {
+			s.Held[fmt.Sprintf("id-%d", 20+i)] = blockedHold(fmt.Sprintf("ONS-%d", 20+i), blockers[i%len(blockers)])
+		}
+		s.PendingReactions[ReactionKey("id-b3", ReactionKindCI)] = &PendingReaction{
+			IssueID: "id-b3", Kind: ReactionKindCI, CreatedAt: start, KindData: &CIReactionData{PRNumber: 3, Owner: "owner", Repo: "repo"},
+		}
+		s.PlatformFaults["pf-1"] = &PlatformFault{
+			ID: "pf-1", Class: PlatformFaultClassSupervisorQuestion, RecordedAt: start, Action: &failcause.PersonAction{Action: "approve", Where: "here"},
+		}
+		s.FaultHolds["id-q1"] = "pf-1"
+		s.Parked["id-p1"] = &ParkedEntry{Identifier: "ONS-P1", Reason: "agent_blocked", Statement: "approve the spec", ParkedAt: start}
+	})
+
+	// sessions waits until no session runs and returns the sessions started.
+	sessions := func() int {
+		t.Helper()
+		var n int
+		waittest.Until(t, func() error {
+			var running bool
+			h.onLoop(func(context.Context) { running, n = h.o.state.supervisor.run != nil, h.o.state.supervisor.sessionsUsed })
+			if running || h.sup.sessions() != n {
+				return fmt.Errorf("a session of %d runs", n)
+			}
+			return nil
+		})
+		return n
+	}
+	// pass is a dispatch pass at at that left a slot free and dispatched
+	// nothing, after change.
+	pass := func(at time.Time, change func(s *State)) {
+		t.Helper()
+		h.onLoop(func(ctx context.Context) {
+			if change != nil {
+				change(h.o.state)
+			}
+			noteIdleSlot(h.o.state, 0, at)
+			h.o.superviseOnLoop(ctx, at)
+		})
+	}
+	held := 7
+	churn := []func(s *State){
+		func(s *State) { s.Running["id-b1"] = &RunningEntry{Identifier: "ONS-B1"} },
+		func(s *State) { s.Running["id-b2"] = &RunningEntry{Identifier: "ONS-B2", ReactionKind: ReactionKindCI} },
+		func(s *State) {
+			s.Running["id-b4"] = &RunningEntry{Identifier: "ONS-B4", ReactionKind: ReactionKindMergeConflict}
+		},
+		func(s *State) { delete(s.Running, "id-b2") },
+		func(s *State) {
+			s.PendingReactions[ReactionKey("id-b3", ReactionKindCI)].LastCheck = &ReactionCheck{ObservedAt: time.Now(), HeadSHA: "head-3", CI: &CICheck{Status: string(domain.CIStatusPending)}}
+		},
+		func(s *State) { delete(s.Running, "id-b4") },
+		func(s *State) { delete(s.Running, "id-b1") },
+		func(s *State) {
+			if held < 12 {
+				s.Held[fmt.Sprintf("id-%d", 20+held)] = blockedHold(fmt.Sprintf("ONS-%d", 20+held), blockers[held%len(blockers)])
+				held++
+			}
+		},
+		func(s *State) {
+			s.Running["id-b3"] = &RunningEntry{Identifier: "ONS-B3", ReactionKind: ReactionKindReview}
+		},
+		func(s *State) { delete(s.Running, "id-b3") },
+	}
+	replay := func(from time.Time, passes int) {
+		t.Helper()
+		for i := range passes {
+			pass(from.Add(time.Duration(i)*time.Minute), churn[i%len(churn)])
+		}
+	}
+
+	// The first pass starts a session on the state it first sees: a
+	// question holds a story.
+	pass(start, nil)
+	if n := sessions(); n != 1 {
+		t.Fatalf("the first pass: %d sessions, want 1", n)
+	}
+	// The sweep at an hour finds the same state before the quiet sweep is due.
+	replay(start.Add(time.Minute), 70)
+	if n := sessions(); n != 1 {
+		t.Fatalf("blocked stories and runs that come and go: %d sessions, want 1", n)
+	}
+
+	pass(start.Add(80*time.Minute), func(s *State) {
+		s.PendingReactions[ReactionKey("id-b4", ReactionKindMergeConflict)] = conflictEntry("id-b4", 4, "head-4", time.Now())
+	})
+	if n := sessions(); n != 2 {
+		t.Fatalf("a blocker's pull request conflicts: %d sessions, want 2", n)
+	}
+	replay(start.Add(81*time.Minute), 20)
+	if n := sessions(); n != 2 {
+		t.Fatalf("churn after the conflict: %d sessions, want 2", n)
+	}
+
+	// Past four hours the question and the park are old; that starts no
+	// session, and the quiet sweep runs when it is due.
+	replay(start.Add(4*time.Hour), 20)
+	if n := sessions(); n != 3 {
+		t.Fatalf("the questions grow old: %d sessions, want the one quiet sweep, 3", n)
+	}
+	replay(start.Add(5*time.Hour), 40)
+	if n := sessions(); n != 3 {
+		t.Fatalf("within supervisor.quiet_sweep_ms of the quiet sweep: %d sessions, want 3", n)
+	}
+	replay(start.Add(7*time.Hour), 10)
+	if n := sessions(); n != 4 {
+		t.Fatalf("the next quiet sweep: %d sessions, want 4", n)
+	}
+	h.onLoop(func(context.Context) {
+		last := h.o.state.supervisor.last
+		if last == nil || last.Triggers[0].Kind != SupervisorTriggerSweep || !strings.HasPrefix(last.Triggers[0].Detail, "the quiet sweep") {
+			t.Errorf("last session = %+v, want a quiet sweep", last)
+		}
+	})
 }

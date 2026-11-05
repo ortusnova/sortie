@@ -265,6 +265,9 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		return ""
 	}
 	delete(state.Running, workerResult.IssueID)
+	if entry.ReactionKind == ReactionKindLiveProof {
+		noteLiveProofEnded(state, workerResult.IssueID)
+	}
 	state.SessionTokens.revoke(entry.SessionToken)
 	if entry.BrokerViewerToken != "" {
 		redact.Remove(entry.BrokerViewerToken)
