@@ -15,8 +15,16 @@ import (
 // live proof, when merge_and_prove.deadline is not set.
 const DefaultMergeAndProveDeadline = 30 * time.Minute
 
+// DefaultRevertScanInterval is how often Sortie reads the forge for merged
+// reverts of the stories it holds a merge record of, when
+// merge_and_prove.revert_scan_interval is not set.
+const DefaultRevertScanInterval = 3 * time.Minute
+
+// minRevertScanInterval is the shortest merge_and_prove.revert_scan_interval.
+const minRevertScanInterval = time.Minute
+
 // mergeAndProveKeys are the keys of the merge_and_prove section.
-var mergeAndProveKeys = []string{"deadline", "hosts"}
+var mergeAndProveKeys = []string{"deadline", "hosts", "revert_scan_interval"}
 
 // hostNamePattern is what a merge_and_prove.hosts key may be.
 var hostNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -27,6 +35,10 @@ type MergeAndProveConfig struct {
 	// Deadline bounds each wait after the merge: for every host to
 	// deploy the merge commit, then for the live proof's record.
 	Deadline time.Duration
+
+	// RevertScanInterval is how often the forge is read for merged
+	// reverts of recorded merges.
+	RevertScanInterval time.Duration
 
 	// Hosts lists each host's deploy state file, sorted by host name.
 	// Empty means the one host of health.deploy_state.
@@ -59,7 +71,7 @@ func (c ServiceConfig) DeployHosts(local string) []DeployHost {
 // buildMergeAndProveConfig parses the merge_and_prove section of raw. An
 // absent section has the default deadline and no hosts of its own.
 func buildMergeAndProveConfig(raw map[string]any) (MergeAndProveConfig, error) {
-	cfg := MergeAndProveConfig{Deadline: DefaultMergeAndProveDeadline}
+	cfg := MergeAndProveConfig{Deadline: DefaultMergeAndProveDeadline, RevertScanInterval: DefaultRevertScanInterval}
 	v, present := raw["merge_and_prove"]
 	if !present || v == nil {
 		return cfg, nil
@@ -83,6 +95,17 @@ func buildMergeAndProveConfig(raw map[string]any) (MergeAndProveConfig, error) {
 			return MergeAndProveConfig{}, &ConfigError{Field: "merge_and_prove.deadline", Message: fmt.Sprintf("%q is not a positive duration such as 30m or 1h", deadline)}
 		}
 		cfg.Deadline = d
+	}
+	interval, present, err := requireStringField(m, "revert_scan_interval", "merge_and_prove.revert_scan_interval")
+	if err != nil {
+		return MergeAndProveConfig{}, err
+	}
+	if present {
+		d, err := time.ParseDuration(strings.TrimSpace(interval))
+		if err != nil || d < minRevertScanInterval {
+			return MergeAndProveConfig{}, &ConfigError{Field: "merge_and_prove.revert_scan_interval", Message: fmt.Sprintf("%q is not a duration of at least 1m, such as 3m or 10m", interval)}
+		}
+		cfg.RevertScanInterval = d
 	}
 	if cfg.Hosts, err = parseDeployHosts(m["hosts"]); err != nil {
 		return MergeAndProveConfig{}, err

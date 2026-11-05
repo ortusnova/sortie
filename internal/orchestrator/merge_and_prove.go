@@ -794,9 +794,16 @@ func (o *Orchestrator) revertStep(ctx context.Context, cfg config.ServiceConfig,
 // done, so its merge record goes, it returns to tracker.release_state with
 // the reason, and the operator's channel hears of it.
 func (o *Orchestrator) finishRevert(ctx context.Context, cfg config.ServiceConfig, e *MergeAndProveEntry, revert string, bySortie bool) {
+	moved, err := o.unsatisfyStory(ctx, cfg, e.IssueID, true)
+	o.endReverted(ctx, e, revert, bySortie, moved, err)
+}
+
+// endReverted ends e as reverted by revert once its story left the
+// tracker's done state for moved, or err said why it could not. It does no
+// tracker or forge call on the loop: the comment is written detached.
+func (o *Orchestrator) endReverted(ctx context.Context, e *MergeAndProveEntry, revert string, bySortie bool, moved string, err error) {
 	log := logging.WithIssue(o.logger, e.IssueID, e.Identifier)
 	reason := cmp.Or(e.Reason, "the merge was reverted by "+revert)
-	moved, err := o.unsatisfyStory(ctx, cfg, e.IssueID, true)
 	if err != nil {
 		e.Waiting = "the reverted story could not be returned: " + err.Error()
 		log.Warn("merge-and-prove could not return the reverted story, trying again on the next tick", slog.Any("error", err))
@@ -804,8 +811,8 @@ func (o *Orchestrator) finishRevert(ctx context.Context, cfg config.ServiceConfi
 	}
 	log.Warn("merge-and-prove reverted the story's merge; the story is not done",
 		slog.String("revert", revert), slog.String("merge_commit", e.MergeCommit), slog.String("reason", reason), slog.String("state", moved))
-	o.commentStory(ctx, e, fmt.Sprintf("Sortie reverted %s (%s) with %s, so the story is not done and is back in %s.\n\nReason: %s",
-		formatPullRequest(e.PullRequest), e.MergeCommit, revert, cmp.Or(moved, "its state"), reason))
+	o.commentDetached(ctx, e.IssueID, fmt.Sprintf("Sortie reverted %s (%s) with %s, so the story is not done and is back in %s.\n\nReason: %s",
+		formatPullRequest(e.PullRequest), e.MergeCommit, revert, cmp.Or(moved, "its state"), reason), log)
 	o.publishStoryReverted(ctx, e.IssueID, e.Identifier, domain.StoryRevertedFacts{
 		PullRequest: formatPullRequest(e.PullRequest), MergeCommit: e.MergeCommit, RevertPullRequest: revert,
 		BySortie: bySortie, Reason: reason, State: moved,
@@ -813,39 +820,73 @@ func (o *Orchestrator) finishRevert(ctx context.Context, cfg config.ServiceConfi
 	o.endMergeAndProve(ctx, e)
 }
 
-// unsatisfyStory removes the story's merge record, so the stories it
-// blocks wait for it again, and moves it to tracker.release_state when
-// it is done or handed off (or, with always, from any state but that and
-// the cancel state). It returns the state it moved the story to, empty
-// when it left the state as it was.
-func (o *Orchestrator) unsatisfyStory(ctx context.Context, cfg config.ServiceConfig, issueID string, always bool) (string, error) {
-	moved := ""
-	if target := cfg.Tracker.ReleaseState; target != "" && o.trackerAdapter != nil {
-		rctx, cancel := context.WithTimeout(ctx, mergeAndProveBound)
-		issue, err := o.trackerAdapter.FetchIssueByID(rctx, issueID)
-		cancel()
-		if err != nil {
-			return "", fmt.Errorf("tracker read: %w", err)
-		}
-		leave := strings.EqualFold(issue.State, target) || strings.EqualFold(issue.State, cfg.Tracker.CancelState)
-		done := isTerminalState(issue.State, cfg.Tracker.TerminalStates) || strings.EqualFold(issue.State, cfg.Tracker.DoneState) ||
-			strings.EqualFold(issue.State, cfg.Tracker.HandoffState)
-		if !leave && (always || done) {
-			wctx, wcancel := context.WithTimeout(ctx, planControlWriteBound)
-			err := o.trackerAdapter.TransitionIssue(wctx, issueID, target)
-			wcancel()
-			if err != nil {
-				return "", fmt.Errorf("move to %s: %w", target, err)
-			}
-			moved = target
-		}
+// commentDetached comments body on the issue off the event loop, bounded;
+// a failure is logged.
+func (o *Orchestrator) commentDetached(ctx context.Context, issueID, body string, log *slog.Logger) {
+	tracker := o.trackerAdapter
+	if tracker == nil {
+		return
 	}
+	o.state.TrackerOpsWg.Go(func() {
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), planControlWriteBound)
+		defer cancel()
+		if err := tracker.CommentIssue(wctx, issueID, body); err != nil {
+			log.Warn("reverted story comment failed", slog.Any("error", err))
+		}
+	})
+}
+
+// unsatisfyStory removes the story's merge record, so the stories it
+// blocks wait for it again, and moves it to tracker.release_state as
+// [releaseStoryOnTracker] does. It returns the state it moved the story
+// to, empty when it left the state as it was.
+func (o *Orchestrator) unsatisfyStory(ctx context.Context, cfg config.ServiceConfig, issueID string, always bool) (string, error) {
+	moved, err := releaseStoryOnTracker(ctx, cfg, o.trackerAdapter, issueID, always)
+	if err != nil {
+		return "", err
+	}
+	return moved, o.deleteMergeRecord(ctx, issueID)
+}
+
+// releaseStoryOnTracker moves the story to tracker.release_state when it
+// is done or handed off (or, with always, from any state but that and the
+// cancel state). It returns the state it moved the story to, empty when it
+// left the state as it was. It reads only its arguments, so it may run off
+// the event loop.
+func releaseStoryOnTracker(ctx context.Context, cfg config.ServiceConfig, tracker domain.TrackerAdapter, issueID string, always bool) (string, error) {
+	target := cfg.Tracker.ReleaseState
+	if target == "" || tracker == nil {
+		return "", nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, mergeAndProveBound)
+	issue, err := tracker.FetchIssueByID(rctx, issueID)
+	cancel()
+	if err != nil {
+		return "", fmt.Errorf("tracker read: %w", err)
+	}
+	leave := strings.EqualFold(issue.State, target) || strings.EqualFold(issue.State, cfg.Tracker.CancelState)
+	done := isTerminalState(issue.State, cfg.Tracker.TerminalStates) || strings.EqualFold(issue.State, cfg.Tracker.DoneState) ||
+		strings.EqualFold(issue.State, cfg.Tracker.HandoffState)
+	if leave || (!always && !done) {
+		return "", nil
+	}
+	wctx, wcancel := context.WithTimeout(ctx, planControlWriteBound)
+	err = tracker.TransitionIssue(wctx, issueID, target)
+	wcancel()
+	if err != nil {
+		return "", fmt.Errorf("move to %s: %w", target, err)
+	}
+	return target, nil
+}
+
+// deleteMergeRecord removes the story's merge record.
+func (o *Orchestrator) deleteMergeRecord(ctx context.Context, issueID string) error {
 	if del, ok := o.store.(planSatisfactionDeleter); ok {
 		if err := del.DeletePlanSatisfaction(ctx, issueID, persistence.PlanSatisfactionMerged); err != nil {
-			return moved, fmt.Errorf("merge record delete: %w", err)
+			return fmt.Errorf("merge record delete: %w", err)
 		}
 	}
-	return moved, nil
+	return nil
 }
 
 // publishStoryReverted routes the story.reverted event.
