@@ -596,6 +596,9 @@ func TestSortieFilesBetweenTurns(t *testing.T) {
 	a := f.open(1, Options{})
 	conn, in := f.dialStdioAs(f.mint("ONS-30", 1)["stdio"], StdioProtocolFiles)
 	b := startBridge(a)
+	if err := a.WaitStdio(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
 	type answer struct {
 		files map[string][]byte

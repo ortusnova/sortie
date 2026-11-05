@@ -162,6 +162,11 @@ func processMergeCompletionEntry(
 	key, pending, data := entry.key, entry.pending, entry.data
 	entryLog := logging.WithIssue(log, pending.IssueID, pending.Identifier)
 
+	if mergeAndProveHolds(state, pending.IssueID) {
+		entryLog.Info("merge_completion dropped: merge-and-prove ends the story once its merge is proven after deploy")
+		return
+	}
+
 	stateName, known := statesByID[pending.IssueID]
 	if !known {
 		if pending.escalationStands() {

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -51,6 +52,7 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "repositories", Type: FieldSequence},
 	{Name: "default_repository", Type: FieldString},
 	{Name: "egress", Type: FieldMap},
+	{Name: "profiles", Type: FieldMap},
 }
 
 // remoteRepositoryKeys are the keys of a remote repository entry.
@@ -113,6 +115,29 @@ type RemoteConfig struct {
 	// its agent harness, whatever its repository. Empty, with its lists
 	// not nil, when the workflow declares none.
 	Egress egress.Policy
+
+	// Profiles is environment.remote.profiles: the job profiles a
+	// supervisor fix run or live-proof request may name, by name. Nil
+	// when the workflow declares none.
+	Profiles map[string]JobProfile
+}
+
+// JobProfile is a job profile: the image and requirements a job that
+// names it runs with, in place of its repository's.
+type JobProfile struct {
+	// Image is the machine image of the job; empty keeps the
+	// repository's.
+	Image string
+	// Requires is what a worker must declare to take the job. It
+	// replaces the repository's whole; the backend is still required.
+	Requires RemoteRequirements
+}
+
+// JobProfile returns the profile named name, and whether the workflow
+// declares it.
+func (c RemoteConfig) JobProfile(name string) (JobProfile, bool) {
+	p, ok := c.Profiles[name]
+	return p, ok
 }
 
 // JobImage returns the image a job of repo runs in: repo's own, or
@@ -205,6 +230,9 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		return RemoteConfig{}, err
 	}
 	if cfg.Egress, err = parseRemoteEgress(m["egress"]); err != nil {
+		return RemoteConfig{}, err
+	}
+	if cfg.Profiles, err = parseRemoteProfiles(m["profiles"]); err != nil {
 		return RemoteConfig{}, err
 	}
 	if v, exists := m["lease_ttl_ms"]; exists && v != nil {
@@ -507,6 +535,50 @@ func parseRemoteCredentials(value any) ([]RemoteCredential, error) {
 		creds = append(creds, RemoteCredential{Name: name, Env: env, Hosts: hosts, Header: header})
 	}
 	return creds, nil
+}
+
+// parseRemoteProfiles reads environment.remote.profiles: a mapping of
+// profile names, each to its optional image and its required requires.
+func parseRemoteProfiles(value any) (map[string]JobProfile, error) {
+	const field = remoteField + ".profiles"
+	if value == nil {
+		return nil, nil
+	}
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil, typeError(field, "mapping", value)
+	}
+	out := make(map[string]JobProfile, len(m))
+	for _, name := range slices.Sorted(maps.Keys(m)) {
+		entryField := field + "." + name
+		if !repositoryNamePattern.MatchString(name) {
+			return nil, &ConfigError{Field: entryField, Message: "a profile name must match [a-z0-9]+(-[a-z0-9]+)*"}
+		}
+		entry, ok := m[name].(map[string]any)
+		if !ok {
+			return nil, typeError(entryField, "mapping", m[name])
+		}
+		if err := refuseUnknownKeys(entry, entryField, []string{"image", "requires"}); err != nil {
+			return nil, err
+		}
+		image, present, err := requireStringField(entry, "image", entryField+".image")
+		if err != nil {
+			return nil, err
+		}
+		if present && image == "" {
+			return nil, &ConfigError{Field: entryField + ".image", Message: "must not be an empty string; remove the key to keep the repository's image"}
+		}
+		raw, set := entry["requires"]
+		if !set || raw == nil {
+			return nil, &ConfigError{Field: entryField + ".requires", Message: "is required: a profile names what a worker must declare to take its job"}
+		}
+		req, err := parseRemoteRequirements(raw, entryField+".requires")
+		if err != nil {
+			return nil, err
+		}
+		out[name] = JobProfile{Image: image, Requires: req}
+	}
+	return out, nil
 }
 
 // parseRemoteEgress reads environment.remote.egress, the harness's

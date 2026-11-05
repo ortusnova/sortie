@@ -343,3 +343,53 @@ func TestEnvironmentConfig_RemoteEgress(t *testing.T) {
 		})
 	}
 }
+
+// environment.remote.profiles names job profiles: each requires what a
+// worker must declare and may name its own image.
+func TestEnvironmentConfig_RemoteProfiles(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{"profiles": map[string]any{
+		"nested": map[string]any{"image": "live-proof.smolmachine",
+			"requires": map[string]any{"capabilities": []any{"nested"}, "cpu": 4, "mem_gib": 8, "disk_gib": 40}},
+		"bare": map[string]any{"requires": map[string]any{"cpu": 2}},
+	}}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	want := map[string]JobProfile{
+		"nested": {Image: "live-proof.smolmachine", Requires: RemoteRequirements{Capabilities: []string{"nested"}, CPU: 4, MemGiB: 8, DiskGiB: 40}},
+		"bare":   {Requires: RemoteRequirements{CPU: 2}},
+	}
+	if !reflect.DeepEqual(cfg.Environment.Remote.Profiles, want) {
+		t.Fatalf("Profiles = %+v, want %+v", cfg.Environment.Remote.Profiles, want)
+	}
+	if p, ok := cfg.Environment.Remote.JobProfile("nested"); !ok || p.Image != "live-proof.smolmachine" {
+		t.Errorf("JobProfile(nested) = %+v, %v", p, ok)
+	}
+	if _, ok := cfg.Environment.Remote.JobProfile(""); ok {
+		t.Error("the empty name is a profile")
+	}
+
+	for name, tc := range map[string]struct {
+		profiles any
+		field    string
+	}{
+		"not a map":     {[]any{"nested"}, "environment.remote.profiles"},
+		"bad name":      {map[string]any{"Nested": map[string]any{"requires": map[string]any{}}}, "environment.remote.profiles.Nested"},
+		"entry not map": {map[string]any{"nested": "x"}, "environment.remote.profiles.nested"},
+		"no requires":   {map[string]any{"nested": map[string]any{"image": "i"}}, "environment.remote.profiles.nested.requires"},
+		"empty image":   {map[string]any{"nested": map[string]any{"image": "", "requires": map[string]any{}}}, "environment.remote.profiles.nested.image"},
+		"unknown key":   {map[string]any{"nested": map[string]any{"requires": map[string]any{}, "flows": map[string]any{}}}, "environment.remote.profiles.nested.flows"},
+		"bad requires":  {map[string]any{"nested": map[string]any{"requires": map[string]any{"cpu": -1}}}, "environment.remote.profiles.nested.requires.cpu"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewServiceConfig(remoteRaw(map[string]any{"profiles": tc.profiles}))
+			var ce *ConfigError
+			if !errors.As(err, &ce) || ce.Field != tc.field {
+				t.Fatalf("error = %v, want a ConfigError on %s", err, tc.field)
+			}
+		})
+	}
+}

@@ -466,6 +466,13 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		orchestrator.PopulateHandoffParts(state, handoffPartRows, br.logger)
 	}
 
+	mergeAndProveRows, err := store.LoadMergeAndProve(ctx)
+	if err != nil {
+		br.logger.Warn("failed to load merge-and-prove, starting with none", slog.Any("error", err))
+	} else {
+		orchestrator.PopulateMergeAndProve(state, mergeAndProveRows, br.logger)
+	}
+
 	stageHopRows, err := store.ListStageHops(ctx)
 	if err != nil {
 		br.logger.Warn("failed to load stage hop records, starting with none", slog.Any("error", err))

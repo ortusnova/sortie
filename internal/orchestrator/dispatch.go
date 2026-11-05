@@ -601,6 +601,11 @@ type ScheduleRetryParams struct {
 	// Nil for non-reaction retries.
 	ContinuationContext map[string]any
 
+	// JobProfile names the job profile the retry's remote job runs
+	// with. Propagated to [RetryEntry.JobProfile]; empty for the
+	// repository's own.
+	JobProfile string
+
 	// ReactionKind is the reaction type that triggered this retry.
 	// Propagated to [RetryEntry.ReactionKind]. Empty for non-reaction
 	// retries.
@@ -732,6 +737,7 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		TimerHandle:         timer,
 		LastSSHHost:         params.LastSSHHost,
 		ContinuationContext: params.ContinuationContext,
+		JobProfile:          params.JobProfile,
 		ReactionKind:        params.ReactionKind,
 		Trigger:             params.Trigger,
 		OriginTrigger:       originTrigger,

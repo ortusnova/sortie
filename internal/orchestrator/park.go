@@ -25,6 +25,7 @@ const (
 	unparkTriggerAnswered         = "answered"
 	unparkTriggerReleased         = "released"
 	unparkTriggerRecord           = "record"
+	unparkTriggerFixRun           = "fix_run"
 )
 
 // ParkStore is the persistence contract [parkIssue] and [unparkIssue] need.

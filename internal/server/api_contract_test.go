@@ -60,16 +60,19 @@ type jsonField struct {
 }
 
 var contractEnums = map[reflect.Type]map[string][]string{
-	reflect.TypeFor[holdResponse]():        {"reason": holdReasonValues()},
-	reflect.TypeFor[holdBlockerResponse](): {"reason": orchestrator.BlockerReasons()},
-	reflect.TypeFor[usageWindowResponse](): {"status": usageWindowStatusValues()},
-	reflect.TypeFor[waitResponse]():        {"kind": {waitSlot, waitCapability, waitDrain}},
-	reflect.TypeFor[pullWaitResponse]():    {"waits_on": {pullWaitsReview, pullWaitsCI, pullWaitsConflict, pullWaitsPerson, pullWaitsNone}},
+	reflect.TypeFor[holdResponse]():               {"reason": holdReasonValues()},
+	reflect.TypeFor[holdBlockerResponse]():        {"reason": orchestrator.BlockerReasons()},
+	reflect.TypeFor[usageWindowResponse]():        {"status": usageWindowStatusValues()},
+	reflect.TypeFor[waitResponse]():               {"kind": {waitSlot, waitCapability, waitDrain}},
+	reflect.TypeFor[pullWaitResponse]():           {"waits_on": {pullWaitsReview, pullWaitsCI, pullWaitsConflict, pullWaitsPerson, pullWaitsNone}},
+	reflect.TypeFor[mergeAndProveEntryResponse](): {"phase": orchestrator.MergeAndProvePhases()},
 }
 
 var contractNeverNull = map[reflect.Type][]string{
-	reflect.TypeFor[stateResponse]():       {"rate_limits", "waits", "pulls", "handoff_parts"},
-	reflect.TypeFor[handoffPartResponse](): {"capabilities"},
+	reflect.TypeFor[stateResponse]():              {"rate_limits", "waits", "pulls", "handoff_parts"},
+	reflect.TypeFor[handoffPartResponse]():        {"capabilities"},
+	reflect.TypeFor[mergeAndProveResponse]():      {"queue"},
+	reflect.TypeFor[mergeAndProveEntryResponse](): {"deployed"},
 }
 
 var dateTime = contractNode{"string", map[string]any{"type": "string", "format": "date-time"}}

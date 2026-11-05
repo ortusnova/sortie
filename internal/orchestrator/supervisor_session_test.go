@@ -910,7 +910,7 @@ func TestScenario_AConflictingPullRequestNobodyIsMoving(t *testing.T) {
 		}
 		sup := h.o.Supervisor()
 		merge := sup.Merge(ctx, "id-41-ident")
-		acted <- []SupervisorResult{merge, sup.FixRun(ctx, "id-41-ident", "owner/repo#41 conflicts with its base; rebase it and resolve the conflict.")}
+		acted <- []SupervisorResult{merge, sup.FixRun(ctx, "id-41-ident", "owner/repo#41 conflicts with its base; rebase it and resolve the conflict.", "")}
 		return domain.TurnResult{ExitReason: domain.EventTurnCompleted}, nil
 	})
 	h.run()

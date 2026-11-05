@@ -44,6 +44,7 @@ const (
 	EventAgentMessage              EventType = "agent.message"
 	EventSessionEscalated          EventType = "session.escalated"
 	EventHoldExpired               EventType = "hold.expired"
+	EventStoryReverted             EventType = "story.reverted"
 	EventSupervisorLoopSuspected   EventType = "supervisor.loop_suspected"
 	EventSupervisorUnavailable     EventType = "supervisor.unavailable"
 	EventSupervisorAvailable       EventType = "supervisor.available"
@@ -71,6 +72,7 @@ var eventTypes = []EventType{
 	EventAgentMessage,
 	EventSessionEscalated,
 	EventHoldExpired,
+	EventStoryReverted,
 	EventSupervisorLoopSuspected,
 	EventSupervisorUnavailable,
 	EventSupervisorAvailable,
@@ -111,6 +113,7 @@ func (t EventType) Severity() string {
 		EventStageNotAdvanced,
 		EventSessionEscalated,
 		EventHoldExpired,
+		EventStoryReverted,
 		EventSupervisorLoopSuspected,
 		EventSupervisorUnavailable:
 		return "warning"

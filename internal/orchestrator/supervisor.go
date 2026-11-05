@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -257,90 +258,179 @@ func (s Supervisor) RecordMerge(ctx context.Context, identifier, pullRequest, co
 	}
 }
 
-// FixRun schedules a fix run on the issue's pull request with message as
-// the one review comment it answers, as a review comment on the pull
-// request does. The issue needs a watched pull request, no running worker
-// and no scheduled retry, and the review reaction must be configured.
-func (s Supervisor) FixRun(ctx context.Context, identifier, message string) SupervisorResult {
+// FixRun schedules a fix run on the issue's pull request
+// ([Supervisor.pullRequestOf]) with message as the one review comment it
+// answers, as a review comment on the pull request does. The issue needs
+// no running worker and no scheduled retry, and the review reaction must
+// be configured. A fix run on a parked issue ends the park. A non-empty
+// profile names the environment.remote.profiles entry the run's remote job
+// runs with, in place of its repository's image and requirements.
+func (s Supervisor) FixRun(ctx context.Context, identifier, message, profile string) SupervisorResult {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return SupervisorResult{Status: SupervisorPrecondition, Code: "invalid_request", Message: "message must not be empty"}
 	}
+	if r, ok := s.checkProfile(profile); !ok {
+		return r
+	}
+	issue, r, ok := s.lookupOnLoop(ctx, identifier)
+	if !ok {
+		return r
+	}
+	if !s.o.reviewReactionConfigured {
+		return precondition(issue, "review_reaction_off", "a fix run needs the review reaction configured")
+	}
+	if r, ok := fixRunAllowed(issue); !ok {
+		return r
+	}
+	fctx, cancel := context.WithTimeout(ctx, supervisorForgeBound)
+	defer cancel()
+	pr, r, ok := s.pullRequestOf(fctx, issue)
+	if !ok {
+		return r
+	}
 	var result SupervisorResult
 	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
-		result = s.fixRunOnLoop(loopCtx, identifier, message, time.Now().UTC())
+		result = s.fixRunOnLoop(loopCtx, identifier, message, profile, pr, time.Now().UTC())
 	}); !ok {
 		return r
 	}
 	return result
 }
 
-func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message string, now time.Time) SupervisorResult {
-	issue, known := lookupSupervised(s.o.state, identifier)
-	switch {
-	case !known:
-		return unknownIssue(identifier)
-	case !s.o.reviewReactionConfigured:
-		return precondition(issue, "review_reaction_off", "a fix run needs the review reaction configured")
-	case issue.watch == nil:
-		return precondition(issue, "no_pull_request", "Sortie watches no pull request of issue "+identifier)
-	case issue.running:
-		return precondition(issue, "running", "issue "+identifier+" has a running worker")
-	case issue.retrying:
-		return precondition(issue, "retry_scheduled", "issue "+identifier+" already has a run scheduled")
-	case issue.parked:
-		return precondition(issue, "issue_parked", "issue "+identifier+" is parked")
+// checkProfile refuses a job profile the workflow does not declare. The
+// empty profile, the repository's own, is always accepted.
+func (s Supervisor) checkProfile(profile string) (SupervisorResult, bool) {
+	if profile == "" {
+		return SupervisorResult{}, true
 	}
-	pending := s.o.state.PendingReactions[ReactionKey(issue.issueID, issue.watch.Kind)]
+	env := s.o.workflowManager.Config().Environment
+	if !isRemoteKind(env) {
+		return SupervisorResult{Status: SupervisorPrecondition, Code: "unknown_profile",
+			Message: "job profile " + strconv.Quote(profile) + " needs environment.kind remote"}, false
+	}
+	if _, ok := env.Remote.JobProfile(profile); !ok {
+		names := slices.Sorted(maps.Keys(env.Remote.Profiles))
+		valid := "none"
+		if len(names) > 0 {
+			valid = strings.Join(names, ", ")
+		}
+		return SupervisorResult{Status: SupervisorPrecondition, Code: "unknown_profile",
+			Message: "the workflow declares no job profile " + strconv.Quote(profile) + " in environment.remote.profiles; declared: " + valid}, false
+	}
+	return SupervisorResult{}, true
+}
+
+// fixRunAllowed reports whether issue may start a fix run, and the refusal
+// when a run of it is going or scheduled.
+func fixRunAllowed(issue supervisedIssue) (SupervisorResult, bool) {
+	switch {
+	case issue.running:
+		return precondition(issue, "running", "issue "+issue.identifier+" has a running worker"), false
+	case issue.retrying:
+		return precondition(issue, "retry_scheduled", "issue "+issue.identifier+" already has a run scheduled"), false
+	}
+	return SupervisorResult{}, true
+}
+
+// fixRequest is the review comment a supervisor's fix run answers: the
+// pull request and branch it runs on, then the supervisor's message.
+func fixRequest(pr pullRequestRef, message string) string {
+	head := "Fix request from the supervisor on " + formatPullRequest(pr)
+	if pr.Branch != "" {
+		head += ", branch " + pr.Branch
+	}
+	return head + ":\n\n" + message
+}
+
+// fixRunOnLoop schedules the fix run of the issue named by identifier on
+// pr, unless the issue has a run going or scheduled. A parked issue's park
+// ends. A non-empty profile names the job profile the run runs with.
+func (s Supervisor) fixRunOnLoop(ctx context.Context, identifier, message, profile string, pr pullRequestRef, now time.Time) SupervisorResult {
+	issue, known := lookupSupervised(s.o.state, identifier)
+	if !known {
+		return unknownIssue(identifier)
+	}
+	if r, ok := fixRunAllowed(issue); !ok {
+		return r
+	}
+	log := logging.WithIssue(s.o.logger, issue.issueID, identifier)
+	params := s.fixRunParams(issue)
+	if issue.parked {
+		unparkIssue(ctx, s.o.state, issue.issueID, unparkTriggerFixRun, s.o.store, log)
+	}
 	rkey := ReactionKey(issue.issueID, ReactionKindReview)
 	turn := s.o.state.ReactionAttempts[rkey] + 1
-	log := logging.WithIssue(s.o.logger, issue.issueID, identifier)
 	comment := domain.ReviewComment{
 		ID:          "supervisor-" + strconv.FormatInt(now.UnixNano(), 10),
 		Reviewer:    "supervisor",
-		Body:        message,
+		Body:        fixRequest(pr, message),
 		SubmittedAt: now,
 	}
-	scheduleReactionContinuation(ctx, s.o.state, s.o.store, ScheduleRetryParams{
-		IssueID:     pending.IssueID,
-		Identifier:  pending.Identifier,
-		DisplayID:   pending.DisplayID,
-		Attempt:     pending.Attempt,
-		DelayMS:     continuationDelayMS,
-		LastSSHHost: pending.LastSSHHost,
-		ContinuationContext: map[string]any{
-			reviewCommentsKey: buildReviewTemplateMap([]domain.ReviewComment{comment}),
-		},
-		ReactionKind:        ReactionKindReview,
-		Continuation:        continuationTargetOf(pending, turn),
-		AgentKind:           pending.AgentKind,
-		ConfiguredModel:     pending.ConfiguredModel,
-		RuleName:            pending.RuleName,
-		StageLineage:        pending.StageLineage,
-		RuleSettingsApplied: pending.RuleSettingsApplied,
-		TemplateID:          pending.TemplateID,
-		Logger:              log,
-
-		IssueIdentity: pending.IssueIdentity,
-	}, s.o.onRetryFire, now)
-	s.o.state.ReactionAttempts[rkey] = turn
-	if pending.Kind == ReactionKindReview {
-		delete(s.o.state.PendingReactions, ReactionKey(issue.issueID, ReactionKindReview))
+	params.DelayMS = continuationDelayMS
+	params.ContinuationContext = map[string]any{
+		reviewCommentsKey: buildReviewTemplateMap([]domain.ReviewComment{comment}),
 	}
-	log.Info("fix run scheduled by the supervisor", slog.String("pull_request", formatPullRequest(issue.pr)))
+	params.JobProfile = profile
+	params.ReactionKind = ReactionKindReview
+	params.Continuation = ContinuationTarget{PRNumber: pr.Number, Owner: pr.Owner, Repo: pr.Repo, Attempt: turn}
+	params.Logger = log
+	scheduleReactionContinuation(ctx, s.o.state, s.o.store, params, s.o.onRetryFire, now)
+	s.o.state.ReactionAttempts[rkey] = turn
+	delete(s.o.state.PendingReactions, rkey)
+	log.Info("fix run scheduled by the supervisor", slog.String("pull_request", formatPullRequest(pr)),
+		slog.String("branch", pr.Branch), slog.Bool("park_ended", issue.parked), slog.String("job_profile", profile))
 	s.o.notifyObservers()
-	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(issue.pr)}
+	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(pr)}
 }
 
-// MarkDraft makes the issue's watched pull request a draft, which keeps
-// auto-merge from merging it.
+// fixRunParams returns the run a fix run of issue repeats: the watch's run
+// when Sortie watches a pull request of it, else the run its park or park
+// release follows, else none beyond the issue itself.
+func (s Supervisor) fixRunParams(issue supervisedIssue) ScheduleRetryParams {
+	if issue.watch != nil {
+		pending := issue.watch
+		return ScheduleRetryParams{
+			IssueID:             issue.issueID,
+			Identifier:          issue.identifier,
+			DisplayID:           pending.DisplayID,
+			Attempt:             pending.Attempt,
+			LastSSHHost:         pending.LastSSHHost,
+			AgentKind:           pending.AgentKind,
+			ConfiguredModel:     pending.ConfiguredModel,
+			RuleName:            pending.RuleName,
+			StageLineage:        pending.StageLineage,
+			RuleSettingsApplied: pending.RuleSettingsApplied,
+			TemplateID:          pending.TemplateID,
+			IssueIdentity:       pending.IssueIdentity,
+		}
+	}
+	park := s.o.state.Parked[issue.issueID]
+	if park == nil {
+		park = s.o.state.ParkReleases[issue.issueID]
+	}
+	if park == nil {
+		return ScheduleRetryParams{IssueID: issue.issueID, Identifier: issue.identifier}
+	}
+	return ScheduleRetryParams{
+		IssueID:         issue.issueID,
+		Identifier:      issue.identifier,
+		DisplayID:       park.DisplayID,
+		AgentKind:       park.AgentKind,
+		ConfiguredModel: park.ConfiguredModel,
+		RuleName:        park.RuleName,
+		StageLineage:    park.StageLineage,
+		TemplateID:      park.TemplateID,
+		IssueIdentity:   park.IssueIdentity,
+	}
+}
+
+// MarkDraft makes the issue's pull request ([Supervisor.pullRequestOf]) a
+// draft, which keeps auto-merge from merging it.
 func (s Supervisor) MarkDraft(ctx context.Context, identifier string) SupervisorResult {
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
 		return r
-	}
-	if issue.watch == nil {
-		return precondition(issue, "no_pull_request", "Sortie watches no pull request of issue "+identifier)
 	}
 	drafter := s.o.prDrafter
 	if drafter == nil || s.o.scmAdapter == nil {
@@ -348,23 +438,27 @@ func (s Supervisor) MarkDraft(ctx context.Context, identifier string) Supervisor
 	}
 	fctx, cancel := context.WithTimeout(ctx, supervisorForgeBound)
 	defer cancel()
-	status, err := s.o.scmAdapter.GetMergeability(fctx, issue.pr.Number, issue.pr.Owner, issue.pr.Repo)
+	pr, r, ok := s.pullRequestOf(fctx, issue)
+	if !ok {
+		return r
+	}
+	status, err := s.o.scmAdapter.GetMergeability(fctx, pr.Number, pr.Owner, pr.Repo)
 	if err != nil {
 		return upstreamFailed(issue, "the forge read failed", err)
 	}
 	if status.Merged || status.Closed {
-		return precondition(issue, "pull_request_closed", formatPullRequest(issue.pr)+" is no longer open")
+		return precondition(issue, "pull_request_closed", formatPullRequest(pr)+" is no longer open")
 	}
-	if err := drafter.MarkPullRequestDraft(fctx, issue.pr.Number, issue.pr.Owner, issue.pr.Repo); err != nil {
+	if err := drafter.MarkPullRequestDraft(fctx, pr.Number, pr.Owner, pr.Repo); err != nil {
 		return upstreamFailed(issue, "the forge refused the draft", err)
 	}
 	logging.WithIssue(s.o.logger, issue.issueID, identifier).Info("pull request marked a draft by the supervisor",
-		slog.String("pull_request", formatPullRequest(issue.pr)))
-	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(issue.pr)}
+		slog.String("pull_request", formatPullRequest(pr)))
+	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(pr)}
 }
 
 // Merge merges the issue's pull request ([Supervisor.pullRequestOf]: the
-// watched one, or a parked issue's open one) when it is open, not a
+// watched one, else the open one of its branch) when it is open, not a
 // draft, mergeable, its review decision is approved or requires no
 // review, its CI conclusion is success, the story has no open hand-off
 // part, its criteria verdict lets it merge ([Supervisor.criteriaLetMerge]),
@@ -526,38 +620,39 @@ const LiveProofRequestMarker = "<!-- live-proof -->"
 
 // RequestLiveProof records the supervisor's request for a live proof of
 // the issue named by identifier, whose criterion and the reason the
-// story's machine could not run it are criterion. For an issue whose pull
-// request Sortie watches, Sortie runs no job itself: the request is the
-// recorded action the workbench acts on. For a parked issue, whose run
-// starts no fix run, Sortie finds its open pull request
-// ([Supervisor.pullRequestOf]) and starts the live-proof job on that
-// branch's head itself; the park stays in place while the job runs, and
-// the supervisor decides on the job's result.
-func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion string) SupervisorResult {
+// story's machine could not run it are criterion. Sortie finds the issue's
+// pull request ([Supervisor.pullRequestOf]) first. For an issue that is
+// not parked, Sortie runs no job itself: the request is the recorded
+// action the workbench acts on. For a parked issue, whose run starts no
+// fix run, Sortie starts the live-proof job on that branch's head itself;
+// the park stays in place while the job runs, and the supervisor decides
+// on the job's result. A non-empty profile names the
+// environment.remote.profiles entry the job runs with; the workflow must
+// declare it, whether Sortie or the workbench starts the job.
+func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion, profile string) SupervisorResult {
+	if r, ok := s.checkProfile(profile); !ok {
+		return r
+	}
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
 		return r
 	}
 	log := logging.WithIssue(s.o.logger, issue.issueID, identifier)
-	if !issue.parked {
-		log.Info("live proof requested by the supervisor")
-		res := SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier}
-		if issue.watch != nil {
-			res.PullRequest = formatPullRequest(issue.pr)
-		}
-		return res
-	}
-	if !s.o.reviewReactionConfigured {
+	if issue.parked && !s.o.reviewReactionConfigured {
 		return precondition(issue, "review_reaction_off", "a live-proof job needs the review reaction configured")
-	}
-	if s.o.scmAdapter == nil {
-		return SupervisorResult{Status: SupervisorUnavailable, Message: "no forge is configured"}
 	}
 	fctx, cancel := context.WithTimeout(ctx, supervisorForgeBound)
 	defer cancel()
 	pr, r, ok := s.pullRequestOf(fctx, issue)
 	if !ok {
 		return r
+	}
+	if !issue.parked {
+		log.Info("live proof requested by the supervisor", slog.String("pull_request", formatPullRequest(pr)), slog.String("job_profile", profile))
+		return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(pr)}
+	}
+	if s.o.scmAdapter == nil {
+		return SupervisorResult{Status: SupervisorUnavailable, Message: "no forge is configured"}
 	}
 	status, err := s.o.scmAdapter.GetMergeability(fctx, pr.Number, pr.Owner, pr.Repo)
 	switch {
@@ -571,7 +666,7 @@ func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion 
 	pr.HeadSHA = status.HeadSHA
 	var result SupervisorResult
 	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
-		result = s.startLiveProofOnLoop(loopCtx, identifier, pr, criterion, time.Now().UTC())
+		result = s.startLiveProofOnLoop(loopCtx, identifier, pr, criterion, profile, time.Now().UTC())
 	}); !ok {
 		return r
 	}
@@ -592,7 +687,7 @@ func liveProofRequest(identifier string, pr pullRequestRef, criterion string) st
 // startLiveProofOnLoop schedules the live-proof job of the parked issue
 // named by identifier on pr, unless the issue left its park or has a run
 // going or scheduled meanwhile.
-func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string, pr pullRequestRef, criterion string, now time.Time) SupervisorResult {
+func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string, pr pullRequestRef, criterion, profile string, now time.Time) SupervisorResult {
 	issue, known := lookupSupervised(s.o.state, identifier)
 	switch {
 	case !known:
@@ -620,6 +715,7 @@ func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string,
 		ContinuationContext: map[string]any{
 			reviewCommentsKey: buildReviewTemplateMap([]domain.ReviewComment{comment}),
 		},
+		JobProfile:      profile,
 		ReactionKind:    ReactionKindLiveProof,
 		Continuation:    ContinuationTarget{PRNumber: pr.Number, Owner: pr.Owner, Repo: pr.Repo},
 		AgentKind:       park.AgentKind,
@@ -632,23 +728,22 @@ func (s Supervisor) startLiveProofOnLoop(ctx context.Context, identifier string,
 		IssueIdentity: park.IssueIdentity,
 	}, s.o.onRetryFire, now)
 	log.Info("live-proof job of the parked story scheduled by the supervisor",
-		slog.String("pull_request", formatPullRequest(pr)), slog.String("branch", pr.Branch), slog.String("head", pr.HeadSHA))
+		slog.String("pull_request", formatPullRequest(pr)), slog.String("branch", pr.Branch), slog.String("head", pr.HeadSHA),
+		slog.String("job_profile", profile))
 	s.o.notifyObservers()
 	return SupervisorResult{Status: SupervisorDone, IssueID: issue.issueID, Identifier: identifier, PullRequest: formatPullRequest(pr)}
 }
 
-// pullRequestOf returns the pull request of issue: the one Sortie watches,
-// or for a parked issue that Sortie watches none of, the open pull request
-// whose head is the issue's branch in the repository the issue routes to.
+// pullRequestOf returns the pull request of issue, whatever its state:
+// the one Sortie watches, else the open pull request whose head is the
+// issue's branch in the repository the issue routes to. Every supervisor
+// route that acts on a story's pull request finds it here.
 func (s Supervisor) pullRequestOf(ctx context.Context, issue supervisedIssue) (pullRequestRef, SupervisorResult, bool) {
 	if issue.watch != nil {
 		return issue.pr, SupervisorResult{}, true
 	}
-	if !issue.parked {
-		return pullRequestRef{}, precondition(issue, "no_pull_request", "Sortie watches no pull request of issue "+issue.identifier), false
-	}
 	if s.o.prFinder == nil || s.o.trackerAdapter == nil {
-		return pullRequestRef{}, SupervisorResult{Status: SupervisorUnsupported, Message: "the forge adapter cannot find the pull request of a parked issue's branch", IssueID: issue.issueID, Identifier: issue.identifier}, false
+		return pullRequestRef{}, SupervisorResult{Status: SupervisorUnsupported, Message: "the forge adapter cannot find the pull request of an issue's branch", IssueID: issue.issueID, Identifier: issue.identifier}, false
 	}
 	tracked, err := s.o.trackerAdapter.FetchIssueByID(ctx, issue.issueID)
 	if err != nil {
@@ -676,7 +771,7 @@ func (s Supervisor) pullRequestOf(ctx context.Context, issue supervisedIssue) (p
 	case err != nil:
 		return pullRequestRef{}, upstreamFailed(issue, "the forge read failed", err), false
 	case !ok || found.Number <= 0:
-		return pullRequestRef{}, precondition(issue, "no_pull_request", fmt.Sprintf("issue %s is parked and no open pull request has its branch %s in %s/%s", issue.identifier, branch, owner, name)), false
+		return pullRequestRef{}, precondition(issue, "no_pull_request", fmt.Sprintf("Sortie watches no pull request of issue %s and the forge holds no open pull request on its branch %s in %s/%s", issue.identifier, branch, owner, name)), false
 	}
 	return pullRequestRef{Number: found.Number, Owner: owner, Repo: name, Branch: branch}, SupervisorResult{}, true
 }

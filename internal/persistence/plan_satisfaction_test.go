@@ -83,3 +83,39 @@ func TestPlanSatisfaction_LoadManyIDs(t *testing.T) {
 		t.Errorf("loaded %d issues, want 20", len(got))
 	}
 }
+
+// A merged row the forge shows reverted is deleted; the issue's other
+// kinds and other issues' rows stay.
+func TestPlanSatisfaction_DeleteAndList(t *testing.T) {
+	t.Parallel()
+	s := openTestStore(t)
+	ctx := context.Background()
+	migrateOrFatal(t, s)
+
+	for _, r := range []PlanSatisfaction{
+		{IssueID: "a", Kind: PlanSatisfactionMerged, Ref: "sha1", PR: "o/r#1"},
+		{IssueID: "a", Kind: PlanSatisfactionNoChange, Ref: "commit:sha0"},
+		{IssueID: "b", Kind: PlanSatisfactionMerged, Ref: "sha2", PR: "o/r#2"},
+	} {
+		if err := s.UpsertPlanSatisfaction(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	merged, err := s.ListPlanSatisfaction(ctx, PlanSatisfactionMerged)
+	if err != nil || len(merged) != 2 {
+		t.Fatalf("ListPlanSatisfaction(merged) = %+v, %v, want two rows", merged, err)
+	}
+	if err := s.DeletePlanSatisfaction(ctx, "a", PlanSatisfactionMerged); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePlanSatisfaction(ctx, "a", PlanSatisfactionMerged); err != nil {
+		t.Fatalf("second delete: %v, want no error", err)
+	}
+	got, err := s.LoadPlanSatisfaction(ctx, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["a"]) != 1 || got["a"][0].Kind != PlanSatisfactionNoChange || len(got["b"]) != 1 {
+		t.Errorf("after delete = %+v, want a's no-change row and b's merge", got)
+	}
+}

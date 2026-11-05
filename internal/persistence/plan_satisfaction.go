@@ -26,7 +26,8 @@ type PlanSatisfaction struct {
 }
 
 // UpsertPlanSatisfaction records r, replacing the row of the same issue
-// and kind. Rows are never deleted.
+// and kind. A merged row is deleted only when the forge shows its merge
+// reverted.
 func (s *Store) UpsertPlanSatisfaction(ctx context.Context, r PlanSatisfaction) error {
 	at := r.RecordedAt
 	if at.IsZero() {
@@ -80,6 +81,41 @@ func (s *Store) LoadPlanSatisfaction(ctx context.Context, issueIDs []string) (ma
 		if err != nil {
 			return nil, fmt.Errorf("iterate plan_satisfaction: %w", err)
 		}
+	}
+	return out, nil
+}
+
+// DeletePlanSatisfaction removes the issue's row of the given kind, as
+// when the forge shows the merge it records reverted. A missing row is no
+// error.
+func (s *Store) DeletePlanSatisfaction(ctx context.Context, issueID, kind string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM plan_satisfaction WHERE issue_id = ? AND kind = ?`, issueID, kind); err != nil {
+		return fmt.Errorf("delete plan_satisfaction of %q: %w", issueID, err)
+	}
+	return nil
+}
+
+// ListPlanSatisfaction returns every row of the given kind, oldest first.
+func (s *Store) ListPlanSatisfaction(ctx context.Context, kind string) ([]PlanSatisfaction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT issue_id, kind, ref, pr, cites, recorded_at FROM plan_satisfaction WHERE kind = ? ORDER BY recorded_at, issue_id`, kind)
+	if err != nil {
+		return nil, fmt.Errorf("query plan_satisfaction: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only query; close error is non-actionable
+	var out []PlanSatisfaction
+	for rows.Next() {
+		var r PlanSatisfaction
+		var at string
+		if err := rows.Scan(&r.IssueID, &r.Kind, &r.Ref, &r.PR, &r.Cites, &at); err != nil {
+			return nil, fmt.Errorf("scan plan_satisfaction: %w", err)
+		}
+		r.RecordedAt, _ = time.Parse(time.RFC3339, at)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate plan_satisfaction: %w", err)
 	}
 	return out, nil
 }

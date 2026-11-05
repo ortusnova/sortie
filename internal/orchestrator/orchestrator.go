@@ -417,6 +417,9 @@ type Orchestrator struct {
 	prCommentReader                   domain.PullRequestCommentReader
 	prDrafter                         domain.PullRequestDrafter
 	prFinder                          domain.PullRequestFinder
+	prReverter                        domain.PullRequestReverter
+	commitComparer                    domain.CommitComparer
+	revertFinder                      domain.RevertFinder
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
@@ -674,6 +677,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
 		o.prFinder, _ = params.SCMAdapter.(domain.PullRequestFinder)
+		o.prReverter, _ = params.SCMAdapter.(domain.PullRequestReverter)
+		o.commitComparer, _ = params.SCMAdapter.(domain.CommitComparer)
+		o.revertFinder, _ = params.SCMAdapter.(domain.RevertFinder)
 		if o.tokenInspector == nil {
 			o.tokenInspector, _ = params.SCMAdapter.(domain.SCMTokenInspector)
 		}
@@ -1006,8 +1012,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
 				},
-				WorkerWait: func(issue domain.Issue) *WorkerHold {
-					return o.workerWait(cfg, issue)
+				WorkerWait: func(issue domain.Issue, profile string) *WorkerHold {
+					return o.workerWait(cfg, issue, profile)
 				},
 				HealthHold: func(issue domain.Issue, hold bool) bool {
 					return o.healthHold(ctx, cfg, issue, hold) != nil
@@ -1269,6 +1275,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.startDueFaultChecks(ctx, time.Now())
 	o.runDueHealthChecks(ctx, cfg)
 	o.releaseParksByRecord(ctx, cfg, time.Now().UTC())
+	o.advanceMergeAndProve(ctx, cfg, time.Now().UTC())
+	o.detectReverts(ctx, cfg, time.Now().UTC())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
@@ -1505,7 +1513,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 			o.once.deferFor(issue.ID, deferTick)
 			continue
 		}
-		if wait := o.workerWait(cfg, issue); wait != nil {
+		if wait := o.workerWait(cfg, issue, ""); wait != nil {
 			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
 			o.once.deferFor(issue.ID, deferTick)
 			continue

@@ -250,7 +250,7 @@ func shapeRepositories(cfg config.EnvironmentConfig) []ShapeRepository {
 		if isRemoteKind(cfg) {
 			rc := cfg.Remote
 			rc.Repository = &repo
-			shape.Requires = new(remoteRequires(rc))
+			shape.Requires = new(remoteRequires(rc, ""))
 		}
 		repos = append(repos, shape)
 	}

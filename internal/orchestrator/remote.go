@@ -336,6 +336,7 @@ func credentialPlaceholder(name string) string { return "sortie-credential-" + n
 // workflow binds only as a placeholder.
 func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue, attempt *int, agentKind, defaultCommand string) worker.Job {
 	rc := cfg.Environment.Remote
+	profile := jobProfileFrom(ctx)
 	n := normalizeAttempt(attempt) + 1
 	identity := sessionIdentityFrom(ctx)
 	identity.Token = ""
@@ -360,11 +361,11 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 		Attempt:  n,
 		Priority: issue.Priority,
 		Issue:    worker.Issue{ID: issue.ID, Identifier: issue.Identifier, Title: issue.Title},
-		Requires: remoteRequires(rc),
+		Requires: remoteRequires(rc, profile),
 		Flows:    maps.Clone(rc.Flows),
 		Run: worker.Run{
 			Backend:        rc.Backend,
-			Image:          rc.JobImage(rc.Repository),
+			Image:          remoteImage(rc, profile),
 			Command:        command,
 			Args:           args,
 			Env:            env,
@@ -377,9 +378,13 @@ func remoteJob(ctx context.Context, cfg config.ServiceConfig, issue domain.Issue
 }
 
 // remoteRequires returns what a worker must declare to take a job of
-// rc's repository: its requirements, with the backend as a capability.
-func remoteRequires(rc config.RemoteConfig) worker.Requires {
+// rc's repository: the requirements of the job profile named profile,
+// else the repository's, with the backend as a capability.
+func remoteRequires(rc config.RemoteConfig, profile string) worker.Requires {
 	requires := rc.JobRequires(rc.Repository)
+	if p, ok := rc.JobProfile(profile); ok {
+		requires = p.Requires
+	}
 	caps := slices.Clone(requires.Capabilities)
 	if rc.Backend != "" && !slices.Contains(caps, rc.Backend) {
 		caps = append(caps, rc.Backend)
@@ -390,24 +395,50 @@ func remoteRequires(rc config.RemoteConfig) worker.Requires {
 	return worker.Requires{Capabilities: caps, CPU: requires.CPU, MemGiB: requires.MemGiB, DiskGiB: requires.DiskGiB}
 }
 
+// remoteImage returns the image a job of rc's repository runs in: the
+// image of the job profile named profile, else the repository's.
+func remoteImage(rc config.RemoteConfig, profile string) string {
+	if p, ok := rc.JobProfile(profile); ok && p.Image != "" {
+		return p.Image
+	}
+	return rc.JobImage(rc.Repository)
+}
+
+// jobProfileCtxKey is the context key of the job profile a dispatch's
+// remote job runs with.
+type jobProfileCtxKey struct{}
+
+// withJobProfile returns a child context naming the job profile the
+// dispatch's remote job runs with.
+func withJobProfile(ctx context.Context, profile string) context.Context {
+	return context.WithValue(ctx, jobProfileCtxKey{}, profile)
+}
+
+// jobProfileFrom returns the job profile [withJobProfile] named, or ""
+// for the repository's own.
+func jobProfileFrom(ctx context.Context) string {
+	p, _ := ctx.Value(jobProfileCtxKey{}).(string)
+	return p
+}
+
 // workerWait returns why no checked-in worker can take issue's remote
 // job now, after the queued jobs, and then the running attempts that
 // have not queued theirs yet, took what they fit; and nil when one can
 // or cfg selects another kind. A job that waits so is not
 // dispatched: it would hold an agent slot, and count as running, until
 // a worker took it.
-func (o *Orchestrator) workerWait(cfg config.ServiceConfig, issue domain.Issue) *WorkerHold {
+func (o *Orchestrator) workerWait(cfg config.ServiceConfig, issue domain.Issue, profile string) *WorkerHold {
 	if o.remote == nil || !isRemoteKind(cfg.Environment) {
 		return nil
 	}
-	requires := issueRequires(cfg, issue)
+	requires := issueRequires(cfg, issue, profile)
 	var ahead []worker.Requires
 	for id, e := range o.state.Running {
 		// submitted first: an attempt marks itself submitted and queues
 		// its job under one lock, so once it reads true the matcher holds
 		// the job, or held it, and it is not counted twice.
 		if !o.remote.submitted(id) && !o.remote.matcher.Holds(e.Identifier) {
-			ahead = append(ahead, issueRequires(cfg, e.Issue))
+			ahead = append(ahead, issueRequires(cfg, e.Issue, e.JobProfile))
 		}
 	}
 	waiting, ok := o.remote.matcher.Placeable(requires, ahead...)
@@ -418,13 +449,14 @@ func (o *Orchestrator) workerWait(cfg config.ServiceConfig, issue domain.Issue) 
 }
 
 // issueRequires returns what a worker must declare to take issue's
-// remote job: the requirements of the issue's repository.
-func issueRequires(cfg config.ServiceConfig, issue domain.Issue) worker.Requires {
+// remote job: the requirements of the job profile named profile, or of
+// the issue's repository when profile is empty or not declared.
+func issueRequires(cfg config.ServiceConfig, issue domain.Issue, profile string) worker.Requires {
 	env := cfg.Environment
 	if issueEnv, _, err := issueRepository(env, remoteWorkspacePath(cfg, issue), issue.Labels); err == nil {
 		env = issueEnv
 	}
-	return remoteRequires(env.Remote)
+	return remoteRequires(env.Remote, profile)
 }
 
 // remoteWorkspace is the workspace path inside a remote job's machine.
