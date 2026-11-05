@@ -290,6 +290,10 @@ func (s Supervisor) withdrawOnLoop(ctx context.Context, w SupervisorWithdrawal, 
 		return SupervisorWithdrawResult{SupervisorResult: SupervisorResult{
 			Status: SupervisorUnknownIssue, Code: "question_not_found", Message: "no open question has the ID " + w.QuestionID,
 		}}
+	case f.Class == PlatformFaultClassRevertQuestion:
+		refusal := questionRefusal(f, "question "+f.ID+" asks a person re-queue, or cancel?, after a revert Sortie did not make: only a person's answer clears it")
+		refusal.Status, refusal.Code = SupervisorForbidden, "forbidden"
+		return SupervisorWithdrawResult{SupervisorResult: refusal}
 	case f.Class != PlatformFaultClassSupervisorQuestion:
 		return SupervisorWithdrawResult{SupervisorResult: questionRefusal(f,
 			"platform fault "+f.ID+" is not a question the supervisor raised: Sortie or a story's agent recorded it ("+f.Class+"), and its check or a person clears it")}

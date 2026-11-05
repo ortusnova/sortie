@@ -105,3 +105,29 @@ func TestPlatformFaults_QuestionKindRaiserAndWithdrawal(t *testing.T) {
 		t.Errorf("LoadOpenPlatformFaults() after the withdrawal = %+v, %v, want none", open, err)
 	}
 }
+
+func TestPlatformFaults_AnswerOutlivesARestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := openTestStore(t)
+	migrateOrFatal(t, s)
+
+	q := PlatformFault{
+		ID: "pf-r", Signature: "revert_question: id-42", Class: "revert_question", Step: "revert",
+		Action: "ONS-42: re-queue, or cancel?", ActionWhere: "POST /api/v1/platform-faults/pf-r/action-done", RecordedAt: "2026-11-05T22:21:00Z",
+		QuestionKind: "decision", RaisedBy: "sortie",
+		Holds: []PlatformFaultHold{{IssueID: "id-42", Identifier: "ONS-42", HeldAt: "2026-11-05T22:21:00Z"}},
+	}
+	if err := s.SavePlatformFault(ctx, q); err != nil {
+		t.Fatalf("SavePlatformFault: %v", err)
+	}
+	q.ActionDoneAt, q.ActionDoneBy, q.Answer = "2026-11-05T23:00:00Z", "taichi", "cancel"
+	if err := s.SavePlatformFault(ctx, q); err != nil {
+		t.Fatalf("SavePlatformFault(answered): %v", err)
+	}
+	open, err := s.LoadOpenPlatformFaults(ctx)
+	if err != nil || len(open) != 1 || !reflect.DeepEqual(open[0], q) {
+		t.Fatalf("LoadOpenPlatformFaults() = %+v, %v, want the answer and who gave it, %+v", open, err, q)
+	}
+}

@@ -2972,6 +2972,9 @@
         "action": {
           "type": "string"
         },
+        "answer": {
+          "type": "string"
+        },
         "done_at": {
           "anyOf": [
             {
@@ -2994,7 +2997,8 @@
         "action",
         "where",
         "done_at",
-        "done_by"
+        "done_by",
+        "answer"
       ],
       "type": "object"
     },

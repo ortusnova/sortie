@@ -38,12 +38,14 @@ type revertScanSchedule struct {
 }
 
 // revertedMerge is one story's merge record, or merge-and-prove's merge
-// of a story not yet proven, that a revert may name.
+// of a story not yet proven, that a revert may name. sortieRevert is the
+// revert merge-and-prove opened of the merge in flight, 0 for none.
 type revertedMerge struct {
-	issueID     string
-	pullRequest pullRequestRef // zero for a record without its pull request
-	commit      string
-	inFlight    *MergeAndProveEntry // read only on the event loop
+	issueID      string
+	pullRequest  pullRequestRef // zero for a record without its pull request
+	commit       string
+	sortieRevert int
+	inFlight     *MergeAndProveEntry // read only on the event loop
 }
 
 // revertScanRepo is one repository a revert scan reads, from since.
@@ -54,12 +56,18 @@ type revertScanRepo struct {
 
 // revertUndo is one merge a merged revert names, with what the scan did
 // on the tracker: the state it moved the story to, or why it could not.
+// bySortie reports that the revert is the one merge-and-prove made after
+// a failed or late proof. identifier is the story's as the scan read it,
+// and cancelled reports that it is in tracker.cancel_state.
 type revertUndo struct {
-	repo   string
-	merge  revertedMerge
-	revert pullRequestRef
-	moved  string
-	err    error
+	repo       string
+	merge      revertedMerge
+	revert     pullRequestRef
+	bySortie   bool
+	identifier string
+	cancelled  bool
+	moved      string
+	err        error
 }
 
 // revertScanResult is what a scan found off the loop: each merge undone on
@@ -81,7 +89,9 @@ func revertScanEvery(cfg config.ServiceConfig) time.Duration {
 // whoever merged it, moves the story out of its done state on the
 // tracker. The loop then deletes the record, so the stories it blocks wait
 // for it again; a story merge-and-prove merged and has not yet proven ends
-// as reverted. Must run on the event loop.
+// as reverted. Only merge-and-prove's own revert returns a story to
+// tracker.release_state: any other parks it with a question for a person,
+// re-queue, or cancel? Must run on the event loop.
 func (o *Orchestrator) detectReverts(ctx context.Context, cfg config.ServiceConfig, now time.Time) {
 	if o.revertFinder == nil || o.once != nil || o.revertScan.running || now.Before(o.revertScan.next) {
 		return
@@ -137,7 +147,7 @@ func (o *Orchestrator) planRevertScan(ctx context.Context, cfg config.ServiceCon
 		merges = append(merges, m)
 	}
 	if e := mergeAndProveInFlight(o.state); e != nil && e.MergeCommit != "" {
-		merges = append(merges, revertedMerge{issueID: e.IssueID, pullRequest: e.PullRequest, commit: e.MergeCommit, inFlight: e})
+		merges = append(merges, revertedMerge{issueID: e.IssueID, pullRequest: e.PullRequest, commit: e.MergeCommit, sortieRevert: e.RevertPR, inFlight: e})
 		note(strings.ToLower(e.PullRequest.Owner+"/"+e.PullRequest.Repo), e.PhaseAt)
 	}
 	if len(merges) == 0 {
@@ -170,8 +180,11 @@ func (o *Orchestrator) planRevertScan(ctx context.Context, cfg config.ServiceCon
 }
 
 // scanReverts reads each repository's merged reverts and, for each merge
-// one names, moves its story out of its done state on the tracker. It
-// reads only its arguments, so it runs off the event loop.
+// one names, moves its story out of its done state on the tracker: to
+// tracker.release_state when the revert is the one merge-and-prove made
+// after a failed or late proof, else to tracker.handoff_state, where it
+// waits for a person's answer. A story in tracker.cancel_state is never
+// moved. It reads only its arguments, so it runs off the event loop.
 func scanReverts(ctx context.Context, cfg config.ServiceConfig, finder domain.RevertFinder, tracker domain.TrackerAdapter,
 	merges []revertedMerge, repos []revertScanRepo, log *slog.Logger) revertScanResult {
 	found := revertScanResult{read: map[string]bool{}}
@@ -190,8 +203,13 @@ func scanReverts(ctx context.Context, cfg config.ServiceConfig, finder domain.Re
 				if m.issueID == "" || !revertNames(rv, repo.owner, repo.name, *m) {
 					continue
 				}
-				u := revertUndo{repo: repo.key, merge: *m, revert: pullRequestRef{Number: rv.Number, Owner: repo.owner, Repo: repo.name}}
-				u.moved, u.err = releaseStoryOnTracker(ctx, cfg, tracker, m.issueID, m.inFlight != nil)
+				u := revertUndo{repo: repo.key, merge: *m, revert: pullRequestRef{Number: rv.Number, Owner: repo.owner, Repo: repo.name},
+					bySortie: m.sortieRevert > 0 && m.sortieRevert == rv.Number}
+				if u.bySortie {
+					u.moved, u.err = releaseStoryOnTracker(ctx, cfg, tracker, m.issueID, true)
+				} else {
+					u.identifier, u.moved, u.cancelled, u.err = holdRevertedOnTracker(ctx, cfg, tracker, m.issueID)
+				}
 				found.undos = append(found.undos, u)
 				m.issueID = ""
 			}
@@ -239,11 +257,14 @@ func revertNames(rv domain.MergedRevert, owner, repo string, m revertedMerge) bo
 
 // undoRevertedMerge ends u's story as reverted by its revert, once the
 // scan moved it on the tracker. It reports whether that is done, false
-// when a step failed and the next scan must see the revert again. Must run
-// on the event loop; its comment is written detached.
+// when a step failed and the next scan must see the revert again. A
+// revert merge-and-prove made ends its story as merge-and-prove does; any
+// other parks the story with a revert question, unless it is cancelled.
+// Must run on the event loop; its comment is written detached.
 func (o *Orchestrator) undoRevertedMerge(ctx context.Context, u revertUndo) bool {
 	m, revert := u.merge, u.revert
-	if e := m.inFlight; e != nil {
+	e := m.inFlight
+	if e != nil {
 		if o.state.MergeAndProve[e.IssueID] != e {
 			// It ended while the scan ran: read it again, as a record if
 			// it was proven meanwhile.
@@ -252,14 +273,16 @@ func (o *Orchestrator) undoRevertedMerge(ctx context.Context, u revertUndo) bool
 		if e.Reason == "" {
 			e.Reason = "the merge was reverted by " + formatPullRequest(revert) + " before its live proof after deploy was proven"
 		}
-		err := u.err
-		if err == nil {
-			err = o.deleteMergeRecord(ctx, e.IssueID)
+		if u.bySortie {
+			err := u.err
+			if err == nil {
+				err = o.deleteMergeRecord(ctx, e.IssueID)
+			}
+			o.endReverted(ctx, e, formatPullRequest(revert), true, u.moved, err)
+			return o.state.MergeAndProve[e.IssueID] != e
 		}
-		o.endReverted(ctx, e, formatPullRequest(revert), e.RevertPR == revert.Number, u.moved, err)
-		return o.state.MergeAndProve[e.IssueID] != e
 	}
-	identifier := m.issueID
+	identifier := cmp.Or(u.identifier, m.issueID)
 	if e := o.state.MergeAndProve[m.issueID]; e != nil {
 		identifier = e.Identifier
 	}
@@ -276,25 +299,40 @@ func (o *Orchestrator) undoRevertedMerge(ctx context.Context, u revertUndo) bool
 		err = o.deleteMergeRecord(ctx, m.issueID)
 	}
 	if err != nil {
+		if e != nil {
+			e.Waiting = "the reverted story could not be undone: " + err.Error()
+		}
 		log.Warn("reverted story could not be undone, trying again on the next scan", slog.String("revert", formatPullRequest(revert)), slog.Any("error", err))
 		return false
 	}
+	if e != nil {
+		o.endMergeAndProve(ctx, e)
+	}
 	moved := u.moved
 	reason := fmt.Sprintf("%s merged, which reverts %s", formatPullRequest(revert), merged)
-	log.Warn("story's merge reverted on the forge; the story is not done",
-		slog.String("revert", formatPullRequest(revert)), slog.String("merge_commit", m.commit), slog.String("state", moved))
 	body := "Sortie found " + reason + ". The story is not done: Sortie removed its merge record, so the stories it blocks wait for it again"
-	if moved != "" {
-		body += ", and moved it to " + moved
-	}
-	o.commentDetached(ctx, m.issueID, body+".", log)
 	pr := ""
 	if m.pullRequest.Number > 0 {
 		pr = formatPullRequest(m.pullRequest)
 	}
-	o.publishStoryReverted(ctx, m.issueID, identifier, domain.StoryRevertedFacts{
-		PullRequest: pr, MergeCommit: m.commit, RevertPullRequest: formatPullRequest(revert), Reason: reason, State: moved,
-	}, log)
+	facts := domain.StoryRevertedFacts{PullRequest: pr, MergeCommit: m.commit, RevertPullRequest: formatPullRequest(revert), Reason: reason, State: moved}
+	if u.cancelled {
+		log.Info("story's merge reverted on the forge; the story is cancelled, so Sortie leaves it",
+			slog.String("revert", formatPullRequest(revert)), slog.String("merge_commit", m.commit), slog.String("reason", ReasonCancelled))
+		o.commentDetached(ctx, m.issueID, body+". The story is cancelled, so Sortie leaves it where it is and asks nothing.", log)
+	} else {
+		q := o.raiseRevertQuestion(ctx, o.workflowManager.Config(), revertAsked{
+			issueID: m.issueID, identifier: identifier, merged: merged, revert: formatPullRequest(revert), moved: moved,
+		}, time.Now().UTC())
+		facts.Question = q.ID
+		if moved != "" {
+			body += ", and moved it to " + moved
+		}
+		body += ". Sortie did not make this revert, so it does not re-queue the story: it waits for a person to answer question " + q.ID +
+			", re-queue, or cancel?, and no run builds or reviews it until then. " + q.Action.Action + "\n\nAnswer with " + q.Action.Where + "."
+		o.commentDetached(ctx, m.issueID, body, log)
+	}
+	o.publishStoryReverted(ctx, m.issueID, identifier, facts, log)
 	o.notifyObservers()
 	return true
 }

@@ -646,6 +646,7 @@ export interface PersonActionResponse {
   where: string;
   done_at: string | null;
   done_by: string;
+  answer: string;
 }
 
 export interface PlatformFaultResponse {

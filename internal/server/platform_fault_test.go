@@ -46,15 +46,22 @@ func scopeFault() *orchestrator.SnapshotPlatformFault {
 	}
 }
 
-func (f *fakePlatformFaults) done(_ context.Context, id, by string) orchestrator.PlatformFaultDoneResult {
+func (f *fakePlatformFaults) done(_ context.Context, id, by, answer string) orchestrator.PlatformFaultDoneResult {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, id+" by "+by)
+	call := id + " by " + by
+	if answer != "" {
+		call += " answer " + answer
+	}
+	f.calls = append(f.calls, call)
 	if f.fault == nil || f.fault.ID != id {
 		return orchestrator.PlatformFaultDoneResult{Status: orchestrator.PlatformFaultDoneNotFound}
 	}
+	if answer == "maybe" {
+		return orchestrator.PlatformFaultDoneResult{Status: orchestrator.PlatformFaultDoneInvalid, Message: "answer requeue or cancel"}
+	}
 	answered := *f.fault
-	answered.ActionDoneAt, answered.ActionDoneBy = time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC), by
+	answered.ActionDoneAt, answered.ActionDoneBy, answered.Answer = time.Date(2026, 11, 2, 11, 0, 0, 0, time.UTC), by, answer
 	answered.LastCheckAt = answered.ActionDoneAt
 	if !f.tokenHasScope {
 		answered.LastCheckError = "push refused"
@@ -78,10 +85,11 @@ func (f *fakePlatformFaults) snapshot() (orchestrator.RuntimeSnapshotResult, err
 func platformFaultTestServer(t *testing.T, fake *fakePlatformFaults) *httptest.Server {
 	t.Helper()
 	srv := New(Params{
-		SnapshotFn:   fake.snapshot,
-		RefreshFn:    acceptingRefresh(),
-		Logger:       slog.New(slog.DiscardHandler),
-		ControlToken: testControlToken,
+		SnapshotFn:      fake.snapshot,
+		RefreshFn:       acceptingRefresh(),
+		Logger:          slog.New(slog.DiscardHandler),
+		ControlToken:    testControlToken,
+		SupervisorToken: testSupervisorToken,
 		SessionTokenFn: func(token string) (string, bool) {
 			return "LIVE-1", token == tokenLive1
 		},
@@ -192,6 +200,36 @@ func TestPlatformFaultActionDone_MarksDoneAndChecksAtOnce(t *testing.T) {
 	}
 }
 
+// A question that asks for a choice takes it in answer: the route passes
+// it on with who gave it, serves it back, and answers 400 to a choice the
+// question does not take.
+func TestPlatformFaultActionDone_CarriesTheAnswer(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakePlatformFaults{fault: scopeFault()}
+	ts := platformFaultTestServer(t, fake)
+	auth := "Bearer " + testControlToken
+	route := "/api/v1/platform-faults/pf-1a2b3c/action-done"
+
+	status, body := callDispatchPause(t, ts, http.MethodPost, route, auth, `{"by":"taichi","answer":"maybe"}`)
+	if status != http.StatusBadRequest || body["error"].(map[string]any)["code"] != "invalid_answer" {
+		t.Errorf("POST %s with an answer the question does not take = %d %v, want 400 invalid_answer", route, status, body)
+	}
+	status, body = callDispatchPause(t, ts, http.MethodPost, route, auth, `{"by":"taichi","answer":"cancel"}`)
+	if status != http.StatusOK {
+		t.Fatalf("POST %s with an answer = %d %v, want 200", route, status, body)
+	}
+	action, _ := body["platform_fault"].(map[string]any)["person_action"].(map[string]any)
+	if action["answer"] != "cancel" || action["done_by"] != "taichi" {
+		t.Errorf("person_action = %v, want the answer cancel by taichi", action)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if want := []string{"pf-1a2b3c by taichi answer maybe", "pf-1a2b3c by taichi answer cancel"}; len(fake.calls) != 2 || fake.calls[0] != want[0] || fake.calls[1] != want[1] {
+		t.Errorf("calls = %v, want %v", fake.calls, want)
+	}
+}
+
 func TestPlatformFaultActionDone_ControlTokenOnly(t *testing.T) {
 	t.Parallel()
 
@@ -202,6 +240,7 @@ func TestPlatformFaultActionDone_ControlTokenOnly(t *testing.T) {
 	}{
 		{"no token", http.MethodPost, "", "", http.StatusUnauthorized},
 		{"a session token", http.MethodPost, "Bearer " + tokenLive1, "", http.StatusForbidden},
+		{"the supervisor token answering", http.MethodPost, "Bearer " + testSupervisorToken, `{"by":"supervisor","answer":"requeue","evidence":"rejected"}`, http.StatusForbidden},
 		{"GET", http.MethodGet, "Bearer " + testControlToken, "", http.StatusMethodNotAllowed},
 		{"malformed body", http.MethodPost, "Bearer " + testControlToken, "{not json", http.StatusBadRequest},
 	}

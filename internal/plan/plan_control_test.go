@@ -122,6 +122,22 @@ func TestPlanSync_ReleaseOnlyFromBacklog(t *testing.T) {
 	}
 }
 
+// A cancelled story, such as one a person cancelled after a revert of its
+// merge, stays cancelled across a full sync that still marks it released.
+func TestPlanSync_CancelledStoryStaysCancelled(t *testing.T) {
+	t.Parallel()
+	f := newFakeTracker()
+	g := v2(newGraph().epic("platform-upkeep", ApprovalApproved, "home-released-stories").build())
+	released(&g, "platform-upkeep/home-released-stories")
+	apply(t, f.planControlled(), g)
+	f.issues[1].State = "Canceled"
+
+	r := apply(t, f.planControlled(), g)
+	if f.issues[1].State != "Canceled" || len(r.Released) != 0 {
+		t.Errorf("state = %s, released = %+v, want the cancelled story left cancelled", f.issues[1].State, r.Released)
+	}
+}
+
 // An issue that leaves the backlog between preview and apply is skipped.
 func TestPlanSync_ReleaseRecheckedAtApply(t *testing.T) {
 	t.Parallel()

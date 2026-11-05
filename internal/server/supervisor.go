@@ -380,6 +380,9 @@ func (s *Server) writeSupervisorResult(w http.ResponseWriter, r *http.Request, s
 			status = http.StatusBadRequest
 		}
 		writeErrorJSON(w, s.logger, status, result.Code, result.Message)
+	case orchestrator.SupervisorForbidden:
+		status = http.StatusForbidden
+		writeErrorJSON(w, s.logger, status, "forbidden", result.Message)
 	case orchestrator.SupervisorUnsupported:
 		status = http.StatusUnprocessableEntity
 		writeErrorJSON(w, s.logger, status, "capability_missing", result.Message)

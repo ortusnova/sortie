@@ -218,7 +218,10 @@ func (SupervisorLoopSuspectedFacts) messageFacts()   {}
 // BySortie reports that Sortie opened and merged the revert because the
 // merged change was not proven live by its deadline; otherwise someone
 // merged a revert on the forge. Reason says why, and State is where the
-// story went, empty when Sortie left its state as it was.
+// story went, empty when Sortie left its state as it was. Question is the
+// ID of the question a person answers, re-queue or cancel, before a story
+// someone else reverted runs again; empty for Sortie's own revert and for
+// a cancelled story.
 type StoryRevertedFacts struct {
 	PullRequest       string
 	MergeCommit       string
@@ -226,6 +229,7 @@ type StoryRevertedFacts struct {
 	BySortie          bool
 	Reason            string
 	State             string
+	Question          string
 }
 
 func (StoryRevertedFacts) messageFacts() {}

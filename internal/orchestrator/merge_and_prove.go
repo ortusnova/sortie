@@ -245,6 +245,9 @@ func (s Supervisor) MergeAndProve(ctx context.Context, identifier string) Superv
 	case !s.o.reviewReactionConfigured:
 		return precondition(issue, "review_reaction_off", "the live-proof job needs the review reaction configured")
 	}
+	if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
+		return r
+	}
 	if s.o.scmAdapter == nil || s.o.trackerAdapter == nil || s.o.prCommentReader == nil {
 		return SupervisorResult{Status: SupervisorUnavailable, Message: "no forge or tracker is configured"}
 	}
@@ -447,6 +450,10 @@ func (o *Orchestrator) mergeStep(ctx context.Context, cfg config.ServiceConfig, 
 	pr := e.PullRequest
 	fctx, cancel := context.WithTimeout(ctx, mergeAndProveBound)
 	defer cancel()
+	if state, cancelled := storyCancelled(fctx, cfg, o.trackerAdapter, e.IssueID); cancelled {
+		o.giveUpMergeAndProve(ctx, e, "the story is "+ReasonCancelled+" ("+state+"), and Sortie does not merge or move a cancelled story")
+		return
+	}
 	status, err := o.scmAdapter.GetMergeability(fctx, pr.Number, pr.Owner, pr.Repo)
 	if err != nil {
 		e.Waiting = "the forge read failed: " + err.Error()
@@ -694,6 +701,10 @@ func (o *Orchestrator) proven(ctx context.Context, cfg config.ServiceConfig, e *
 		return
 	}
 	done := o.doneState(cfg)
+	if state, cancelled := storyCancelled(ctx, cfg, o.trackerAdapter, e.IssueID); cancelled {
+		log.Info("merge-and-prove proven; the story is cancelled, so Sortie leaves it", slog.String("reason", ReasonCancelled), slog.String("state", state))
+		done = ""
+	}
 	if done != "" && o.trackerAdapter != nil {
 		wctx, cancel := context.WithTimeout(ctx, planControlWriteBound)
 		err := o.trackerAdapter.TransitionIssue(wctx, e.IssueID, done)
@@ -864,7 +875,7 @@ func releaseStoryOnTracker(ctx context.Context, cfg config.ServiceConfig, tracke
 	if err != nil {
 		return "", fmt.Errorf("tracker read: %w", err)
 	}
-	leave := strings.EqualFold(issue.State, target) || strings.EqualFold(issue.State, cfg.Tracker.CancelState)
+	leave := strings.EqualFold(issue.State, target) || isCancelledState(issue.State, cfg.Tracker)
 	done := isTerminalState(issue.State, cfg.Tracker.TerminalStates) || strings.EqualFold(issue.State, cfg.Tracker.DoneState) ||
 		strings.EqualFold(issue.State, cfg.Tracker.HandoffState)
 	if leave || (!always && !done) {

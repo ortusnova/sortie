@@ -452,6 +452,9 @@ func TestMergeAndProve_NotProvenReverts(t *testing.T) {
 	if state := f.stories.stateOf("id-1"); state != "Todo" {
 		t.Errorf("ONS-1 state = %q, want Todo", state)
 	}
+	if q := openRevertQuestion(t, f, "id-1"); q != nil {
+		t.Errorf("Sortie's own revert raised question %+v, want none", q)
+	}
 	if c := f.stories.lastComment("id-1"); !strings.Contains(c, "o/kit#101") || !strings.Contains(c, "no comment on o/kit#1 recorded the live proof proven") {
 		t.Errorf("ONS-1 comment = %q, want the revert and the unproven result as its reason", c)
 	}
@@ -636,7 +639,8 @@ func TestMergeAndProve_RestartInEachPhase(t *testing.T) {
 // Scenario "A hand revert": a person merges a revert of a story's pull
 // request, as ao#144 reverted ao#142 for ONS-121. Within one sync the
 // story no longer reads Done, its merge record is gone, and its dependents
-// wait for it again.
+// wait for it again; Sortie did not make the revert, so the story waits in
+// review for a person's answer rather than returning to Todo.
 func TestStoryRevert_HandRevert(t *testing.T) {
 	t.Parallel()
 	f := newProveFixture(t)
@@ -670,8 +674,11 @@ func TestStoryRevert_HandRevert(t *testing.T) {
 	f.forge.mu.Unlock()
 	f.tick(t, f.t0.Add(time.Hour))
 
-	if state := f.stories.stateOf("id-121"); state != "Todo" {
-		t.Errorf("ONS-121 after the hand revert = %q, want Todo", state)
+	if state := f.stories.stateOf("id-121"); state != "In Review" {
+		t.Errorf("ONS-121 after the hand revert = %q, want In Review, never Todo", state)
+	}
+	if q := openRevertQuestion(t, f, "id-121"); q == nil {
+		t.Error("ONS-121 is not parked with a revert question")
 	}
 	if _, found := f.planMerge(t, "id-121"); found {
 		t.Error("ONS-121 keeps its merge record after the revert")
@@ -695,7 +702,8 @@ func TestStoryRevert_HandRevert(t *testing.T) {
 }
 
 // A hand revert by commit of a story merge-and-prove has merged and not
-// yet proven ends its run as reverted, and the next story starts.
+// yet proven ends its run as reverted, and the next story starts; the
+// story waits where it is for a person's answer, never back in Todo.
 func TestStoryRevert_HandRevertInFlight(t *testing.T) {
 	t.Parallel()
 	f := newProveFixture(t)
@@ -705,8 +713,11 @@ func TestStoryRevert_HandRevertInFlight(t *testing.T) {
 	f.forge.merged = []domain.MergedRevert{{Number: 150, Commits: []string{mergeSHA(1)[:10]}}}
 	f.forge.mu.Unlock()
 	f.tick(t, f.t0.Add(config.DefaultRevertScanInterval))
-	if state := f.stories.stateOf("id-1"); state != "Todo" {
-		t.Errorf("ONS-1 = %q, want Todo", state)
+	if state := f.stories.stateOf("id-1"); state != "In Review" {
+		t.Errorf("ONS-1 = %q, want In Review, never Todo", state)
+	}
+	if q := openRevertQuestion(t, f, "id-1"); q == nil {
+		t.Error("ONS-1 is not parked with a revert question")
 	}
 	if snap := f.snapshot(t); snap.InFlight != nil {
 		t.Errorf("in flight = %+v, want none", snap.InFlight)

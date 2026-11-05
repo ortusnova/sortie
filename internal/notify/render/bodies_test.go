@@ -582,6 +582,12 @@ func TestStoryRevertedBody(t *testing.T) {
 	if got != want {
 		t.Errorf("storyRevertedBody(by hand) = %q, want %q", got, want)
 	}
+	got = storyRevertedBody(domain.StoryRevertedFacts{PullRequest: "o/kit#57", RevertPullRequest: "o/kit#65", State: "In Review", Question: "pf-1"})
+	want = "Its merge of o/kit#57 was reverted by o/kit#65, merged on the forge.\n" +
+		"The story is in In Review and is not done; the stories it blocks wait for it again. It waits for a person to answer question pf-1: re-queue, or cancel?"
+	if got != want {
+		t.Errorf("storyRevertedBody(parked) = %q, want %q", got, want)
+	}
 }
 
 func TestLoopSuspectedBody(t *testing.T) {

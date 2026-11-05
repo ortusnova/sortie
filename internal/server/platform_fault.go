@@ -10,16 +10,18 @@ import (
 )
 
 // PlatformFaultDoneFunc marks the person action of the open platform
-// fault faultID done by by and checks the fault again at once. ctx is the
-// request's context.
-type PlatformFaultDoneFunc func(ctx context.Context, faultID, by string) orchestrator.PlatformFaultDoneResult
+// fault faultID done by by, with answer, the choice of a question that
+// asks for one (empty for none), and checks the fault again at once. ctx
+// is the request's context.
+type PlatformFaultDoneFunc func(ctx context.Context, faultID, by, answer string) orchestrator.PlatformFaultDoneResult
 
 // defaultActionDoneBy names who marked a person action done when the
 // request does not.
 const defaultActionDoneBy = "operator"
 
 type platformFaultDoneRequest struct {
-	By string `json:"by"`
+	By     string `json:"by"`
+	Answer string `json:"answer"`
 }
 
 // personActionResponse is what a person does to clear a platform fault,
@@ -29,6 +31,7 @@ type personActionResponse struct {
 	Where  string     `json:"where"`
 	DoneAt *time.Time `json:"done_at"`
 	DoneBy string     `json:"done_by"`
+	Answer string     `json:"answer"`
 }
 
 // platformFaultStoryResponse is one story a platform fault holds.
@@ -98,6 +101,7 @@ func toPlatformFaultResponse(f orchestrator.SnapshotPlatformFault) platformFault
 			Where:  f.Action.Where,
 			DoneAt: faultTimeOrNil(f.ActionDoneAt),
 			DoneBy: f.ActionDoneBy,
+			Answer: f.Answer,
 		}
 	}
 	for _, h := range f.Holds {
@@ -133,7 +137,7 @@ func (s *Server) handlePlatformFaultDone(w http.ResponseWriter, r *http.Request)
 func (s *Server) servePlatformFaultDone(w http.ResponseWriter, r *http.Request) int {
 	var req platformFaultDoneRequest
 	if err := decodeControlBody(r, &req); err != nil {
-		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with an optional by")
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with an optional by and answer")
 		return http.StatusBadRequest
 	}
 	if req.By == "" {
@@ -143,7 +147,7 @@ func (s *Server) servePlatformFaultDone(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, s.logger, http.StatusServiceUnavailable, "orchestrator_unavailable", "platform faults are not available")
 		return http.StatusServiceUnavailable
 	}
-	result := s.platformFaultDoneFn(r.Context(), r.PathValue("id"), req.By)
+	result := s.platformFaultDoneFn(r.Context(), r.PathValue("id"), req.By, req.Answer)
 
 	// The check runs before the answer, so the server's own deadline may
 	// have lapsed by now.
@@ -159,6 +163,9 @@ func (s *Server) servePlatformFaultDone(w http.ResponseWriter, r *http.Request) 
 	case orchestrator.PlatformFaultDoneNotFound:
 		writeErrorJSON(w, s.logger, http.StatusNotFound, "platform_fault_not_found", "no open platform fault has this id")
 		return http.StatusNotFound
+	case orchestrator.PlatformFaultDoneInvalid:
+		writeErrorJSON(w, s.logger, http.StatusBadRequest, "invalid_answer", result.Message)
+		return http.StatusBadRequest
 	default:
 		writeErrorJSON(w, s.logger, http.StatusServiceUnavailable, "orchestrator_unavailable", "the orchestrator did not take the request")
 		return http.StatusServiceUnavailable

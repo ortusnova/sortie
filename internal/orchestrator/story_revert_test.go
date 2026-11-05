@@ -101,8 +101,8 @@ func TestStoryRevert_ScanRunsOffTheLoop(t *testing.T) {
 
 	close(finder.gate)
 	f.o.state.TrackerOpsWg.Wait()
-	if state := f.stories.stateOf("id-121"); state != "Todo" {
-		t.Errorf("ONS-121 after the scan = %q, want Todo", state)
+	if state := f.stories.stateOf("id-121"); state != "In Review" {
+		t.Errorf("ONS-121 after the scan = %q, want In Review", state)
 	}
 	if _, found := f.planMerge(t, "id-121"); found {
 		t.Error("ONS-121 keeps its merge record after the revert")

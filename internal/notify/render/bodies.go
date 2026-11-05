@@ -355,9 +355,17 @@ func storyRevertedBody(f domain.StoryRevertedFacts) string {
 	if f.Reason != "" {
 		lines = append(lines, "Reason: "+f.Reason)
 	}
-	if f.State != "" {
+	switch {
+	case f.Question != "":
+		where := "The story is not done"
+		if f.State != "" {
+			where = "The story is in " + f.State + " and is not done"
+		}
+		lines = append(lines, where+"; the stories it blocks wait for it again. It waits for a person to answer question "+
+			f.Question+": re-queue, or cancel?")
+	case f.State != "":
 		lines = append(lines, "The story is back in "+f.State+" and is not done; the stories it blocks wait for it again.")
-	} else {
+	default:
 		lines = append(lines, "The story is not done; the stories it blocks wait for it again.")
 	}
 	return strings.Join(lines, "\n")

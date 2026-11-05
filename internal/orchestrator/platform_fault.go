@@ -57,6 +57,12 @@ type PlatformFault struct {
 	RaisedBy     string
 	Withdrawn    string
 
+	// Answer is the choice a person gave a question that asks for one:
+	// [RevertAnswerRequeue] or [RevertAnswerCancel] for a
+	// [PlatformFaultClassRevertQuestion]; empty for any other fault and
+	// until a person answers.
+	Answer string
+
 	Holds []PlatformFaultHold
 
 	// checking is set while a check of the fault runs.
@@ -87,6 +93,11 @@ type PlatformFaultCheck struct {
 	// ActionDone that a person marked its action done.
 	PersonAction bool
 	ActionDone   bool
+
+	// Answer is the choice a person gave the question, empty for none,
+	// and ActionDoneBy who marked the action done.
+	Answer       string
+	ActionDoneBy string
 
 	Stories []PlatformFaultHold
 }
@@ -222,6 +233,7 @@ func platformFaultRow(f *PlatformFault, resolvedAt time.Time) persistence.Platfo
 		QuestionKind:   f.QuestionKind,
 		RaisedBy:       f.RaisedBy,
 		Withdrawn:      f.Withdrawn,
+		Answer:         f.Answer,
 		Holds:          make([]persistence.PlatformFaultHold, 0, len(f.Holds)),
 	}
 	if f.Action != nil {
@@ -260,6 +272,7 @@ func PopulatePlatformFaults(state *State, rows []persistence.PlatformFault, log 
 			LastCheckError: row.LastCheckError,
 			QuestionKind:   row.QuestionKind,
 			RaisedBy:       row.RaisedBy,
+			Answer:         row.Answer,
 		}
 		if row.Action != "" {
 			f.Action = &failcause.PersonAction{Action: row.Action, Where: row.ActionWhere}
@@ -283,6 +296,8 @@ func checkOf(f *PlatformFault) PlatformFaultCheck {
 		Step:         f.Step,
 		PersonAction: f.Action != nil,
 		ActionDone:   !f.ActionDoneAt.IsZero(),
+		Answer:       f.Answer,
+		ActionDoneBy: f.ActionDoneBy,
 		Stories:      slices.Clone(f.Holds),
 	}
 }
@@ -307,15 +322,16 @@ func dueFaultChecks(state *State, now time.Time) []PlatformFaultCheck {
 }
 
 // markPlatformFaultActionDone records that by marked the fault's action
-// done at now, persists it, and marks the fault as checking. It returns
-// the check to run, and false when no open fault has the ID or a check of
-// it already runs.
-func markPlatformFaultActionDone(ctx context.Context, state *State, store platformFaultStore, faultID, by string, now time.Time, log *slog.Logger) (PlatformFaultCheck, *PlatformFault, bool) {
+// done at now with answer, the choice of a question that asks for one,
+// persists it, and marks the fault as checking. It returns the check to
+// run, and false when no open fault has the ID or a check of it already
+// runs.
+func markPlatformFaultActionDone(ctx context.Context, state *State, store platformFaultStore, faultID, by, answer string, now time.Time, log *slog.Logger) (PlatformFaultCheck, *PlatformFault, bool) {
 	f := state.PlatformFaults[faultID]
 	if f == nil {
 		return PlatformFaultCheck{}, nil, false
 	}
-	f.ActionDoneAt, f.ActionDoneBy = now.UTC(), by
+	f.ActionDoneAt, f.ActionDoneBy, f.Answer = now.UTC(), by, answer
 	savePlatformFault(ctx, store, f, time.Time{}, log)
 	if f.checking {
 		f.recheck = true
@@ -388,6 +404,7 @@ type SnapshotPlatformFault struct {
 	Checking       bool
 	QuestionKind   string
 	RaisedBy       string
+	Answer         string
 	Holds          []PlatformFaultHold
 }
 
@@ -409,6 +426,7 @@ func snapshotPlatformFault(f *PlatformFault) SnapshotPlatformFault {
 		Checking:       f.checking,
 		QuestionKind:   f.QuestionKind,
 		RaisedBy:       f.RaisedBy,
+		Answer:         f.Answer,
 		Holds:          make([]PlatformFaultHold, len(f.Holds)),
 	}
 	if f.Action != nil {

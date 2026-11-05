@@ -31,6 +31,7 @@ const (
 	SupervisorUnsupported                                // the tracker or forge cannot do it; nothing changed
 	SupervisorUpstreamFailed                             // the tracker or forge call failed
 	SupervisorUnavailable                                // the store, the loop, or an adapter is unavailable; nothing changed
+	SupervisorForbidden                                  // only a person may do it; nothing changed
 )
 
 // SupervisorResult is the answer to a supervisor action. Code names a
@@ -135,6 +136,13 @@ func (s Supervisor) lookupOnLoop(ctx context.Context, identifier string) (superv
 	return issue, SupervisorResult{}, true
 }
 
+// lookupKnown runs lookupSupervised on the event loop, and reports false
+// when the issue is not known or the loop did not take the request.
+func (s Supervisor) lookupKnown(ctx context.Context, identifier string) (supervisedIssue, bool) {
+	issue, _, ok := s.lookupOnLoop(ctx, identifier)
+	return issue, ok
+}
+
 // onLoop runs apply on the event loop, and reports false with the result
 // to answer when it did not run.
 func (s Supervisor) onLoop(ctx context.Context, apply func(loopCtx context.Context)) (SupervisorResult, bool) {
@@ -181,8 +189,14 @@ func parsePullRequest(s string) (pullRequestRef, bool) {
 
 // ReleasePark releases the park of the parked issue named by identifier
 // as a person's release does, so its next run resumes with the park's
-// statement and the comments made since, and queues a poll.
+// statement and the comments made since, and queues a poll. A story an
+// open revert question holds, or a cancelled story, is refused.
 func (s Supervisor) ReleasePark(ctx context.Context, identifier string) SupervisorResult {
+	if issue, known := s.lookupKnown(ctx, identifier); known {
+		if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
+			return r
+		}
+	}
 	var result SupervisorResult
 	if r, ok := s.onLoop(ctx, func(loopCtx context.Context) {
 		issue, known := lookupSupervised(s.o.state, identifier)
@@ -219,6 +233,9 @@ func (s Supervisor) RecordMerge(ctx context.Context, identifier, pullRequest, co
 	}
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
+		return r
+	}
+	if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
 		return r
 	}
 	if issue.watch != nil && (issue.pr.Number != pr.Number || !strings.EqualFold(issue.pr.Owner, pr.Owner) || !strings.EqualFold(issue.pr.Repo, pr.Repo)) {
@@ -281,6 +298,9 @@ func (s Supervisor) FixRun(ctx context.Context, identifier, message, profile str
 		return precondition(issue, "review_reaction_off", "a fix run needs the review reaction configured")
 	}
 	if r, ok := fixRunAllowed(issue); !ok {
+		return r
+	}
+	if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
 		return r
 	}
 	fctx, cancel := context.WithTimeout(ctx, supervisorForgeBound)
@@ -470,6 +490,9 @@ func (s Supervisor) Merge(ctx context.Context, identifier string) SupervisorResu
 	if !ok {
 		return r
 	}
+	if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
+		return r
+	}
 	var open []*HandoffPart
 	if r, ok := s.onLoop(ctx, func(context.Context) { open = openHandoffParts(s.o.state, issue.issueID) }); !ok {
 		return r
@@ -635,6 +658,9 @@ func (s Supervisor) RequestLiveProof(ctx context.Context, identifier, criterion,
 	}
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
+		return r
+	}
+	if r, ok := s.refuseHeldOrCancelled(ctx, issue); !ok {
 		return r
 	}
 	log := logging.WithIssue(s.o.logger, issue.issueID, identifier)

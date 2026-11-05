@@ -115,11 +115,16 @@ func (f *fakeSupervisor) MergeAndProve(_ context.Context, id string) orchestrato
 }
 
 // WithdrawQuestion withdraws pf-q1, refuses pf-agent as a question
-// Sortie or a story's agent raised, and knows no other question.
+// Sortie or a story's agent raised, forbids pf-revert as a revert
+// question only a person answers, and knows no other question.
 func (f *fakeSupervisor) WithdrawQuestion(ctx context.Context, w orchestrator.SupervisorWithdrawal) orchestrator.SupervisorWithdrawResult {
 	f.called("withdraw_question " + w.QuestionID)
 	switch w.QuestionID {
 	case "pf-q1":
+	case "pf-revert":
+		return orchestrator.SupervisorWithdrawResult{SupervisorResult: orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorForbidden, Code: "forbidden", Message: "question pf-revert asks a person re-queue, or cancel?",
+		}}
 	case "pf-agent":
 		return orchestrator.SupervisorWithdrawResult{SupervisorResult: orchestrator.SupervisorResult{
 			Status: orchestrator.SupervisorPrecondition, Code: "not_supervisor_question", Message: "platform fault pf-agent is not a question the supervisor raised",

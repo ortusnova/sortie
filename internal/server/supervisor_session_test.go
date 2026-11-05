@@ -291,6 +291,10 @@ func TestSupervisorQuestion_Withdraw(t *testing.T) {
 	if latest := h.supervisorActions(t)[0]; latest["result"] != "rejected" || !strings.HasPrefix(latest["detail"].(string), "not_supervisor_question") {
 		t.Errorf("record = %v, want the refused withdrawal", latest)
 	}
+	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-revert/withdraw", testSupervisorToken, `{"evidence": "the story was rejected"}`)
+	if status != http.StatusForbidden || body["error"].(map[string]any)["code"] != "forbidden" {
+		t.Errorf("withdrawal of a revert question = %d %v, want 403 forbidden", status, body)
+	}
 	status, body = h.do(t, http.MethodPost, "/api/v1/supervisor/questions/pf-gone/withdraw", testSupervisorToken, `{"evidence": "stale"}`)
 	if status != http.StatusNotFound || body["error"].(map[string]any)["code"] != "question_not_found" {
 		t.Errorf("withdrawal of an unknown question = %d %v, want 404 question_not_found", status, body)

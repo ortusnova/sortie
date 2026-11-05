@@ -90,10 +90,14 @@ func (o *Orchestrator) faultCheck() PlatformFaultChecker {
 }
 
 // runFaultCheck runs check bounded by [platformFaultCheckTimeout] and
-// returns its error.
+// returns its error. A revert question is always checked by
+// [Orchestrator.checkRevertQuestion], which carries out its answer.
 func (o *Orchestrator) runFaultCheck(ctx context.Context, check PlatformFaultCheck) error {
 	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), platformFaultCheckTimeout)
 	defer cancel()
+	if check.Class == PlatformFaultClassRevertQuestion {
+		return o.checkRevertQuestion(checkCtx, check)
+	}
 	return o.faultCheck()(checkCtx, check)
 }
 
@@ -143,34 +147,61 @@ const (
 	PlatformFaultDoneNotFound                                     // no open fault has the ID
 	PlatformFaultDoneDraining                                     // shutdown began before the loop took the request
 	PlatformFaultDoneWithdrawn                                    // the caller's context ended before the loop took the request
+	PlatformFaultDoneInvalid                                      // the answer does not fit the fault; nothing changed
 )
 
 // PlatformFaultDoneResult is the answer to a request to mark a person
 // action done. Fault is the fault after the check; Resolved reports that
-// the check passed and released its stories.
+// the check passed and released its stories. Message says why a
+// [PlatformFaultDoneInvalid] request was refused.
 type PlatformFaultDoneResult struct {
 	Status   PlatformFaultDoneStatus
 	Resolved bool
 	Fault    SnapshotPlatformFault
+	Message  string
 }
 
 // PlatformFaultDoneFunc returns a function that marks the person action of
-// the open fault faultID done by by and checks the fault again at once. It
-// returns once the check result is applied, ctx ended before the loop took
-// the request, or shutdown began. Safe for concurrent use.
+// the open fault faultID done by by and checks the fault again at once, as
+// [Orchestrator.PlatformFaultAnswerFunc] does with no answer. Safe for
+// concurrent use.
 func (o *Orchestrator) PlatformFaultDoneFunc() func(ctx context.Context, faultID, by string) PlatformFaultDoneResult {
+	answer := o.PlatformFaultAnswerFunc()
 	return func(ctx context.Context, faultID, by string) PlatformFaultDoneResult {
+		return answer(ctx, faultID, by, "")
+	}
+}
+
+// PlatformFaultAnswerFunc returns a function that marks the person action
+// of the open fault faultID done by by, with answer, the choice of a
+// question that asks for one, and checks the fault again at once. A
+// revert question takes only [RevertAnswerRequeue] or
+// [RevertAnswerCancel], and any other fault no answer: a request that
+// does not fit is refused with [PlatformFaultDoneInvalid] and changes
+// nothing. It returns once the check result is applied, ctx ended before
+// the loop took the request, or shutdown began. Safe for concurrent use.
+func (o *Orchestrator) PlatformFaultAnswerFunc() func(ctx context.Context, faultID, by, answer string) PlatformFaultDoneResult {
+	return func(ctx context.Context, faultID, by, answer string) PlatformFaultDoneResult {
 		var (
-			check  PlatformFaultCheck
-			fault  *PlatformFault
-			starts bool
+			check   PlatformFaultCheck
+			fault   *PlatformFault
+			starts  bool
+			refusal string
 		)
 		switch o.runOnLoop(ctx, func(loopCtx context.Context) {
-			check, fault, starts = markPlatformFaultActionDone(loopCtx, o.state, o.store, faultID, by, time.Now(), o.logger)
+			if f := o.state.PlatformFaults[faultID]; f != nil {
+				var ok bool
+				if answer, refusal, ok = answerFits(f, answer); !ok {
+					fault = f
+					return
+				}
+			}
+			check, fault, starts = markPlatformFaultActionDone(loopCtx, o.state, o.store, faultID, by, answer, time.Now(), o.logger)
 			if fault != nil {
 				o.logger.Info("platform fault action marked done",
 					slog.String("platform_fault_id", faultID),
 					slog.String("by", by),
+					slog.String("answer", answer),
 				)
 				o.notifyObservers()
 			}
@@ -179,6 +210,9 @@ func (o *Orchestrator) PlatformFaultDoneFunc() func(ctx context.Context, faultID
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneDraining}
 		case loopWithdrawn:
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneWithdrawn}
+		}
+		if refusal != "" {
+			return PlatformFaultDoneResult{Status: PlatformFaultDoneInvalid, Message: refusal}
 		}
 		if fault == nil {
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneNotFound}

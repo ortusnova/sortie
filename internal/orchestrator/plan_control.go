@@ -158,6 +158,9 @@ func applyPullBack(ctx context.Context, state *State, t planTarget, p planContro
 	if workerHolds(state, t.IssueID) {
 		return ControlReply{Outcome: ControlAlreadyClaimed, Message: fmt.Sprintf("a worker already claimed %s", t.Identifier)}
 	}
+	if p.Cancel != "" && strings.EqualFold(t.State, p.Cancel) {
+		return ControlReply{Outcome: ControlAlreadyTerminal, Message: fmt.Sprintf("%s is %s (%q): Sortie does not move a cancelled story", t.Identifier, ReasonCancelled, t.State)}
+	}
 	if !strings.EqualFold(t.State, p.Release) {
 		return ControlReply{Outcome: ControlNotReleased, Message: fmt.Sprintf("%s is in %q, not in the release state %q", t.Identifier, t.State, p.Release)}
 	}
