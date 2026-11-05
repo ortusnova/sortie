@@ -181,6 +181,7 @@ func newSupHarness(t *testing.T, mutate func(cfg *config.ServiceConfig)) *supHar
 	cfg.Supervisor = config.SupervisorConfig{
 		Agent: testSupervisorKind, Prompt: "supervisor.md",
 		SweepIntervalMS: int(time.Hour / time.Millisecond), MaxSessionsPerDay: 10, MaxTokensPerDay: 1_000_000,
+		QuietSweepMS: int(2 * time.Hour / time.Millisecond), NoopLimit: 3,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -438,7 +439,7 @@ func TestSupervisor_StartsOnAStalledReaction(t *testing.T) {
 }
 
 // A poll that leaves a slot free and dispatches nothing while stories are
-// held starts a session, once per set of held stories.
+// held starts a session; the next poll on the same state digest starts none.
 func TestSupervisor_StartsOnAFreeSlotWithStoriesHeld(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, nil)
@@ -752,7 +753,7 @@ func TestScenario_AMergedStoryStaysParked(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, func(cfg *config.ServiceConfig) {
 		cfg.Tracker.TerminalStates = []string{"Done"}
-		cfg.Supervisor.SweepIntervalMS = 1
+		cfg.Supervisor.SweepIntervalMS, cfg.Supervisor.QuietSweepMS = 1, 1
 	})
 	h.params = func(p *OrchestratorParams) {
 		p.MergeCompletionConfig = MergeCompletionReactionConfig{TargetState: "Done"}
@@ -855,7 +856,7 @@ func TestScenario_AQuestionWithAFalsePremise(t *testing.T) {
 // which merges it, and the merge is recorded.
 func TestScenario_APullRequestNobodyIsMoving(t *testing.T) {
 	t.Parallel()
-	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Supervisor.SweepIntervalMS = 1 })
+	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Supervisor.SweepIntervalMS, cfg.Supervisor.QuietSweepMS = 1, 1 })
 	var once sync.Once
 	merged := make(chan SupervisorResult, 1)
 	h.sup.setTurn(func(ctx context.Context, prompt string, _ func(domain.AgentEvent)) (domain.TurnResult, error) {
@@ -939,6 +940,7 @@ func TestScenario_ASupervisorQuestionForATokenScope(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, nil)
 	question := SupervisorQuestion{
+		Kind:    "credential",
 		Action:  `Give taichi's GitHub token "Workflows: Read and write"`,
 		Where:   "GitHub, Settings, Developer settings, Personal access tokens",
 		Stories: []string{"ONS-49", "ONS-50"},
@@ -1008,13 +1010,15 @@ func TestSupervisor_AskPersonRefusals(t *testing.T) {
 	h.run()
 	h.park("id-7", "ONS-7")
 	sup := h.o.Supervisor()
-	q := SupervisorQuestion{Action: "Approve the spec", Where: "the workbench", Stories: []string{"ONS-7"}, Checked: "the spec has no approver"}
+	q := SupervisorQuestion{Kind: "approval", Action: "Approve the spec", Where: "the workbench", Stories: []string{"ONS-7"}, Checked: "the spec has no approver"}
 
 	for name, change := range map[string]func(q *SupervisorQuestion){
 		"no action":       func(q *SupervisorQuestion) { q.Action = " " },
 		"no place":        func(q *SupervisorQuestion) { q.Where = "" },
 		"nothing checked": func(q *SupervisorQuestion) { q.Checked = "" },
 		"no story":        func(q *SupervisorQuestion) { q.Stories = nil },
+		"no kind":         func(q *SupervisorQuestion) { q.Kind = "" },
+		"an unknown kind": func(q *SupervisorQuestion) { q.Kind = "chore" },
 	} {
 		bad := q
 		change(&bad)

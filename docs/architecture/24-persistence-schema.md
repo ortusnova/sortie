@@ -472,6 +472,7 @@ One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budge
 | `detail`           | TEXT NOT NULL       | The error code and message answered, masked; empty on success                          |
 | `pull_request`     | TEXT NOT NULL       | `owner/repo#N` the action named; may be empty                                          |
 | `merge_commit`     | TEXT NOT NULL       | The merge commit the forge gave; may be empty                                          |
+| `profile`          | TEXT NOT NULL       | The job profile a fix run or live-proof request named; empty for none (migration 1019) |
 | `acted_at`         | TEXT NOT NULL       | RFC 3339 timestamp with nanoseconds, in UTC; indexed                                   |
 
 One row per request the supervisor token makes to a control route, written by the HTTP server after it answers; a failed write is logged and the answer stands. Rows are never deleted. `GET /api/v1/state` reads the 50 newest by `id`.
@@ -493,7 +494,10 @@ One row per request the supervisor token makes to a control route, written by th
 | `action_done_by`   | TEXT    | Who marked it done, as the request named them |
 | `last_check_at`    | TEXT    | RFC 3339 UTC of the latest check; empty before the first |
 | `last_check_error` | TEXT    | The error of the latest check, credentials masked; empty when it passed or none ran |
-| `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed; empty while the fault is open. A resolved row is kept and never loaded again |
+| `resolved_at`      | TEXT    | RFC 3339 UTC of the check that passed or the withdrawal; empty while the fault is open. A resolved row is kept and never loaded again |
+| `question_kind`    | TEXT    | For a `supervisor_question`, its action kind: `credential`, `key`, `approval`, `decision`, `host_action`, or `live_proof`; empty otherwise and for a question raised before migration 1017 |
+| `raised_by`        | TEXT    | For a `supervisor_question`, who raised it: `supervisor` (the supervisor token) or `operator` (the control token); empty otherwise. Migration 1017 sets `supervisor` on the questions raised before it |
+| `withdrawn`        | TEXT    | The evidence, masked, on which the supervisor withdrew its question; empty unless it did |
 
 **`platform_fault_holds`**: the stories an open platform fault holds out of dispatch (migration 1009)
 
@@ -505,7 +509,20 @@ One row per request the supervisor token makes to a control route, written by th
 | `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
 | `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
 
-Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
+Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked, followed by what each question that joined it checked and its evidence. Columns `question_kind`, `raised_by`, and `withdrawn` are added by migration 1017. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
+
+**`supervisor_issues`**: the issues the supervisor filed (migration 1017)
+
+| Column       | Type             | Notes |
+| ------------ | ---------------- | ----- |
+| `issue_id`   | TEXT PRIMARY KEY | Tracker-internal ID of the filed issue |
+| `identifier` | TEXT NOT NULL    | Its human-readable key |
+| `kind`       | TEXT NOT NULL    | `platform_defect` or `follow_up` |
+| `stories`    | TEXT NOT NULL    | The identifiers of the stories it concerns, sorted and comma-separated; empty for none |
+| `signature`  | TEXT NOT NULL    | The fault signature it names, folded to lower case and single spaces; empty for none |
+| `filed_at`   | TEXT NOT NULL    | RFC 3339 timestamp with nanoseconds, in UTC |
+
+One row per issue `POST /api/v1/issues` created. A later filing reads every row, and joins, as a comment, the newest whose kind and stories, or whose signature, match and that the tracker still shows open. Rows are never deleted: a closed issue's row matches nothing once the tracker shows it in a terminal state.
 
 **`standing_holds`**: leases on issues that are not running (migration 1010)
 
@@ -537,8 +554,10 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 | `outcome`        | TEXT NOT NULL       | `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled`; empty with `ended_at` |
 | `error`          | TEXT NOT NULL       | Why the session ended other than completed, masked; empty otherwise |
 | `tokens`         | INTEGER NOT NULL    | Tokens less cache reads the session spent |
+| `digest`         | TEXT NOT NULL       | The state digest the session started on (migration 1018); `''` for a row written before |
+| `actions`        | INTEGER NOT NULL    | The `supervisor_actions` rows with `result` `done` stored while the session ran (migration 1018); `-1` while it runs, when the count could not be read, and for a row written before |
 
-The event loop writes a row when a session starts, and the session's goroutine records its end. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the newest row, which `GET /api/v1/state` serves as `last_session` until a session ends. Rows are never deleted.
+The event loop writes a row when a session starts, and the session's goroutine records its end and the actions it took, counted as the `done` rows of `supervisor_actions` with an `id` above the newest one when the session started. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the 64 newest rows: the newest is the last session, whose `digest` the next trigger is compared with and which `GET /api/v1/state` serves as `last_session` until a session ends, and all of them rebuild each trigger kind's count of consecutive sessions that took no action on one digest, so a suspended kind stays suspended. Rows are never deleted.
 
 **`handoff_parts`**: the parts of a story a session could not do, from `.sortie/handoff.json` (Section 21.5) (migration 1015)
 

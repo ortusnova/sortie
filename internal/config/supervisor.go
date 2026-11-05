@@ -18,6 +18,15 @@ const (
 	// DefaultSupervisorMaxTokensPerDay is the tokens, less cache reads,
 	// the supervisor sessions of one UTC day may spend.
 	DefaultSupervisorMaxTokensPerDay = 2_000_000
+
+	// DefaultSupervisorQuietSweepMS is how often a sweep starts a session
+	// while the state digest has not changed: two hours.
+	DefaultSupervisorQuietSweepMS = 2 * 60 * 60 * 1000
+
+	// DefaultSupervisorNoopLimit is the consecutive sessions of one trigger
+	// kind that may take no action on the same state digest before that
+	// kind is suspended.
+	DefaultSupervisorNoopLimit = 3
 )
 
 // SupervisorConfig is the parsed supervisor section: the agent that
@@ -42,6 +51,15 @@ type SupervisorConfig struct {
 	// MaxTokensPerDay bounds the tokens, less cache reads, the
 	// supervisor sessions of one UTC day spend.
 	MaxTokensPerDay int
+
+	// QuietSweepMS is how often a sweep starts a session while the state
+	// digest is the one the last session started on.
+	QuietSweepMS int
+
+	// NoopLimit is the consecutive sessions of one trigger kind that may
+	// take no action on the same state digest before that kind starts no
+	// session until the digest changes.
+	NoopLimit int
 }
 
 // Enabled reports whether the workflow configures a supervisor.
@@ -86,6 +104,8 @@ func buildSupervisorConfig(raw map[string]any) (SupervisorConfig, error) {
 		SweepIntervalMS:   DefaultSupervisorSweepIntervalMS,
 		MaxSessionsPerDay: DefaultSupervisorMaxSessionsPerDay,
 		MaxTokensPerDay:   DefaultSupervisorMaxTokensPerDay,
+		QuietSweepMS:      DefaultSupervisorQuietSweepMS,
+		NoopLimit:         DefaultSupervisorNoopLimit,
 	}
 	for _, f := range []struct {
 		key  string
@@ -94,6 +114,8 @@ func buildSupervisorConfig(raw map[string]any) (SupervisorConfig, error) {
 		{"sweep_interval_ms", &cfg.SweepIntervalMS},
 		{"max_sessions_per_day", &cfg.MaxSessionsPerDay},
 		{"max_tokens_per_day", &cfg.MaxTokensPerDay},
+		{"quiet_sweep_ms", &cfg.QuietSweepMS},
+		{"noop_limit", &cfg.NoopLimit},
 	} {
 		if v, exists := m[f.key]; !exists || v == nil {
 			continue

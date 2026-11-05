@@ -635,6 +635,8 @@ export interface PlatformFaultResponse {
   last_check_error: string;
   next_check_at: string;
   checking: boolean;
+  question_kind: string | null;
+  raised_by: string | null;
 }
 
 export interface PlatformFaultStoryResponse {
@@ -1349,8 +1351,29 @@ export interface SupervisorBudgetResponse {
   tokens_limit: number;
 }
 
+export interface SupervisorDigestResponse {
+  digest: string;
+  session_id: number | null;
+  session_started_at: string;
+  trigger_kind: string;
+}
+
+export interface SupervisorIssueResponse {
+  action: string;
+  issue_identifier: string;
+  issue_id: string;
+  existing: boolean;
+  pull_request: string | null;
+  merge_commit: string | null;
+}
+
 export interface SupervisorQuestionResponse {
   action: string;
+  existing: boolean;
+  platform_fault: PlatformFaultResponse;
+}
+
+export interface SupervisorReplacementResponse {
   existing: boolean;
   platform_fault: PlatformFaultResponse;
 }
@@ -1366,6 +1389,8 @@ export interface SupervisorResponse {
   pending_triggers: SupervisorTriggerResponse[] | null;
   budget: SupervisorBudgetResponse;
   next_sweep_at: string | null;
+  last_digest: SupervisorDigestResponse | null;
+  suspended_triggers: SupervisorSuspensionResponse[] | null;
 }
 
 export interface SupervisorResultResponse {
@@ -1377,6 +1402,7 @@ export interface SupervisorResultResponse {
 }
 
 export interface SupervisorSessionResponse {
+  id: number | null;
   started_at: string;
   ended_at: string | null;
   outcome: string | null;
@@ -1384,6 +1410,16 @@ export interface SupervisorSessionResponse {
   tokens: number;
   trigger_count: number;
   triggers: SupervisorTriggerResponse[] | null;
+  digest: string | null;
+  actions: number | null;
+}
+
+export interface SupervisorSuspensionResponse {
+  kind: string;
+  digest: string;
+  sessions: number;
+  since: string;
+  suspended_at: string;
 }
 
 export interface SupervisorTriggerResponse {
@@ -1391,6 +1427,12 @@ export interface SupervisorTriggerResponse {
   issue_identifier: string | null;
   detail: string;
   at: string;
+}
+
+export interface SupervisorWithdrawResponse {
+  action: string;
+  platform_fault: PlatformFaultResponse;
+  replacement: SupervisorReplacementResponse | null;
 }
 
 export interface TableInForceResponse {

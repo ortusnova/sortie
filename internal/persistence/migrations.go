@@ -207,8 +207,14 @@ var migration1015SQL string
 //go:embed sql/1016_park_record_release.sql
 var migration1016SQL string
 
-//go:embed sql/1017_supervisor_action_profile.sql
+//go:embed sql/1017_supervisor_dedup.sql
 var migration1017SQL string
+
+//go:embed sql/1018_supervisor_session_digest.sql
+var migration1018SQL string
+
+//go:embed sql/1019_supervisor_action_profile.sql
+var migration1019SQL string
 
 // migrations lists upstream's migrations, numbered from 1 in upstream's
 // sequence, then the fork's, numbered from 1001. Upstream merges add lower
@@ -283,5 +289,7 @@ var migrations = []Migration{
 	{Version: 1014, Description: "criteria_verdicts: the latest review verdict of each story", SQL: migration1014SQL},
 	{Version: 1015, Description: "handoff_parts: the parts of a story a session could not do", SQL: migration1015SQL},
 	{Version: 1016, Description: "park_record_releases: a park a pull request record released", SQL: migration1016SQL},
-	{Version: 1017, Description: "profile column on supervisor_actions", SQL: migration1017SQL},
+	{Version: 1017, Description: "supervisor question kinds and withdrawal, and supervisor_issues", SQL: migration1017SQL},
+	{Version: 1018, Description: "digest and actions columns on supervisor_sessions", SQL: migration1018SQL},
+	{Version: 1019, Description: "profile column on supervisor_actions", SQL: migration1019SQL},
 }

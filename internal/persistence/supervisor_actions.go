@@ -95,3 +95,24 @@ func (s *Store) RecentSupervisorActions(ctx context.Context, limit int) ([]Super
 	}
 	return out, nil
 }
+
+// LastSupervisorActionID returns the id of the newest supervisor action,
+// 0 when there is none. Actions stored later have greater ids.
+func (s *Store) LastSupervisorActionID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM supervisor_actions`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("query last supervisor action: %w", err)
+	}
+	return id, nil
+}
+
+// SupervisorActionsDoneAfter counts the supervisor actions Sortie took,
+// result done, stored after the action with id afterID.
+func (s *Store) SupervisorActionsDoneAfter(ctx context.Context, afterID int64) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM supervisor_actions WHERE id > ? AND result = ?`,
+		afterID, SupervisorDone).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count supervisor actions: %w", err)
+	}
+	return n, nil
+}

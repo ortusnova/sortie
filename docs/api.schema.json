@@ -2892,6 +2892,26 @@
             }
           ]
         },
+        "question_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raised_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "recorded_at": {
           "format": "date-time",
           "type": "string"
@@ -2929,7 +2949,9 @@
         "last_check_at",
         "last_check_error",
         "next_check_at",
-        "checking"
+        "checking",
+        "question_kind",
+        "raised_by"
       ],
       "type": "object"
     },
@@ -6563,6 +6585,82 @@
       ],
       "type": "object"
     },
+    "SupervisorDigestResponse": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "trigger_kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "session_id",
+        "session_started_at",
+        "trigger_kind"
+      ],
+      "type": "object"
+    },
+    "SupervisorIssueResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "existing": {
+          "type": "boolean"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "type": "string"
+        },
+        "merge_commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "issue_identifier",
+        "issue_id",
+        "existing",
+        "pull_request",
+        "merge_commit"
+      ],
+      "type": "object"
+    },
     "SupervisorQuestionResponse": {
       "properties": {
         "action": {
@@ -6582,6 +6680,21 @@
       ],
       "type": "object"
     },
+    "SupervisorReplacementResponse": {
+      "properties": {
+        "existing": {
+          "type": "boolean"
+        },
+        "platform_fault": {
+          "$ref": "#/$defs/PlatformFaultResponse"
+        }
+      },
+      "required": [
+        "existing",
+        "platform_fault"
+      ],
+      "type": "object"
+    },
     "SupervisorResponse": {
       "properties": {
         "agent": {
@@ -6589,6 +6702,16 @@
         },
         "budget": {
           "$ref": "#/$defs/SupervisorBudgetResponse"
+        },
+        "last_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorDigestResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "last_session": {
           "anyOf": [
@@ -6657,6 +6780,19 @@
         "status": {
           "type": "string"
         },
+        "suspended_triggers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorSuspensionResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "unavailable": {
           "anyOf": [
             {
@@ -6678,7 +6814,9 @@
         "last_trigger",
         "pending_triggers",
         "budget",
-        "next_sweep_at"
+        "next_sweep_at",
+        "last_digest",
+        "suspended_triggers"
       ],
       "type": "object"
     },
@@ -6725,6 +6863,26 @@
     },
     "SupervisorSessionResponse": {
       "properties": {
+        "actions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "ended_at": {
           "anyOf": [
             {
@@ -6740,6 +6898,16 @@
           "anyOf": [
             {
               "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
             },
             {
               "type": "null"
@@ -6781,13 +6949,45 @@
         }
       },
       "required": [
+        "id",
         "started_at",
         "ended_at",
         "outcome",
         "error",
         "tokens",
         "trigger_count",
-        "triggers"
+        "triggers",
+        "digest",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "SupervisorSuspensionResponse": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "integer"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "suspended_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "digest",
+        "sessions",
+        "since",
+        "suspended_at"
       ],
       "type": "object"
     },
@@ -6819,6 +7019,32 @@
         "issue_identifier",
         "detail",
         "at"
+      ],
+      "type": "object"
+    },
+    "SupervisorWithdrawResponse": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "platform_fault": {
+          "$ref": "#/$defs/PlatformFaultResponse"
+        },
+        "replacement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorReplacementResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "platform_fault",
+        "replacement"
       ],
       "type": "object"
     },

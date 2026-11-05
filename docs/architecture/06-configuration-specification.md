@@ -271,5 +271,7 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `supervisor.sweep_interval_ms`: positive integer, default `1800000`
 - `supervisor.max_sessions_per_day`: positive integer, default `48`; sessions per UTC day
 - `supervisor.max_tokens_per_day`: positive integer, default `2000000`; tokens less cache reads per UTC day; a session that reaches what is left is stopped
+- `supervisor.quiet_sweep_ms`: positive integer, default `7200000`; how often a sweep starts a session while the state digest is unchanged
+- `supervisor.noop_limit`: positive integer, default `3`; the consecutive sessions of one trigger kind that may take no action on one state digest before that kind starts no session until the digest changes
 - `health.deploy_state`: optional absolute path after `~` and `$VAR` expansion; the deploy state file a deploy kit writes, read by each health check
 - `health.credentials[]`: optional list of `{name, env, expires_command, login}`; `name` required, `[A-Za-z0-9_-]+`, unique; at least one of `env` (a variable of Sortie's environment, checked set, its JSON Web Token `exp` read when there is no `expires_command`) and `expires_command` (a non-empty shell command printing when the credential expires, RFC 3339 or Unix seconds or milliseconds, run by each health check); `login` optional non-empty string naming the login that renews the credential in the health check's person action

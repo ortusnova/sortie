@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,18 +51,55 @@ func (f *supervisorForge) MarkPullRequestDraft(context.Context, int, string, str
 	return nil
 }
 
-// supervisorTracker is a fake tracker that reads an issue's labels and
-// creates issues.
+// supervisorTracker is a fake tracker that reads an issue's labels,
+// creates issues, numbered from ONS-200, in the Backlog state, and keeps
+// the comments on them.
 type supervisorTracker struct {
 	labelTracker
-	created []domain.NewIssue
+	mu       sync.Mutex
+	created  []domain.NewIssue
+	states   map[string]string   // by issue ID
+	comments map[string][]string // by issue ID
 }
 
 var _ domain.IssueCreator = (*supervisorTracker)(nil)
 
 func (s *supervisorTracker) CreateIssue(_ context.Context, issue domain.NewIssue) (domain.CreatedIssue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.created)
 	s.created = append(s.created, issue)
-	return domain.CreatedIssue{ID: "new-id", Identifier: "ONS-200"}, nil
+	id := "new-id"
+	if n > 0 {
+		id += "-" + strconv.Itoa(n)
+	}
+	if s.states == nil {
+		s.states = map[string]string{}
+	}
+	s.states[id] = "Backlog"
+	return domain.CreatedIssue{ID: id, Identifier: "ONS-" + strconv.Itoa(200+n)}, nil
+}
+
+func (s *supervisorTracker) FetchIssueStatesByIDs(_ context.Context, ids []string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]string{}
+	for _, id := range ids {
+		if st, ok := s.states[id]; ok {
+			out[id] = st
+		}
+	}
+	return out, nil
+}
+
+func (s *supervisorTracker) CommentIssue(_ context.Context, id, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.comments == nil {
+		s.comments = map[string][]string{}
+	}
+	s.comments[id] = append(s.comments[id], text)
+	return nil
 }
 
 // supervisorHarness is an orchestrator whose event loop only runs the
@@ -338,9 +377,10 @@ func TestSupervisor_MarkDraft(t *testing.T) {
 		t.Fatalf("draft = %+v with %d drafts, want done once", got, h.forge.drafts)
 	}
 
-	h = newSupervisorHarness(t, stateWithParked("id-13", "ONS-13"))
-	if got := h.o.Supervisor().MarkDraft(t.Context(), "ONS-13"); got.Code != "no_pull_request" {
-		t.Errorf("draft without a pull request = %+v, want no_pull_request", got)
+	h = parkedStoryHarness(t, supervisorFinder{})
+	if got := h.o.Supervisor().MarkDraft(t.Context(), "ONS-39"); got.Code != "no_pull_request" ||
+		!strings.Contains(got.Message, "sortie/ONS-39") || !strings.Contains(got.Message, "o/homelab") || h.forge.drafts != 0 {
+		t.Errorf("draft without a pull request = %+v, want no_pull_request naming the branch and repository", got)
 	}
 	h = newSupervisorHarness(t, stateWithReviewReaction(t, "id-14", 52))
 	h.o.prDrafter = nil
@@ -362,8 +402,12 @@ func TestSupervisor_FixRunCarriesTheMessage(t *testing.T) {
 		t.Fatalf("retry = %+v, want a review fix run", retry)
 	}
 	comments, _ := retry.ContinuationContext[reviewCommentsKey].([]map[string]any)
-	if len(comments) != 1 || comments[0]["body"] != "The worker column is missing." || comments[0]["reviewer"] != "supervisor" {
-		t.Errorf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
+	if len(comments) != 1 || comments[0]["reviewer"] != "supervisor" {
+		t.Fatalf("review_comments = %#v, want the supervisor's message", retry.ContinuationContext[reviewCommentsKey])
+	}
+	body, _ := comments[0]["body"].(string)
+	if !strings.Contains(body, "owner/repo#61") || !strings.HasSuffix(body, "\n\nThe worker column is missing.") {
+		t.Errorf("request body = %q, want the pull request and the message", body)
 	}
 	if again := h.o.Supervisor().FixRun(t.Context(), "id-15-ident", "again", ""); again.Status != SupervisorPrecondition {
 		t.Errorf("second fix run = %+v, want refused", again)
@@ -384,7 +428,7 @@ func onLoop(t *testing.T, o *Orchestrator, read func()) {
 func TestSupervisor_FileIssueWaitsInTheBacklog(t *testing.T) {
 	t.Parallel()
 	h := newSupervisorHarness(t, NewState(5000, 4, 0, nil, AgentTotals{}))
-	got := h.o.Supervisor().FileIssue(t.Context(), "Flaky seed step", "Seen on ONS-7.")
+	got := h.o.Supervisor().FileIssue(t.Context(), SupervisorIssue{Title: "Flaky seed step", Body: "Seen on ONS-7.", Kind: "platform_defect", Stories: []string{"ONS-7"}})
 	if got.Status != SupervisorDone || got.Identifier != "ONS-200" {
 		t.Fatalf("file = %+v, want ONS-200", got)
 	}
@@ -395,8 +439,15 @@ func TestSupervisor_FileIssueWaitsInTheBacklog(t *testing.T) {
 	if c.Title != "Flaky seed step" || c.State != "Backlog" || c.Kind != domain.IssueKindStory || c.PlanKey == "" {
 		t.Errorf("created = %+v, want a story in Backlog with a plan key", c)
 	}
-	if blank := h.o.Supervisor().FileIssue(t.Context(), " ", ""); blank.Code != "invalid_request" {
-		t.Errorf("file without a title = %+v, want invalid_request", blank)
+	for name, bad := range map[string]SupervisorIssue{
+		"no title":                  {Title: " ", Kind: "follow_up", Stories: []string{"ONS-7"}},
+		"no kind":                   {Title: "t", Stories: []string{"ONS-7"}},
+		"an unknown kind":           {Title: "t", Kind: "chore", Stories: []string{"ONS-7"}},
+		"no story and no signature": {Title: "t", Kind: "follow_up", Stories: []string{" "}},
+	} {
+		if got := h.o.Supervisor().FileIssue(t.Context(), bad); got.Code != "invalid_request" {
+			t.Errorf("file with %s = %+v, want invalid_request", name, got)
+		}
 	}
 }
 
@@ -427,6 +478,14 @@ func parkedStoryHarness(t *testing.T, finder supervisorFinder) *supervisorHarnes
 	state := stateWithParked("id-39", "ONS-39")
 	park := state.Parked["id-39"]
 	park.RuleName, park.AgentKind, park.TemplateID = "review", "agent-client-protocol", "review-template"
+	return routedStoryHarness(t, state, finder)
+}
+
+// routedStoryHarness is a harness over state whose stories route by their
+// label to the homelab repository, with finder as the forge's open pull
+// requests.
+func routedStoryHarness(t *testing.T, state *State, finder supervisorFinder) *supervisorHarness {
+	t.Helper()
 	h := newSupervisorHarness(t, state)
 	cfg := gateConfig()
 	repos := []config.Repository{
