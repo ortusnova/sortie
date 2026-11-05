@@ -531,7 +531,10 @@ func TestScenario_BlockedStoriesAndRunsThatComeAndGo(t *testing.T) {
 	h := newSupHarness(t, func(cfg *config.ServiceConfig) { cfg.Agent.MaxConcurrentAgents = 8 })
 	h.run()
 
-	start := time.Now()
+	// The replay spans seven hours within one UTC day, so the day's
+	// session budget never resets in the middle of it; the day is the next
+	// one, so no pass comes before the harness's own start.
+	start := utcDay(time.Now()).Add(25 * time.Hour)
 	blockers := []string{"id-b1", "id-b2", "id-b3", "id-b4"}
 	h.onLoop(func(context.Context) {
 		s := h.o.state
