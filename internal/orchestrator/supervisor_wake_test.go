@@ -549,13 +549,17 @@ func TestScenario_BlockedStoriesAndRunsThatComeAndGo(t *testing.T) {
 	})
 
 	// sessions waits until no session runs and returns the sessions started.
+	// It counts them at the agent: the replay crosses a UTC midnight when
+	// the test starts late in the day, and the day's budget count restarts
+	// there.
 	sessions := func() int {
 		t.Helper()
 		var n int
 		waittest.Until(t, func() error {
 			var running bool
-			h.onLoop(func(context.Context) { running, n = h.o.state.supervisor.run != nil, h.o.state.supervisor.sessionsUsed })
-			if running || h.sup.sessions() != n {
+			h.onLoop(func(context.Context) { running = h.o.state.supervisor.run != nil })
+			n = h.sup.sessions()
+			if running {
 				return fmt.Errorf("a session of %d runs", n)
 			}
 			return nil
