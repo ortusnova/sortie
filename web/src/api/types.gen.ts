@@ -1338,6 +1338,7 @@ export interface SupervisorActionResponse {
   detail: string | null;
   pull_request: string | null;
   merge_commit: string | null;
+  profile: string | null;
   at: string;
 }
 

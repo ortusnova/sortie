@@ -64,9 +64,17 @@ func (f *fakeSupervisor) RecordMerge(_ context.Context, id, pr, commit string) o
 	return r
 }
 
-func (f *fakeSupervisor) FixRun(_ context.Context, id, message string) orchestrator.SupervisorResult {
-	f.called("fix_run " + message)
+func (f *fakeSupervisor) FixRun(_ context.Context, id, message, profile string) orchestrator.SupervisorResult {
+	f.called("fix_run " + message + withProfile(profile))
 	return f.result(id)
+}
+
+// withProfile is how a call names its job profile: nothing for none.
+func withProfile(profile string) string {
+	if profile == "" {
+		return ""
+	}
+	return " profile=" + profile
 }
 
 func (f *fakeSupervisor) MarkDraft(_ context.Context, id string) orchestrator.SupervisorResult {
@@ -92,8 +100,8 @@ func (f *fakeSupervisor) FileIssue(_ context.Context, issue orchestrator.Supervi
 	}
 }
 
-func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion string) orchestrator.SupervisorResult {
-	f.called("live_proof " + criterion)
+func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion, profile string) orchestrator.SupervisorResult {
+	f.called("live_proof " + criterion + withProfile(profile))
 	return f.result(id)
 }
 
@@ -461,5 +469,40 @@ func TestSupervisor_SessionCap(t *testing.T) {
 	}
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].Cap != 0 || grants[0].By != "operator" {
 		t.Errorf("operator grant = %+v, want uncapped", grants)
+	}
+}
+
+// A live-proof request and a fix run may name the job profile their job
+// runs with: Sortie passes it on, and records it with the action, so
+// whoever starts the job reads it from the state.
+func TestSupervisor_LiveProofNamesItsJobProfile(t *testing.T) {
+	t.Parallel()
+	h := newSupervisorHarness(t, 4)
+
+	if status, body := h.do(t, http.MethodPost, "/api/v1/ONS-7/live-proof", testSupervisorToken,
+		`{"evidence": "the proof boots a smolvm machine", "profile": "nested"}`); status != http.StatusOK {
+		t.Fatalf("live proof = %d %v, want 200", status, body)
+	}
+	if calls := h.sup.callsMade(); calls[len(calls)-1] != "live_proof the proof boots a smolvm machine profile=nested" {
+		t.Errorf("calls = %v, want the live proof with its profile last", calls)
+	}
+	latest := h.supervisorActions(t)[0]
+	if latest["action"] != "live_proof" || latest["profile"] != "nested" {
+		t.Errorf("record = %v, want the live proof with profile nested", latest)
+	}
+
+	if status, body := h.do(t, http.MethodPost, "/api/v1/ONS-7/fix", testControlToken,
+		`{"message": "<!-- live-proof -->\nprove it", "profile": " nested "}`); status != http.StatusOK {
+		t.Fatalf("fix run = %d %v, want 200", status, body)
+	}
+	if calls := h.sup.callsMade(); calls[len(calls)-1] != "fix_run <!-- live-proof -->\nprove it profile=nested" {
+		t.Errorf("calls = %v, want the fix run with its profile last", calls)
+	}
+
+	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/live-proof", testSupervisorToken, `{"evidence": "no profile"}`); status != http.StatusOK {
+		t.Fatalf("live proof without a profile = %d, want 200", status)
+	}
+	if latest := h.supervisorActions(t)[0]; latest["profile"] != nil {
+		t.Errorf("record = %v, want no profile", latest)
 	}
 }

@@ -1006,8 +1006,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				ConfiguredModelOf: func(selection DispatchResolution) string {
 					return o.configuredModelOf(cfg, selection)
 				},
-				WorkerWait: func(issue domain.Issue) *WorkerHold {
-					return o.workerWait(cfg, issue)
+				WorkerWait: func(issue domain.Issue, profile string) *WorkerHold {
+					return o.workerWait(cfg, issue, profile)
 				},
 				HealthHold: func(issue domain.Issue, hold bool) bool {
 					return o.healthHold(ctx, cfg, issue, hold) != nil
@@ -1505,7 +1505,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 			o.once.deferFor(issue.ID, deferTick)
 			continue
 		}
-		if wait := o.workerWait(cfg, issue); wait != nil {
+		if wait := o.workerWait(cfg, issue, ""); wait != nil {
 			held.hold(issue, HeldEntry{Reason: SkipNoWorker, Worker: wait})
 			o.once.deferFor(issue.ID, deferTick)
 			continue

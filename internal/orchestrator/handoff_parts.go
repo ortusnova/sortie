@@ -472,7 +472,7 @@ func (o *Orchestrator) handoffJobRequires(cfg config.ServiceConfig, p *HandoffPa
 	if issueEnv, _, err := issueRepository(env, remoteWorkspacePath(cfg, domain.Issue{Identifier: p.Identifier}), nil); err == nil {
 		env = issueEnv
 	}
-	requires := remoteRequires(env.Remote)
+	requires := remoteRequires(env.Remote, "")
 	for _, c := range p.Capabilities {
 		if !slices.Contains(requires.Capabilities, c) {
 			requires.Capabilities = append(requires.Capabilities, c)

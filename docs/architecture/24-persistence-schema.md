@@ -472,6 +472,7 @@ One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budge
 | `detail`           | TEXT NOT NULL       | The error code and message answered, masked; empty on success                          |
 | `pull_request`     | TEXT NOT NULL       | `owner/repo#N` the action named; may be empty                                          |
 | `merge_commit`     | TEXT NOT NULL       | The merge commit the forge gave; may be empty                                          |
+| `profile`          | TEXT NOT NULL       | The job profile a fix run or live-proof request named; empty for none (migration 1019) |
 | `acted_at`         | TEXT NOT NULL       | RFC 3339 timestamp with nanoseconds, in UTC; indexed                                   |
 
 One row per request the supervisor token makes to a control route, written by the HTTP server after it answers; a failed write is logged and the answer stands. Rows are never deleted. `GET /api/v1/state` reads the 50 newest by `id`.

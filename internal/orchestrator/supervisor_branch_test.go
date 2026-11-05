@@ -25,7 +25,7 @@ func TestSupervisor_FixRunOfAParkedStoryWithAConflictingPullRequest(t *testing.T
 		t.Fatal(err)
 	}
 
-	got := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "Rebase on master and resolve the conflict in hosts.yml.")
+	got := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "Rebase on master and resolve the conflict in hosts.yml.", "")
 	want := SupervisorResult{Status: SupervisorDone, IssueID: "id-39", Identifier: "ONS-39", PullRequest: "o/homelab#155"}
 	if got != want {
 		t.Fatalf("fix run = %+v, want %+v", got, want)
@@ -64,7 +64,7 @@ func TestSupervisor_FixRunOfAParkedStoryWithAConflictingPullRequest(t *testing.T
 		}
 	}
 
-	if again := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "again"); again.Code != "retry_scheduled" {
+	if again := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "again", ""); again.Code != "retry_scheduled" {
 		t.Errorf("second fix run = %+v, want retry_scheduled", again)
 	}
 }
@@ -86,10 +86,10 @@ func TestSupervisor_RunningStoryWithoutAWatch(t *testing.T) {
 	h := routedStoryHarness(t, runningStoryState(), homelabPullRequest)
 	sup := h.o.Supervisor()
 
-	if got := sup.FixRun(t.Context(), "ONS-39", "fix it"); got.Status != SupervisorPrecondition || got.Code != "running" {
+	if got := sup.FixRun(t.Context(), "ONS-39", "fix it", ""); got.Status != SupervisorPrecondition || got.Code != "running" {
 		t.Errorf("fix run = %+v, want running", got)
 	}
-	if got := sup.RequestLiveProof(t.Context(), "ONS-39", "criterion"); got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
+	if got := sup.RequestLiveProof(t.Context(), "ONS-39", "criterion", ""); got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
 		t.Errorf("live proof = %+v, want done on o/homelab#155", got)
 	}
 	if got := sup.Merge(t.Context(), "ONS-39"); got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" || len(h.forge.merges) != 1 {
@@ -113,7 +113,7 @@ func TestSupervisor_FixRunOfAStoryWhoseRunEnded(t *testing.T) {
 	state.ParkReleases["id-39"] = release
 	h := routedStoryHarness(t, state, homelabPullRequest)
 
-	if got := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "fix it"); got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
+	if got := h.o.Supervisor().FixRun(t.Context(), "ONS-39", "fix it", ""); got.Status != SupervisorDone || got.PullRequest != "o/homelab#155" {
 		t.Fatalf("fix run = %+v, want done on o/homelab#155", got)
 	}
 	var retry *RetryEntry
@@ -134,10 +134,10 @@ func TestSupervisor_NoOpenPullRequestOnTheBranch(t *testing.T) {
 	}
 	sup := h.o.Supervisor()
 	for name, got := range map[string]SupervisorResult{
-		"fix":        sup.FixRun(t.Context(), "ONS-39", "fix it"),
+		"fix":        sup.FixRun(t.Context(), "ONS-39", "fix it", ""),
 		"draft":      sup.MarkDraft(t.Context(), "ONS-39"),
 		"merge":      sup.Merge(t.Context(), "ONS-39"),
-		"live-proof": sup.RequestLiveProof(t.Context(), "ONS-39", "criterion"),
+		"live-proof": sup.RequestLiveProof(t.Context(), "ONS-39", "criterion", ""),
 	} {
 		if got.Status != SupervisorPrecondition || got.Code != "no_pull_request" ||
 			!strings.Contains(got.Message, "sortie/ONS-39") || !strings.Contains(got.Message, "o/homelab") {
