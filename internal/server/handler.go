@@ -65,6 +65,11 @@ type stateResponse struct {
 	// phase and deadline, and the stories queued behind it.
 	MergeAndProve mergeAndProveResponse `json:"merge_and_prove"`
 
+	// OffLoop is the runner of the calls Sortie makes off its event loop:
+	// the calls in flight, the queue's length, and the calls that timed
+	// out.
+	OffLoop offLoopResponse `json:"off_loop"`
+
 	// Supervisor is the supervisor session's status, its last trigger, and
 	// its budget use; null while the workflow configures no supervisor.
 	Supervisor *supervisorResponse `json:"supervisor"`
@@ -1463,6 +1468,7 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, words sentence.Con
 	resp.PlatformFaults = toPlatformFaultResponses(snap.PlatformFaults)
 	resp.HandoffParts = toHandoffPartResponses(snap.HandoffParts)
 	resp.MergeAndProve = toMergeAndProveResponse(snap.MergeAndProve)
+	resp.OffLoop = toOffLoopResponse(snap.OffLoop)
 	resp.Supervisor = toSupervisorResponse(snap.Supervisor)
 
 	return resp

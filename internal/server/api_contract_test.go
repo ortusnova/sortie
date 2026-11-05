@@ -73,6 +73,7 @@ var contractNeverNull = map[reflect.Type][]string{
 	reflect.TypeFor[handoffPartResponse]():        {"capabilities"},
 	reflect.TypeFor[mergeAndProveResponse]():      {"queue"},
 	reflect.TypeFor[mergeAndProveEntryResponse](): {"deployed"},
+	reflect.TypeFor[offLoopResponse]():            {"in_flight", "timeouts"},
 }
 
 var dateTime = contractNode{"string", map[string]any{"type": "string", "format": "date-time"}}

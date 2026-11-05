@@ -570,6 +570,26 @@ export interface NoHopReason {
   passes: number;
 }
 
+export interface OffLoopCallResponse {
+  subject: string;
+  kind: string;
+  started_at: string;
+}
+
+export interface OffLoopResponse {
+  workers: number;
+  in_flight: OffLoopCallResponse[];
+  queue_length: number;
+  timeouts: OffLoopTimeoutResponse[];
+}
+
+export interface OffLoopTimeoutResponse {
+  subject: string;
+  kind: string;
+  started_at: string;
+  timed_out_at: string;
+}
+
 export interface ParkRecordResponse {
   gesture: string;
   head?: string;
@@ -1325,6 +1345,7 @@ export interface StateResponse {
   platform_faults: PlatformFaultResponse[] | null;
   handoff_parts: HandoffPartResponse[];
   merge_and_prove: MergeAndProveResponse;
+  off_loop: OffLoopResponse;
   supervisor: SupervisorResponse | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;

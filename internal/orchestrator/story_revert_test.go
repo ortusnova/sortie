@@ -114,7 +114,7 @@ func TestStoryRevert_ScanRunsOffTheLoop(t *testing.T) {
 		t.Errorf("notifications = %d, want one story.reverted", len(sent))
 	}
 	var running bool
-	onLoop(t, f.o, func() { running = f.o.revertScan.running })
+	onLoop(t, f.o, func() { running = f.o.offLoopRunner().inFlight(revertScanSubject) })
 	if running {
 		t.Error("the scan is still marked in flight after it was applied")
 	}

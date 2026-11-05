@@ -2389,6 +2389,9 @@ type RuntimeSnapshotResult struct {
 	// Supervisor is the supervisor's state; nil while the workflow
 	// configures no supervisor.
 	Supervisor *SupervisorSnapshot `json:"-"`
+
+	// OffLoop is the runner of the calls made off the event loop.
+	OffLoop SnapshotOffLoop `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running

@@ -33,8 +33,7 @@ type planMergeLister interface {
 // revertScanSchedule is when the revert scan runs. Only the event loop
 // reads or writes it.
 type revertScanSchedule struct {
-	running bool      // a scan is in flight, off the loop
-	next    time.Time // no scan starts before it
+	next time.Time // no scan starts before it
 }
 
 // revertedMerge is one story's merge record, or merge-and-prove's merge
@@ -83,7 +82,7 @@ func revertScanEvery(cfg config.ServiceConfig) time.Duration {
 // for it again; a story merge-and-prove merged and has not yet proven ends
 // as reverted. Must run on the event loop.
 func (o *Orchestrator) detectReverts(ctx context.Context, cfg config.ServiceConfig, now time.Time) {
-	if o.revertFinder == nil || o.once != nil || o.revertScan.running || now.Before(o.revertScan.next) {
+	if o.revertFinder == nil || o.once != nil || now.Before(o.revertScan.next) || o.offLoopRunner().inFlight(revertScanSubject) {
 		return
 	}
 	merges, repos, ok := o.planRevertScan(ctx, cfg, now)
@@ -94,16 +93,28 @@ func (o *Orchestrator) detectReverts(ctx context.Context, cfg config.ServiceConf
 	if len(merges) == 0 {
 		return
 	}
-	o.revertScan.running = true
 	finder, tracker := o.revertFinder, o.trackerAdapter
-	o.state.TrackerOpsWg.Go(func() {
-		found := scanReverts(ctx, cfg, finder, tracker, slices.Clone(merges), repos, o.logger)
-		if o.runOnLoop(ctx, func(loopCtx context.Context) {
-			o.applyRevertScan(loopCtx, now, found)
-		}) != loopRan {
-			o.logger.Info("revert scan result dropped: Sortie is stopping")
-		}
+	o.startOffLoop(ctx, offLoopCall{
+		Subject: revertScanSubject,
+		Kind:    revertScanCallKind,
+		Timeout: revertScanTimeout(len(repos), len(merges)),
+		Run: func(ctx context.Context) func(context.Context) {
+			found := scanReverts(ctx, cfg, finder, tracker, slices.Clone(merges), repos, o.logger)
+			return func(loopCtx context.Context) { o.applyRevertScan(loopCtx, now, found) }
+		},
 	})
+}
+
+// revertScanCallKind names the revert scan on the off-loop runner.
+const revertScanCallKind = "revert_scan"
+
+// revertScanSubject is the subject of the revert scan, one at a time.
+var revertScanSubject = offLoopSubject{Kind: offLoopCheck, Key: revertScanCallKind}
+
+// revertScanTimeout bounds a scan of repos repositories for merges: each
+// forge read and each tracker move has its own bound.
+func revertScanTimeout(repos, merges int) time.Duration {
+	return time.Duration(repos+merges) * mergeAndProveBound
 }
 
 // planRevertScan reads the merge records and returns the merges a revert
@@ -204,7 +215,6 @@ func scanReverts(ctx context.Context, cfg config.ServiceConfig, finder domain.Re
 // merge, and moves the cursor of each repository whose reverts were all
 // handled. Must run on the event loop.
 func (o *Orchestrator) applyRevertScan(ctx context.Context, now time.Time, found revertScanResult) {
-	o.revertScan.running = false
 	handled := found.read
 	for _, u := range found.undos {
 		if !o.undoRevertedMerge(ctx, u) {

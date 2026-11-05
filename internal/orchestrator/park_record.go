@@ -58,7 +58,7 @@ func (o *Orchestrator) releaseParksByRecord(ctx context.Context, cfg config.Serv
 		if workerHolds(o.state, id) {
 			continue
 		}
-		if o.parkRecordReads[id] {
+		if o.offLoopRunner().inFlight(parkRecordSubject(id)) {
 			continue
 		}
 		o.state.ParkRecordChecked[id] = now
@@ -76,28 +76,40 @@ type parkRecordFound struct {
 
 // startParkRecordCheck reads, off the event loop, whether the pull request
 // of issueID's park holds the records its verdict leaves open at its head,
-// and releases the park on the loop when it does. At most one read of an
-// issue is in flight. Must run on the event loop.
+// and releases the park on the loop when it does. The read runs on the
+// off-loop runner, one per story at a time, and its result is dropped when
+// the park changed meanwhile. Must run on the event loop.
 func (o *Orchestrator) startParkRecordCheck(ctx context.Context, cfg config.ServiceConfig, loader CriteriaVerdictLoader, issueID string, now time.Time) {
 	park := o.state.Parked[issueID]
 	issue, known := lookupSupervised(o.state, park.Identifier)
 	if !known {
 		return
 	}
-	if o.parkRecordReads == nil {
-		o.parkRecordReads = map[string]bool{}
-	}
-	o.parkRecordReads[issueID] = true
 	log := logging.WithIssue(o.logger, issueID, park.Identifier)
-	o.state.TrackerOpsWg.Go(func() {
-		found, ok := o.readParkRecord(ctx, cfg, loader, issueID, issue, log)
-		o.runOnLoop(ctx, func(loopCtx context.Context) {
-			delete(o.parkRecordReads, issueID)
-			if ok && o.state.Parked[issueID] == park {
+	o.startOffLoop(ctx, offLoopCall{
+		Subject: parkRecordSubject(issueID),
+		Kind:    parkRecordCallKind,
+		Version: park,
+		Current: func() any { return o.state.Parked[issueID] },
+		Timeout: parkRecordReadBound + planControlWriteBound,
+		Run: func(ctx context.Context) func(context.Context) {
+			found, ok := o.readParkRecord(ctx, cfg, loader, issueID, issue, log)
+			if !ok {
+				return nil
+			}
+			return func(loopCtx context.Context) {
 				o.releaseParkByRecord(loopCtx, cfg, issueID, park, found, now, log)
 			}
-		})
+		},
 	})
+}
+
+// parkRecordCallKind names the park record read on the off-loop runner.
+const parkRecordCallKind = "park_record"
+
+// parkRecordSubject is the subject of issueID's park record read.
+func parkRecordSubject(issueID string) offLoopSubject {
+	return offLoopSubject{Kind: offLoopStory, Key: issueID}
 }
 
 // readParkRecord reads whether the pull request of issueID holds the

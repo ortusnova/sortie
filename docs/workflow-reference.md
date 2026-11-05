@@ -28,6 +28,7 @@
   - [2.13 `supervisor` — Supervisor Session](#213-supervisor--supervisor-session)
   - [2.14 `health` — Health Checks Before Runs Fail](#214-health--health-checks-before-runs-fail)
   - [2.15 `merge_and_prove` — Merge, Prove After Deploy, or Revert](#215-merge_and_prove--merge-prove-after-deploy-or-revert)
+  - [2.16 `off_loop` — Calls Made Off the Event Loop](#216-off_loop--calls-made-off-the-event-loop)
 - [3. Environment Variable Overrides](#3-environment-variable-overrides)
   - [3.1 Source Precedence](#31-source-precedence)
   - [3.2 Curated Variable List](#32-curated-variable-list)
@@ -139,7 +140,7 @@ After parsing, the loader produces a struct with three fields:
 
 ### 2.1 Top-Level Keys
 
-The core schema recognizes fourteen top-level keys:
+The core schema recognizes fifteen top-level keys:
 
 ```yaml
 tracker: # Issue tracker connection and query settings
@@ -156,6 +157,7 @@ environment: # Where workspace code runs: on the host or on workers
 supervisor: # The supervisor agent session, its triggers and its daily budget
 health: # What Sortie's own health check reads, such as a deploy kit's state file
 merge_and_prove: # How a story only a deploy proves is merged, proven, or reverted
+off_loop: # How many forge, tracker, git and command calls run off the event loop at once
 ```
 
 **Unknown top-level keys are ignored** by the core schema for forward compatibility. They are collected into an `Extensions` map and made available to consumers (e.g., `server`, `worker`, adapter-specific blocks like `claude-code`).
@@ -2440,6 +2442,31 @@ A proven story gets its `merged` plan satisfaction then, not at the merge, so th
 
 **Reload.** The section reloads: the next tick reads the new deadline for a phase that starts after it, and the new hosts.
 
+### 2.16 `off_loop` — Calls Made Off the Event Loop
+
+```yaml
+off_loop:
+  workers: 8
+```
+
+Sortie's event loop, which runs the poll tick and answers `GET /api/v1/state`, hands the forge, tracker, git and command calls it moves off the loop to one bounded runner, and applies only their results. The merged-revert scan and the read of a parked story's pull request record run on it.
+
+| Field | Type | Required | Default | Description |
+| ----- | ---- | -------- | ------- | ----------- |
+| `off_loop.workers` | integer | No | `8` | How many calls run at once, from `1` to `256`. A call started while every worker is busy waits in the queue, in order. |
+
+**One call per subject.** Each call names its subject: a story, a pull request, a repository or a check. While a subject has a call queued or running, a tick that would start another one for it starts none (the call reports `in_flight`), so a slow forge never piles up calls for one pull request.
+
+**Results.** A call's result returns to the event loop as an event and is applied there. A call carries the version of its subject it started on, such as the pull request's head or the story's park; when the subject's version changed while the call ran, its result is dropped.
+
+**Timeouts.** Each call has its own timeout (`30s` unless the call sets one). A call that outlives it applies nothing and is recorded with its subject and kind, and its subject can start again on the next tick.
+
+**State.** `GET /api/v1/state` serves `off_loop`: `workers`; `in_flight`, the running calls, oldest first, each with its `subject` (`story:<issue id>`, `pull_request:<owner>/<repo>#<number>`, `repository:<owner>/<repo>` or `check:<name>`), `kind` (what the call does, such as `revert_scan` or `park_record`) and `started_at`; `queue_length`, the calls waiting for a worker; and `timeouts`, the newest 32 calls that timed out, newest last, each with its `subject`, `kind`, `started_at` and `timed_out_at`.
+
+**Restart.** Nothing of the runner is stored. At shutdown Sortie cancels the running calls, drops the queue and applies no result that comes after; after a restart each subject starts again on its first tick.
+
+**Reload.** The section reloads: the next tick runs as many calls at once as the new `workers`; with fewer, the running calls finish first.
+
 ---
 
 ## 3. Environment Variable Overrides
@@ -3910,6 +3937,8 @@ A session whose `usage_arrival` is `none` contributes nothing to the token total
 `handoff_parts` is a top-level field, always present: every open part of a story a session could not do, oldest first, `[]` when there is none. Each names the story (`issue_id`, `issue_identifier`), the part's `id`, `kind`, `need`, `check`, `capabilities` and `repository`, its `status` (`pending`, `working` or `fault`), the `job_attempt` of its check, the `work_identifier` of the issue its change was filed as, the `platform_fault_id` that holds it, its last `result`, and `recorded_at` and `updated_at`. See [Work a session could not do](#sortiehandoffjson--work-a-session-could-not-do).
 
 `merge_and_prove` is a top-level field, always present: `in_flight`, the story merge-and-prove has past its queue, with its `phase` (`merging`, `deploying`, `proving` or `reverting`) and `deadline`, or `null`; and `queue`, the stories waiting behind it in order, `[]` when there is none. Each entry also carries `issue_id`, `issue_identifier`, `position`, `pull_request`, `head`, `merge_commit`, `deployed`, `queued_at`, `phase_at`, `revert_pull_request`, `reason` and `waiting`. See [Section 2.15](#215-merge_and_prove--merge-prove-after-deploy-or-revert).
+
+`off_loop` is a top-level field, always present: the runner of the calls Sortie makes off its event loop, with `workers`, `in_flight` (each running call's `subject`, `kind` and `started_at`, `[]` when there is none), `queue_length`, and `timeouts` (the newest calls that timed out, each with `subject`, `kind`, `started_at` and `timed_out_at`, `[]` when there is none). See [Section 2.16](#216-off_loop--calls-made-off-the-event-loop).
 
 `supervisor` is a top-level field, always present: `null` while the workflow has no `supervisor` section (see [Section 2.13](#213-supervisor--supervisor-session)), and otherwise:
 

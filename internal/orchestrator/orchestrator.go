@@ -421,7 +421,7 @@ type Orchestrator struct {
 	commitComparer                    domain.CommitComparer
 	revertFinder                      domain.RevertFinder
 	revertScan                        revertScanSchedule
-	parkRecordReads                   map[string]bool // issue IDs whose park record read is in flight; loop-only
+	offLoop                           *offLoopRunner // made on first use by offLoopRunner, on the event loop
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
@@ -1053,9 +1053,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			o.notifyObservers()
 
 		case req := <-o.snapshotCh:
-			refreshActiveOrder(o.state)
-			snap := RuntimeSnapshot(o.state, time.Now())
-			req.ReplyCh <- snap
+			req.ReplyCh <- o.snapshot(time.Now())
 
 		case action := <-o.actionCh:
 			if action.state.CompareAndSwap(loopActionPending, loopActionTaken) {
@@ -1088,6 +1086,9 @@ func (o *Orchestrator) shutdown(tickTimer *time.Timer) {
 	o.pollHealth.schedule(time.Time{})
 	o.notifyObservers()
 	o.stopSupervisor()
+	if o.offLoop != nil {
+		o.offLoop.stop()
+	}
 	o.drainRunningWorkers()
 	o.runEventRetry.Stop()
 	o.drainTriageRuns()
@@ -1264,6 +1265,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.ReactionWatchWindows = o.reactionWatchWindows(cfg)
 	o.state.TokenWarningThreshold = cfg.Agent.TokenWarningThreshold()
 	o.state.MaxConcurrentByState = cfg.Agent.MaxConcurrentByState
+	o.offLoopRunner().setWorkers(cfg.OffLoop.Workers)
 
 	current := append(cfg.Advisories(), o.applyWorkerConfig(cfg)...)
 	LogAdvisories(ctx, o.logger, newAdvisories(current, o.reportedAdvisories))
@@ -2857,9 +2859,7 @@ func (o *Orchestrator) drainRunningWorkers() {
 			o.notifyObservers()
 
 		case req := <-o.snapshotCh:
-			refreshActiveOrder(o.state)
-			snap := RuntimeSnapshot(o.state, time.Now())
-			req.ReplyCh <- snap
+			req.ReplyCh <- o.snapshot(time.Now())
 
 		case <-o.refreshCh:
 			// Discard refresh signals during drain; the event loop is no
@@ -2956,6 +2956,15 @@ func (o *Orchestrator) AddObserver(obs Observer) {
 // Safe to call from any goroutine.
 func (o *Orchestrator) PreflightOK() bool {
 	return o.preflightOK.Load()
+}
+
+// snapshot captures the runtime state and the off-loop runner at now.
+// Must run on the event loop.
+func (o *Orchestrator) snapshot(now time.Time) RuntimeSnapshotResult {
+	refreshActiveOrder(o.state)
+	snap := RuntimeSnapshot(o.state, now)
+	snap.OffLoop = o.offLoopRunner().snapshot()
+	return snap
 }
 
 // SnapshotFunc returns a function that retrieves a point-in-time runtime

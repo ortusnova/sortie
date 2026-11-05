@@ -51,6 +51,7 @@ Top-level keys:
 - `supervisor`
 - `health`
 - `merge_and_prove`
+- `off_loop`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -808,6 +809,16 @@ Fields:
 - `hosts` (map of host name to path, optional): each host's deploy state file, in the format of `health.deploy_state`; absolute after `~` and `$VAR` expansion. Absent, the one host is `health.deploy_state`.
 
 A proven story gets its `merged` plan satisfaction and moves to the done state then; a reverted one returns to `tracker.release_state` with the reason and publishes `story.reverted`. Once per `revert_scan_interval` (duration string, optional, default `3m`, at least `1m`), off the event loop and never two at once, Sortie also reads the pull requests merged since its last scan in each repository it holds a merge record of; a merged revert of a story's merge, whoever merged it, deletes the story's record, so its dependents wait again, and moves the story out of its done state. The queue is stored in `merge_and_prove` (Section 19.2). The section reloads. The full reference is in the [workflow reference](../workflow-reference.md#215-merge_and_prove--merge-prove-after-deploy-or-revert).
+
+#### 5.3.15 `off_loop` (object, optional)
+
+How Sortie runs the forge, tracker, git and command calls it makes off its event loop (Section 8.1).
+
+Fields:
+
+- `workers` (integer, optional, default `8`, from `1` to `256`): how many calls run at once; a call started while every worker is busy waits in the queue, in order.
+
+Any other key fails validation. The section reloads: the next tick runs as many calls at once as the new value. The full reference is in the [workflow reference](../workflow-reference.md#216-off_loop--calls-made-off-the-event-loop).
 
 ### 5.4 Prompt Template Contract
 

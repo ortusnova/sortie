@@ -2639,6 +2639,80 @@
       ],
       "type": "object"
     },
+    "OffLoopCallResponse": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "kind",
+        "started_at"
+      ],
+      "type": "object"
+    },
+    "OffLoopResponse": {
+      "properties": {
+        "in_flight": {
+          "items": {
+            "$ref": "#/$defs/OffLoopCallResponse"
+          },
+          "type": "array"
+        },
+        "queue_length": {
+          "type": "integer"
+        },
+        "timeouts": {
+          "items": {
+            "$ref": "#/$defs/OffLoopTimeoutResponse"
+          },
+          "type": "array"
+        },
+        "workers": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "workers",
+        "in_flight",
+        "queue_length",
+        "timeouts"
+      ],
+      "type": "object"
+    },
+    "OffLoopTimeoutResponse": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "timed_out_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "kind",
+        "started_at",
+        "timed_out_at"
+      ],
+      "type": "object"
+    },
     "ParkRecordResponse": {
       "properties": {
         "comments": {
@@ -6344,6 +6418,9 @@
         "merge_and_prove": {
           "$ref": "#/$defs/MergeAndProveResponse"
         },
+        "off_loop": {
+          "$ref": "#/$defs/OffLoopResponse"
+        },
         "park_releases": {
           "anyOf": [
             {
@@ -6506,6 +6583,7 @@
         "platform_faults",
         "handoff_parts",
         "merge_and_prove",
+        "off_loop",
         "supervisor",
         "waits",
         "pulls",

@@ -22,6 +22,14 @@ Tick sequence:
 12. Delete the acknowledgement of every attention item the state no longer derives (§13.7.2). A tick that ends before the candidate fetch completes deletes none.
 13. Notify observability/status consumers of state changes.
 
+Calls off the loop:
+
+- The event loop runs the tick and answers the state snapshot (Section 13.3); a forge, tracker, git or command call moved off it runs on one bounded runner, `off_loop.workers` calls at once (default `8`), the rest queued in order. The merged-revert scan and the read of a parked story's pull request record run on it.
+- Each call names its subject (a story, a pull request, a repository or a check) and its kind. While a subject has a call queued or running, a tick starts no other call for it; the start reports `in_flight`.
+- A finished call's result returns to the loop as an event carrying the subject's version the call started on, such as the pull request's head or the story's park, and is applied there unless the subject's version changed meanwhile, in which case it is dropped.
+- Each call runs under its own timeout (`30s` unless the call names one). A call that outlives it applies nothing, is recorded with its subject and kind, and frees its worker and its subject, so the subject can start again on the next tick.
+- Shutdown cancels the running calls, drops the queue and applies no later result. Nothing of the runner is persisted.
+
 Stage hop hold:
 
 - After a hop (Section 7.3), the issue holds a hop record that remembers the label the hop added and whether any read has shown it. Until a read does, the issue is dispatched on no rule other than the hop's target, because a candidate listing can lag the label write and would otherwise select the previous stage again.
