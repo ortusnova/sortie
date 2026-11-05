@@ -367,8 +367,8 @@ func TestSupervisor_StartsOnAPark(t *testing.T) {
 	}
 }
 
-// A stopped failure whose signature is in no class starts a session; one
-// in a class does not.
+// A stopped failure whose signature is in no class starts a session as an
+// unclassified failure; one in a class is only the failure of a run.
 func TestSupervisor_StartsOnAnUnclassifiedStoppedFailure(t *testing.T) {
 	t.Parallel()
 	h := newSupHarness(t, nil)
@@ -378,18 +378,17 @@ func TestSupervisor_StartsOnAnUnclassifiedStoppedFailure(t *testing.T) {
 	h.onLoop(func(context.Context) {
 		failRun(t, h.o.state, h.store, "id-49", "ONS-49", nil, refusedPushOf("ONS-49"))
 		failRun(t, h.o.state, h.store, "id-49", "ONS-49", new(1), refusedPushOf("ONS-49"))
-		pending = slices.Clone(h.o.state.supervisor.pending)
-	})
-	if len(pending) != 0 {
-		t.Fatalf("a classified platform fault kept triggers %v, want none", triggerKinds(pending))
-	}
-	h.onLoop(func(context.Context) {
 		odd := errors.New("run: the disk sang")
 		failRun(t, h.o.state, h.store, "id-8", "ONS-8", nil, odd)
 		failRun(t, h.o.state, h.store, "id-8", "ONS-8", new(1), odd)
+		pending = slices.Clone(h.o.state.supervisor.pending)
 	})
+	want := []string{"failure ONS-49", "failure ONS-8", "unclassified_failure ONS-8"}
+	if got := triggerKinds(pending); !slices.Equal(got, want) {
+		t.Fatalf("triggers = %v, want %v: a classified platform fault is no unclassified failure", got, want)
+	}
 	prompt := waittest.Receive(t, h.sup.turns, "the supervisor's turn")
-	if !strings.Contains(prompt, "Started by unclassified_failure.") || !strings.Contains(prompt, "- unclassified_failure ONS-8: platform fault pf-") {
+	if !strings.Contains(prompt, "- unclassified_failure ONS-8: platform fault pf-") {
 		t.Errorf("prompt = %s, want the unclassified failure of ONS-8", prompt)
 	}
 	if !strings.Contains(prompt, `"class": "unclassified"`) {

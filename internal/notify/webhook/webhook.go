@@ -69,6 +69,24 @@ type wirePayload struct {
 
 	// Escalation is set only for a session.escalated event.
 	Escalation *wireEscalation `json:"escalation,omitempty"`
+
+	// ForPerson is set only on an event meant for a person.
+	ForPerson bool `json:"for_person,omitempty"`
+
+	// Question is set only for a question.for_person or question.closed
+	// event.
+	Question *wireQuestion `json:"question,omitempty"`
+}
+
+// wireQuestion is the question a question event reports.
+type wireQuestion struct {
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Text     string   `json:"text"`
+	Where    string   `json:"where"`
+	RaisedBy string   `json:"raised_by"`
+	Stories  []string `json:"stories"`
+	Closed   string   `json:"closed,omitempty"`
 }
 
 // wireEscalation is what a session.escalated event reports besides its
@@ -124,6 +142,13 @@ func (n *notifier) Send(ctx context.Context, notification domain.Notification) e
 
 	if esc := notification.Envelope.Escalation; esc != (domain.SessionEscalation{}) {
 		payload.Escalation = &wireEscalation{Kind: esc.Kind, Rule: esc.Rule, URL: esc.URL}
+	}
+	payload.ForPerson = notification.Envelope.EventType.ForPerson()
+	if q, ok := notification.Message.Facts.(domain.QuestionFacts); ok {
+		payload.Question = &wireQuestion{
+			ID: q.QuestionID, Kind: q.Kind, Text: q.Text, Where: q.Where, RaisedBy: q.RaisedBy,
+			Stories: append([]string{}, q.Stories...), Closed: q.Closed,
+		}
 	}
 
 	return n.client.PostJSON(ctx, payload)

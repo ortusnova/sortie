@@ -1410,6 +1410,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.rebuildBudgetExhausted(ctx, cfg, sorted)
 	o.fillRetryIdentity(sorted)
 	o.refreshParkedIssues(ctx, sorted, cfg.Tracker.TerminalStates)
+	o.closeQuestionsOfLeftStories(ctx, sorted)
 	o.parkExhaustedAbsences(ctx, cfg, sorted)
 
 	activeSet := stateSet(cfg.Tracker.ActiveStates)

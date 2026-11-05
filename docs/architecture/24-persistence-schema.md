@@ -508,6 +508,7 @@ One row per request the supervisor token makes to a control route, written by th
 | `identifier` | TEXT | Human-readable ticket key |
 | `display_id` | TEXT | Qualified form of `identifier`; empty when `identifier` suffices |
 | `held_at`    | TEXT | RFC 3339 UTC of the run exit that held the story |
+| `state`      | TEXT | The tracker state a question's story was in when the question took it; empty until a poll observes it, and for any other fault (migration 1021). A poll that sees the story in another state releases it, and a question that holds no story then is resolved |
 
 Every write of a fault replaces its holds in the same transaction, and the write that resolves it deletes them. At startup the open faults and their holds are loaded before the first tick, so a held story stays held across a restart. A question the supervisor raises (`POST /api/v1/supervisor/questions`) is a row of class `supervisor_question` and step `supervisor`, whose `signature` is the class with the folded action and place, whose `cause` is why the action is needed, and whose `detail` is what the supervisor checked, followed by what each question that joined it checked and its evidence. Columns `question_kind`, `raised_by`, and `withdrawn` are added by migration 1017. A part of a story a session could not do (§21.5) that only a person can carry is a row of step `handoff` and class `handoff_person`, `handoff_unplaced`, `handoff_check_failed`, or `handoff_change`, whose `signature` is `handoff: <identifier>/<part id>`, one per part.
 
@@ -545,7 +546,7 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 | Column           | Type                | Notes |
 | ---------------- | ------------------- | ----- |
 | `id`             | INTEGER PRIMARY KEY | Auto-increment |
-| `trigger_kind`   | TEXT NOT NULL       | The kind of the session's first trigger: `park`, `unclassified_failure`, `stalled_reaction`, `idle_slot`, or `sweep` |
+| `trigger_kind`   | TEXT NOT NULL       | The kind of the session's first trigger: `park`, `failure`, `unclassified_failure`, `stalled_reaction`, `idle_slot`, or `sweep` |
 | `trigger_issue`  | TEXT NOT NULL       | The identifier the first trigger names; empty for none |
 | `trigger_detail` | TEXT NOT NULL       | The first trigger's detail, masked |
 | `triggers`       | INTEGER NOT NULL    | How many triggers started the session |

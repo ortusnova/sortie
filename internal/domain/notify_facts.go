@@ -229,3 +229,28 @@ type StoryRevertedFacts struct {
 }
 
 func (StoryRevertedFacts) messageFacts() {}
+
+// How a question for a person closed, as [QuestionFacts.Closed] says.
+const (
+	QuestionClosedAnswered     = "answered"
+	QuestionClosedWithdrawn    = "withdrawn"
+	QuestionClosedStateChanged = "state_changed"
+)
+
+// QuestionFacts is the content of question.for_person and
+// question.closed: a question the supervisor's question route raised for
+// a person. Text is the action asked of the person and Where where to
+// take it; Stories are the stories it holds, the envelope naming the
+// first. Closed is how the question closed, a QuestionClosed value, and
+// empty on question.for_person.
+type QuestionFacts struct {
+	QuestionID string
+	Kind       string
+	Text       string
+	Where      string
+	RaisedBy   string
+	Stories    []string
+	Closed     string
+}
+
+func (QuestionFacts) messageFacts() {}
