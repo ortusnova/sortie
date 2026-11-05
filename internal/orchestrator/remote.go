@@ -654,6 +654,9 @@ type remoteAttempt struct {
 
 	usageMu sync.Mutex
 	pending []dataplane.Usage
+	// awaiting counts the turns since the last usage report that ended
+	// unaccounted, waiting for the worker's figure.
+	awaiting int
 }
 
 var (
@@ -1028,15 +1031,25 @@ func (a *remoteAttempt) adjust(r WorkerResult) WorkerResult {
 	a.usageMu.Lock()
 	defer a.usageMu.Unlock()
 	if len(a.pending) > 0 {
+		unknown := false
 		for _, u := range a.pending {
 			if !u.Measured {
 				r.UnaccountedTurns++
+				unknown = true
 				continue
 			}
 			r.Usage = maxUsage(r.Usage, toTokenUsage(u))
 			r.UsageMeasured = true
+			if u.Model != "" {
+				r.ModelName = u.Model
+			}
 		}
-		a.pending = nil
+		// The worker's figure is the attempt's total, so a measured
+		// one covers the turns that ended waiting for it.
+		if r.UsageMeasured && !unknown {
+			r.UnaccountedTurns = max(0, r.UnaccountedTurns-a.awaiting)
+		}
+		a.pending, a.awaiting = nil, 0
 	}
 	return r
 }
@@ -1059,13 +1072,21 @@ func (a *remoteAttempt) receiveUsage(u dataplane.Usage) {
 	a.pending = append(a.pending, u)
 }
 
-// takeUsage returns the usage reports not yet delivered.
-func (a *remoteAttempt) takeUsage() []dataplane.Usage {
+// takeUsage returns the usage reports not yet delivered at the end of a
+// turn, and how many earlier turns ended waiting for one. A turn that
+// ended unaccounted without one waits too.
+func (a *remoteAttempt) takeUsage(unaccounted bool) ([]dataplane.Usage, int) {
 	a.usageMu.Lock()
 	defer a.usageMu.Unlock()
-	out := a.pending
+	out, awaiting := a.pending, a.awaiting
 	a.pending = nil
-	return out
+	switch {
+	case len(out) > 0:
+		a.awaiting = 0
+	case unaccounted:
+		a.awaiting++
+	}
+	return out, awaiting
 }
 
 func toTokenUsage(u dataplane.Usage) domain.TokenUsage {
@@ -1130,7 +1151,7 @@ func (a *remoteUsageAdapter) RunTurn(ctx context.Context, session domain.Session
 	if err == nil && !a.attempt.leaving() {
 		a.attempt.recordSession(coalesce(res.SessionID, session.ID), true, false)
 	}
-	reports := a.attempt.takeUsage()
+	reports, awaiting := a.attempt.takeUsage(res.SpendUnaccounted)
 	measured, unknown := false, false
 	for _, u := range reports {
 		if !u.Measured {
@@ -1147,11 +1168,16 @@ func (a *remoteUsageAdapter) RunTurn(ctx context.Context, session domain.Session
 	}
 	// The worker measures the attempt's model traffic, so its reports
 	// decide whether the turn's spend is accounted for.
+	// A turn without a report waits for the worker's figure, the
+	// attempt's total, which a later measured report covers it with.
 	switch {
 	case unknown:
 		res.SpendUnaccounted, res.SpendCoverable = true, false
 	case measured:
 		res.SpendUnaccounted, res.SpendCoverable = false, false
+		res.CoversSession = res.CoversSession || awaiting > 0
+	case res.SpendUnaccounted:
+		res.SpendCoverable = true
 	}
 	return res, err
 }
