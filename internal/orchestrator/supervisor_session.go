@@ -22,7 +22,8 @@ import (
 
 // What starts a supervisor session.
 const (
-	SupervisorTriggerPark                = "park"                 // a story parked
+	SupervisorTriggerPark                = "park"                 // a story parked, or its run stopped
+	SupervisorTriggerFailure             = "failure"              // a story's run failed
 	SupervisorTriggerUnclassifiedFailure = "unclassified_failure" // a stopped failure whose signature is in no class
 	SupervisorTriggerStalledReaction     = "stalled_reaction"     // a pull request reaction made no progress for an hour
 	SupervisorTriggerIdleSlot            = "idle_slot"            // a free slot with nothing to dispatch while stories are held
@@ -233,6 +234,33 @@ func noteSupervisorTrigger(state *State, t SupervisorTrigger) {
 		s.pending = slices.Delete(s.pending, 0, 1)
 	}
 	s.pending = append(s.pending, t)
+}
+
+// noteRunEndTrigger starts a supervisor session for a run that stopped or
+// failed, the run end whose event carries facts: a stop is a
+// park trigger, a failure a failure trigger. A park trigger the stop's
+// own park already noted is kept, since it says why the story parked.
+func noteRunEndTrigger(state *State, issueID, identifier string, facts domain.MessageFacts, now time.Time) {
+	var t SupervisorTrigger
+	switch f := facts.(type) {
+	case domain.SessionStoppedFacts:
+		if s := state.supervisor; s != nil && slices.ContainsFunc(s.pending, func(p SupervisorTrigger) bool {
+			return p.Kind == SupervisorTriggerPark && p.IssueID == issueID
+		}) {
+			return
+		}
+		t = SupervisorTrigger{Kind: SupervisorTriggerPark, Detail: "run stopped: " + f.Reason}
+	case domain.SessionFailedFacts:
+		detail := "run failed"
+		if f.RetryScheduled {
+			detail += fmt.Sprintf(", attempt %d scheduled", f.NextAttempt)
+		}
+		t = SupervisorTrigger{Kind: SupervisorTriggerFailure, Detail: detail}
+	default:
+		return
+	}
+	t.IssueID, t.Identifier, t.At = issueID, identifier, now
+	noteSupervisorTrigger(state, t)
 }
 
 // reactionProgressAt is the newest time a pending reaction recorded

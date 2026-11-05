@@ -83,7 +83,7 @@ func TestPlatformFaults_QuestionKindRaiserAndWithdrawal(t *testing.T) {
 		ID: "pf-q", Signature: "supervisor_question: prove o/r#12 @ the workbench", Class: "supervisor_question", Step: "supervisor",
 		Action: "Prove o/r#12", ActionWhere: "the workbench", RecordedAt: "2026-11-02T10:00:00Z",
 		QuestionKind: "live_proof", RaisedBy: "supervisor",
-		Holds: []PlatformFaultHold{{IssueID: "id-77", Identifier: "ONS-77", HeldAt: "2026-11-02T10:00:00Z"}},
+		Holds: []PlatformFaultHold{{IssueID: "id-77", Identifier: "ONS-77", HeldAt: "2026-11-02T10:00:00Z", State: "In Progress"}},
 	}
 	if err := s.SavePlatformFault(ctx, q); err != nil {
 		t.Fatalf("SavePlatformFault: %v", err)

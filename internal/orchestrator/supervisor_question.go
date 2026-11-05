@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/redact"
@@ -210,6 +211,7 @@ func (s Supervisor) raiseOnLoop(ctx context.Context, q SupervisorQuestion, issue
 	for _, issue := range issues {
 		holdUnderPlatformFault(ctx, state, s.o.store, fault, PlatformFaultHold{
 			IssueID: issue.issueID, Identifier: issue.identifier, HeldAt: now,
+			State: questionHoldState(state, issue.issueID),
 		}, logging.WithIssue(log, issue.issueID, issue.identifier))
 	}
 	if existing {
@@ -225,6 +227,11 @@ func (s Supervisor) raiseOnLoop(ctx context.Context, q SupervisorQuestion, issue
 		slog.Int("stories", len(fault.Holds)),
 		slog.Bool("existing", existing),
 	)
+	if !existing {
+		// A question that joined an open one is that one's decision, of
+		// which a person was already told.
+		s.o.publishQuestionEvent(ctx, domain.EventQuestionForPerson, fault, fault.Holds, "")
+	}
 	s.o.notifyObservers()
 	return SupervisorQuestionResult{
 		SupervisorResult: SupervisorResult{Status: SupervisorDone, IssueID: issues[0].issueID, Identifier: issues[0].identifier},
@@ -320,6 +327,7 @@ func (s Supervisor) withdrawOnLoop(ctx context.Context, w SupervisorWithdrawal, 
 		slog.String("question_kind", f.QuestionKind),
 		slog.Int("released", len(f.Holds)),
 	)
+	s.o.publishQuestionEvent(ctx, domain.EventQuestionClosed, f, f.Holds, domain.QuestionClosedWithdrawn)
 	result := SupervisorWithdrawResult{
 		SupervisorResult: SupervisorResult{Status: SupervisorDone},
 		Withdrawn:        snapshotPlatformFault(f),

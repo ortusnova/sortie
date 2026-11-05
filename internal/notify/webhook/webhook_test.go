@@ -280,6 +280,10 @@ func TestWebhook_Send_EventType(t *testing.T) {
 	}
 	for _, eventType := range domain.EventTypes() {
 		if eventType.FromOrchestrator() {
+			suffix := ""
+			if eventType.ForPerson() {
+				suffix = `,"for_person":true`
+			}
 			tests = append(tests, struct {
 				name      string
 				eventType domain.EventType
@@ -288,7 +292,7 @@ func TestWebhook_Send_EventType(t *testing.T) {
 			}{
 				name:      "orchestrator event " + string(eventType) + " appends event_type after category",
 				eventType: eventType,
-				want:      eventPayload(recorded, eventType, ""),
+				want:      eventPayload(recorded, eventType, suffix),
 			})
 		}
 	}
@@ -401,5 +405,29 @@ func TestWebhook_Send_Escalation(t *testing.T) {
 	want = strings.TrimSuffix(want, "}") + `,"escalation":{"kind":"question","rule":"implement","url":"https://viewer.example/s/1"}}`
 	if got := string(getBody()); got != want {
 		t.Errorf("Send(session.escalated) body = %s, want %s", got, want)
+	}
+}
+
+func TestWebhook_Send_Question(t *testing.T) {
+	t.Parallel()
+
+	srv, getBody := captureServer(t)
+	n, err := newNotifier(map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatalf("newNotifier: %v", err)
+	}
+	notification := domain.Notification{
+		Envelope: domain.NotificationEnvelope{IssueID: "id-77", Identifier: "ONS-77", EventType: domain.EventQuestionClosed},
+		Message: domain.NotificationMessage{Severity: "info", Facts: domain.QuestionFacts{
+			QuestionID: "pf-1", Kind: "credential", Text: "Give the token the workflow scope", Where: "GitHub",
+			RaisedBy: "supervisor", Stories: []string{"ONS-77"}, Closed: domain.QuestionClosedWithdrawn,
+		}},
+	}
+	if err := n.Send(context.Background(), notification); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	want := `"event_type":"question.closed","for_person":true,"question":{"id":"pf-1","kind":"credential","text":"Give the token the workflow scope","where":"GitHub","raised_by":"supervisor","stories":["ONS-77"],"closed":"withdrawn"}}`
+	if got := string(getBody()); !strings.HasSuffix(got, want) {
+		t.Errorf("body = %s, want it to end with %s", got, want)
 	}
 }
