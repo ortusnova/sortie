@@ -5,23 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"slices"
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
 )
 
-// Time thresholds the state digest records once crossed.
-const (
-	// supervisorReadyAge is how long a story pull request waits ready to
-	// merge before the digest marks it old.
-	supervisorReadyAge = 30 * time.Minute
-
-	// supervisorQuestionAlertAge is how long a parked story's question or
-	// a question for a person goes unanswered before the digest marks it
-	// old.
-	supervisorQuestionAlertAge = 4 * time.Hour
-)
+// supervisorReadyAge is how long a story pull request waits ready to
+// merge before the digest marks it old: Sortie's own merge has had its
+// chance, and the supervisor's merge rule applies.
+const supervisorReadyAge = 30 * time.Minute
 
 // supervisorDigestLen is the hex digits of the stored state digest.
 const supervisorDigestLen = 16
@@ -34,9 +28,23 @@ const (
 )
 
 // supervisorWake is the state whose digest decides whether a trigger
-// starts a supervisor session: what the supervisor could act on, without
-// what moves on its own (a slot that frees or fills, a renewed lease, a
-// check that ran again). Every list is sorted.
+// starts a supervisor session: what a supervisor rule acts on, and nothing
+// that changes while no rule's action becomes possible. Every list is
+// sorted. Left out, each because no rule acts on it:
+//   - a story held only by its blockers: the rules act on the blocker, a
+//     parked or held blocker counts on its own, and a blocker's pull
+//     request that conflicts or waits ready counts in Pulls;
+//   - a full slot or host, a hold's since, a lease's renewal;
+//   - a running job, story run or fix job, starting or ending: a fix that
+//     lands moves its pull request (Pulls), one that fails stops on a
+//     failure, which triggers its own session; the end of a parked story's
+//     live-proof job is the one end a rule acts on (wakePark.ProofsEnded);
+//   - how long a question waits on a person: only a person answers it,
+//     and the park or the question itself is in the digest;
+//   - a ready or conflicting pull request, and its ready age, while its
+//     story is parked or held by a platform fault (pullHeld): the
+//     supervisor acts on the hold first, and the pull request comes back
+//     when the hold ends.
 type supervisorWake struct {
 	Held      []wakeHold     `json:"held"`
 	Leases    []wakeLease    `json:"leases"`
@@ -44,32 +52,40 @@ type supervisorWake struct {
 	Pulls     []wakePull     `json:"pulls"`
 	Faults    []wakeFault    `json:"faults"`
 	Questions []wakeQuestion `json:"questions"`
-	Jobs      []wakeJob      `json:"jobs"`
 }
 
+// wakeHold is a story held for a reason the supervisor can act on: a hold
+// of the dispatch pass other than a blocker or a full slot (release a
+// lease, ask a person or file an issue), a budget (grant a session) or a
+// platform fault (ask, or withdraw its own stale question).
 type wakeHold struct {
 	IssueID string `json:"issue_id"`
 	Reason  string `json:"reason"`
 }
 
-// wakeLease is a standing hold; Expired once it is past its expiry.
+// wakeLease is a standing hold; Expired once it is past its expiry, when
+// the supervisor renews or releases it.
 type wakeLease struct {
 	IssueID string `json:"issue_id"`
 	Holder  string `json:"holder"`
 	Expired bool   `json:"expired"`
 }
 
-// wakePark is a parked story and its question; Old once the question is
-// older than its alert age.
+// wakePark is a parked story and its question, which the supervisor
+// records a merge of, answers or proves. ProofsEnded counts the
+// live-proof jobs of the story that ended while this process ran, since
+// the supervisor decides the park on each one's result.
 type wakePark struct {
-	IssueID  string `json:"issue_id"`
-	Reason   string `json:"reason"`
-	Question string `json:"question"`
-	Old      bool   `json:"old"`
+	IssueID     string `json:"issue_id"`
+	Reason      string `json:"reason"`
+	Question    string `json:"question"`
+	ProofsEnded int    `json:"proofs_ended"`
 }
 
 // wakePull is a story pull request that is ready to merge or conflicts,
-// at its head; Old once a ready one waited supervisorReadyAge.
+// at its head, of a story neither parked nor held by a platform fault;
+// Old once a ready one waited supervisorReadyAge. The supervisor merges a
+// ready one, or starts the fix of a conflicting one.
 type wakePull struct {
 	PullRequest string `json:"pull_request"`
 	IssueID     string `json:"issue_id"`
@@ -78,6 +94,8 @@ type wakePull struct {
 	Old         bool   `json:"old"`
 }
 
+// wakeFault is an open platform fault: whether a person marked its action
+// done, and the stories it holds, which a question it asks may gain.
 type wakeFault struct {
 	ID         string   `json:"id"`
 	Class      string   `json:"class"`
@@ -85,17 +103,9 @@ type wakeFault struct {
 	Stories    []string `json:"stories"`
 }
 
-// wakeQuestion is an open platform fault that waits on a person's action;
-// Old once it is older than its alert age.
+// wakeQuestion is an open platform fault that waits on a person's action.
 type wakeQuestion struct {
 	FaultID string `json:"fault_id"`
-	Old     bool   `json:"old"`
-}
-
-// wakeJob is a running live-proof or fix job.
-type wakeJob struct {
-	IssueID string `json:"issue_id"`
-	Kind    string `json:"kind"`
 }
 
 // digest returns the hex digest of w.
@@ -109,15 +119,21 @@ func (w supervisorWake) digest() string {
 	return hex.EncodeToString(sum[:])[:supervisorDigestLen]
 }
 
-// wakeHoldReason is the reason the digest records for a dispatch hold:
-// the four blocker reasons are one, since which of them a pass records
-// depends on how many blockers it could read.
-func wakeHoldReason(r SkipReason) string {
+// blockerHold reports whether r holds a story for its blockers.
+func blockerHold(r SkipReason) bool {
 	switch r {
 	case SkipBlockedBy, SkipBlockersUnresolved, SkipBlockersNotRead, SkipBlockersIncomplete:
-		return "blocked"
+		return true
 	}
-	return string(r)
+	return false
+}
+
+// noteLiveProofEnded records that a live-proof job of the story issueID
+// ended. Must run on the event loop.
+func noteLiveProofEnded(state *State, issueID string) {
+	if s := state.supervisor; s != nil {
+		s.proofsEnded[issueID]++
+	}
 }
 
 // pullState is what a story pull request waits on: wakePullConflicting
@@ -176,20 +192,36 @@ func pullHead(reactions []*PendingReaction) string {
 	return ""
 }
 
+// pullHeld reports whether the story issueID is parked or held by a
+// platform fault, a question for a person among them. The supervisor
+// merges or fixes no pull request of such a story while the hold stands:
+// it answers or releases the park, or a person clears the fault, and that
+// change is in the digest. A proven live proof of a parked story, which
+// the supervisor merges, comes in as the end of its job (ProofsEnded).
+func pullHeld(state *State, issueID string) bool {
+	if _, ok := state.Parked[issueID]; ok {
+		return true
+	}
+	_, ok := state.FaultHolds[issueID]
+	return ok
+}
+
 // observeSupervisorWake returns the wake state of state at now. It keeps,
 // per ready pull request and head, when it was first seen ready, so a pull
 // request crosses supervisorReadyAge once; a restart starts that wait
-// again. Must run on the event loop.
+// again. The wait goes on while the pull request's story is held, so a
+// pull request that waited out its age while held comes back old when the
+// hold ends. Must run on the event loop.
 func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 	w := supervisorWake{
 		Held: []wakeHold{}, Leases: []wakeLease{}, Parked: []wakePark{}, Pulls: []wakePull{},
-		Faults: []wakeFault{}, Questions: []wakeQuestion{}, Jobs: []wakeJob{},
+		Faults: []wakeFault{}, Questions: []wakeQuestion{},
 	}
 	for id, h := range state.Held {
-		if h.Reason == SkipAgentSlotsFull || h.Reason == SkipSSHHostsFull {
+		if h.Reason == SkipAgentSlotsFull || h.Reason == SkipSSHHostsFull || blockerHold(h.Reason) {
 			continue
 		}
-		w.Held = append(w.Held, wakeHold{IssueID: id, Reason: wakeHoldReason(h.Reason)})
+		w.Held = append(w.Held, wakeHold{IssueID: id, Reason: string(h.Reason)})
 	}
 	for id, e := range state.BudgetExhausted {
 		w.Held = append(w.Held, wakeHold{IssueID: id, Reason: "budget: " + e.Reason})
@@ -200,10 +232,13 @@ func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 	for id, h := range state.StandingHolds {
 		w.Leases = append(w.Leases, wakeLease{IssueID: id, Holder: h.Holder, Expired: h.Expired() || !h.Until.After(now)})
 	}
+	var proofsEnded map[string]int
+	if s := state.supervisor; s != nil {
+		maps.DeleteFunc(s.proofsEnded, func(id string, _ int) bool { return state.Parked[id] == nil })
+		proofsEnded = s.proofsEnded
+	}
 	for id, p := range state.Parked {
-		w.Parked = append(w.Parked, wakePark{
-			IssueID: id, Reason: p.Reason, Question: p.Statement, Old: now.Sub(p.ParkedAt) >= supervisorQuestionAlertAge,
-		})
+		w.Parked = append(w.Parked, wakePark{IssueID: id, Reason: p.Reason, Question: p.Statement, ProofsEnded: proofsEnded[id]})
 	}
 	for _, f := range state.PlatformFaults {
 		fault := wakeFault{ID: f.ID, Class: f.Class, ActionDone: !f.ActionDoneAt.IsZero(), Stories: []string{}}
@@ -213,12 +248,7 @@ func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 		slices.Sort(fault.Stories)
 		w.Faults = append(w.Faults, fault)
 		if f.Action != nil && f.ActionDoneAt.IsZero() {
-			w.Questions = append(w.Questions, wakeQuestion{FaultID: f.ID, Old: now.Sub(f.RecordedAt) >= supervisorQuestionAlertAge})
-		}
-	}
-	for id, e := range state.Running {
-		if e.ReactionKind != "" {
-			w.Jobs = append(w.Jobs, wakeJob{IssueID: id, Kind: e.ReactionKind})
+			w.Questions = append(w.Questions, wakeQuestion{FaultID: f.ID})
 		}
 	}
 
@@ -250,6 +280,9 @@ func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 			readySince[mark] = since
 			pull.Old = now.Sub(since) >= supervisorReadyAge
 		}
+		if pullHeld(state, pull.IssueID) {
+			continue
+		}
 		w.Pulls = append(w.Pulls, pull)
 	}
 	if readySince != nil {
@@ -264,7 +297,6 @@ func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 	slices.SortFunc(w.Pulls, func(a, b wakePull) int { return cmp.Compare(a.PullRequest, b.PullRequest) })
 	slices.SortFunc(w.Faults, func(a, b wakeFault) int { return cmp.Compare(a.ID, b.ID) })
 	slices.SortFunc(w.Questions, func(a, b wakeQuestion) int { return cmp.Compare(a.FaultID, b.FaultID) })
-	slices.SortFunc(w.Jobs, func(a, b wakeJob) int { return cmp.Or(cmp.Compare(a.IssueID, b.IssueID), cmp.Compare(a.Kind, b.Kind)) })
 	return w
 }
 
