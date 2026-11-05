@@ -159,6 +159,8 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			{Name: "max_tokens_per_day", Type: FieldInt},
 			{Name: "quiet_sweep_ms", Type: FieldInt},
 			{Name: "noop_limit", Type: FieldInt},
+			{Name: "session_tokens", Type: FieldInt},
+			{Name: "velocity_factor", Type: FieldInt},
 		},
 	},
 	"environment": {

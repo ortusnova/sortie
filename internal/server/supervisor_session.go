@@ -29,6 +29,13 @@ type supervisorTriggerResponse struct {
 	At              time.Time `json:"at"`
 }
 
+// supervisorDeferralResponse is a trigger a spend guard keeps from
+// starting a session: guard is reserve or velocity.
+type supervisorDeferralResponse struct {
+	supervisorTriggerResponse
+	Guard string `json:"guard"`
+}
+
 // supervisorSessionResponse is one supervisor session. EndedAt, Outcome
 // and Actions are null while it runs; ID is null for a session that was
 // not stored, and Digest for one stored before digests were.
@@ -67,29 +74,40 @@ type supervisorSuspensionResponse struct {
 // supervisorBudgetResponse is the supervisor's spend in the current UTC
 // day against its daily budget.
 type supervisorBudgetResponse struct {
-	Day           time.Time `json:"day"`
-	ResetsAt      time.Time `json:"resets_at"`
-	SessionsUsed  int       `json:"sessions_used"`
-	SessionsLimit int       `json:"sessions_limit"`
-	TokensUsed    int64     `json:"tokens_used"`
-	TokensLimit   int64     `json:"tokens_limit"`
+	Day                time.Time `json:"day"`
+	ResetsAt           time.Time `json:"resets_at"`
+	SessionsUsed       int       `json:"sessions_used"`
+	SessionsLimit      int       `json:"sessions_limit"`
+	TokensUsed         int64     `json:"tokens_used"`
+	TokensLimit        int64     `json:"tokens_limit"`
+	SessionTokensLimit int64     `json:"session_tokens_limit"`
+	HourTokensUsed     int64     `json:"hour_tokens_used"`
+	HourTokensLimit    int64     `json:"hour_tokens_limit"`
+	HourPace           int64     `json:"hour_pace"`
+	Reserve            bool      `json:"reserve"`
+	Velocity           bool      `json:"velocity"`
 }
 
 // supervisorResponse is the supervisor's state as GET /api/v1/state
 // serves it.
 type supervisorResponse struct {
-	Status          string                         `json:"status"`
-	Agent           string                         `json:"agent"`
-	Unavailable     *string                        `json:"unavailable"`
-	Paused          *dispatchPausedResponse        `json:"paused"`
-	Running         *supervisorSessionResponse     `json:"running"`
-	LastSession     *supervisorSessionResponse     `json:"last_session"`
-	LastTrigger     *supervisorTriggerResponse     `json:"last_trigger"`
-	PendingTriggers []supervisorTriggerResponse    `json:"pending_triggers"`
-	Budget          supervisorBudgetResponse       `json:"budget"`
-	NextSweepAt     *time.Time                     `json:"next_sweep_at"`
-	LastDigest      *supervisorDigestResponse      `json:"last_digest"`
-	Suspended       []supervisorSuspensionResponse `json:"suspended_triggers"`
+	Status           string                         `json:"status"`
+	Agent            string                         `json:"agent"`
+	Unavailable      *string                        `json:"unavailable"`
+	Paused           *dispatchPausedResponse        `json:"paused"`
+	Running          *supervisorSessionResponse     `json:"running"`
+	LastSession      *supervisorSessionResponse     `json:"last_session"`
+	LastTrigger      *supervisorTriggerResponse     `json:"last_trigger"`
+	PendingTriggers  []supervisorTriggerResponse    `json:"pending_triggers"`
+	Budget           supervisorBudgetResponse       `json:"budget"`
+	NextSweepAt      *time.Time                     `json:"next_sweep_at"`
+	LastDigest       *supervisorDigestResponse      `json:"last_digest"`
+	Suspended        []supervisorSuspensionResponse `json:"suspended_triggers"`
+	Available        bool                           `json:"available"`
+	Reason           *string                        `json:"reason"`
+	ResetsAt         *time.Time                     `json:"resets_at"`
+	UnavailableSince *time.Time                     `json:"unavailable_since"`
+	DeferredTriggers []supervisorDeferralResponse   `json:"deferred_triggers"`
 }
 
 func toSupervisorPausedResponse(p *orchestrator.SupervisorPause) *dispatchPausedResponse {
@@ -169,21 +187,35 @@ func toSupervisorResponse(s *orchestrator.SupervisorSnapshot) *supervisorRespons
 		LastSession:     toSupervisorSessionResponse(s.LastSession),
 		PendingTriggers: toSupervisorTriggerResponses(s.Pending),
 		Budget: supervisorBudgetResponse{
-			Day:           s.Budget.Day.UTC(),
-			ResetsAt:      s.Budget.ResetsAt.UTC(),
-			SessionsUsed:  s.Budget.SessionsUsed,
-			SessionsLimit: s.Budget.SessionsLimit,
-			TokensUsed:    s.Budget.TokensUsed,
-			TokensLimit:   s.Budget.TokensLimit,
+			Day:                s.Budget.Day.UTC(),
+			ResetsAt:           s.Budget.ResetsAt.UTC(),
+			SessionsUsed:       s.Budget.SessionsUsed,
+			SessionsLimit:      s.Budget.SessionsLimit,
+			TokensUsed:         s.Budget.TokensUsed,
+			TokensLimit:        s.Budget.TokensLimit,
+			SessionTokensLimit: s.Budget.SessionTokensLimit,
+			HourTokensUsed:     s.Budget.HourTokensUsed,
+			HourTokensLimit:    s.Budget.HourTokensLimit,
+			HourPace:           s.Budget.HourPace,
+			Reserve:            s.Budget.Reserve,
+			Velocity:           s.Budget.Velocity,
 		},
-		NextSweepAt: faultTimeOrNil(s.NextSweepAt),
-		LastDigest:  toSupervisorDigestResponse(s),
-		Suspended:   make([]supervisorSuspensionResponse, 0, len(s.Suspended)),
+		NextSweepAt:      faultTimeOrNil(s.NextSweepAt),
+		LastDigest:       toSupervisorDigestResponse(s),
+		Suspended:        make([]supervisorSuspensionResponse, 0, len(s.Suspended)),
+		Available:        s.Available,
+		Reason:           nonEmpty(s.Reason),
+		ResetsAt:         faultTimeOrNil(s.ResetsAt),
+		UnavailableSince: faultTimeOrNil(s.Since),
+		DeferredTriggers: make([]supervisorDeferralResponse, 0, len(s.Deferred)),
 	}
 	for _, sus := range s.Suspended {
 		resp.Suspended = append(resp.Suspended, supervisorSuspensionResponse{
 			Kind: sus.Kind, Digest: sus.Digest, Sessions: sus.Sessions, Since: sus.Since.UTC(), SuspendedAt: sus.At.UTC(),
 		})
+	}
+	for _, d := range s.Deferred {
+		resp.DeferredTriggers = append(resp.DeferredTriggers, supervisorDeferralResponse{supervisorTriggerResponse: toSupervisorTriggerResponse(d.SupervisorTrigger), Guard: d.Guard})
 	}
 	if s.LastTrigger != nil {
 		t := toSupervisorTriggerResponse(*s.LastTrigger)

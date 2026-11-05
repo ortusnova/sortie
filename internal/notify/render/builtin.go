@@ -72,6 +72,10 @@ func bodyOf(n domain.Notification) string {
 		return holdExpiredBody(f)
 	case domain.SupervisorLoopSuspectedFacts:
 		return loopSuspectedBody(f)
+	case domain.SupervisorUnavailableFacts:
+		return supervisorUnavailableBody(f)
+	case domain.SupervisorAvailableFacts:
+		return supervisorAvailableBody(f)
 	case domain.StageFacts:
 		return stageBody(n.Envelope.EventType, n.Envelope.Stage)
 	default:

@@ -8,6 +8,7 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/notify/notifyhttp"
@@ -69,6 +70,41 @@ type wirePayload struct {
 
 	// Escalation is set only for a session.escalated event.
 	Escalation *wireEscalation `json:"escalation,omitempty"`
+
+	// Supervisor is set only for a supervisor.unavailable,
+	// supervisor.available, or supervisor.loop_suspected event.
+	Supervisor *wireSupervisor `json:"supervisor,omitempty"`
+}
+
+// wireSupervisor is what a supervisor event reports besides its text:
+// the reason and reset of a supervisor.unavailable or
+// supervisor.available event, and the hourly spend of a
+// supervisor.loop_suspected event for a spend velocity.
+type wireSupervisor struct {
+	Reason       string `json:"reason,omitempty"`
+	ResetsAt     string `json:"resets_at,omitempty"`
+	TriggerKind  string `json:"trigger_kind,omitempty"`
+	HourlyTokens int64  `json:"hourly_tokens,omitempty"`
+	HourlyLimit  int64  `json:"hourly_limit,omitempty"`
+	Pace         int64  `json:"pace,omitempty"`
+}
+
+// supervisorOf returns what the supervisor event facts report, nil for
+// any other facts.
+func supervisorOf(facts domain.MessageFacts) *wireSupervisor {
+	switch f := facts.(type) {
+	case domain.SupervisorUnavailableFacts:
+		w := &wireSupervisor{Reason: f.Reason}
+		if !f.ResetsAt.IsZero() {
+			w.ResetsAt = f.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		return w
+	case domain.SupervisorAvailableFacts:
+		return &wireSupervisor{Reason: f.Reason}
+	case domain.SupervisorLoopSuspectedFacts:
+		return &wireSupervisor{TriggerKind: f.TriggerKind, HourlyTokens: f.HourlyTokens, HourlyLimit: f.HourlyLimit, Pace: f.Pace}
+	}
+	return nil
 }
 
 // wireEscalation is what a session.escalated event reports besides its
@@ -125,6 +161,7 @@ func (n *notifier) Send(ctx context.Context, notification domain.Notification) e
 	if esc := notification.Envelope.Escalation; esc != (domain.SessionEscalation{}) {
 		payload.Escalation = &wireEscalation{Kind: esc.Kind, Rule: esc.Rule, URL: esc.URL}
 	}
+	payload.Supervisor = supervisorOf(notification.Message.Facts)
 
 	return n.client.PostJSON(ctx, payload)
 }

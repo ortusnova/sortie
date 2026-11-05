@@ -1377,6 +1377,20 @@ export interface SupervisorBudgetResponse {
   sessions_limit: number;
   tokens_used: number;
   tokens_limit: number;
+  session_tokens_limit: number;
+  hour_tokens_used: number;
+  hour_tokens_limit: number;
+  hour_pace: number;
+  reserve: boolean;
+  velocity: boolean;
+}
+
+export interface SupervisorDeferralResponse {
+  kind: string;
+  issue_identifier: string | null;
+  detail: string;
+  at: string;
+  guard: string;
 }
 
 export interface SupervisorDigestResponse {
@@ -1419,6 +1433,11 @@ export interface SupervisorResponse {
   next_sweep_at: string | null;
   last_digest: SupervisorDigestResponse | null;
   suspended_triggers: SupervisorSuspensionResponse[] | null;
+  available: boolean;
+  reason: string | null;
+  resets_at: string | null;
+  unavailable_since: string | null;
+  deferred_triggers: SupervisorDeferralResponse[] | null;
 }
 
 export interface SupervisorResultResponse {

@@ -36,6 +36,8 @@ type fakeSupervisorAgent struct {
 	stops   int
 	turn    func(ctx context.Context, prompt string, onEvent func(domain.AgentEvent)) (domain.TurnResult, error)
 	turns   chan string
+	// startErr, when set, fails the next session start.
+	startErr error
 }
 
 func newFakeSupervisorAgent() *fakeSupervisorAgent {
@@ -46,6 +48,10 @@ func (a *fakeSupervisorAgent) StartSession(_ context.Context, params domain.Star
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.starts = append(a.starts, params)
+	if err := a.startErr; err != nil {
+		a.startErr = nil
+		return domain.Session{}, err
+	}
 	return domain.Session{ID: fmt.Sprintf("sup-%d", len(a.starts))}, nil
 }
 
@@ -182,6 +188,7 @@ func newSupHarness(t *testing.T, mutate func(cfg *config.ServiceConfig)) *supHar
 		Agent: testSupervisorKind, Prompt: "supervisor.md",
 		SweepIntervalMS: int(time.Hour / time.Millisecond), MaxSessionsPerDay: 10, MaxTokensPerDay: 1_000_000,
 		QuietSweepMS: int(2 * time.Hour / time.Millisecond), NoopLimit: 3,
+		SessionTokens: config.DefaultSupervisorSessionTokens, VelocityFactor: config.DefaultSupervisorVelocityFactor,
 	}
 	if mutate != nil {
 		mutate(&cfg)

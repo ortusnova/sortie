@@ -375,6 +375,10 @@ func shortSHA(sha string) string {
 // event: which trigger kind is suspended, on which state digest, and since
 // when its sessions took no action.
 func loopSuspectedBody(f domain.SupervisorLoopSuspectedFacts) string {
+	if f.Velocity() {
+		return fmt.Sprintf("The supervisor spent %d tokens in the last hour, over its limit of %d. Only sweeps start a supervisor session until the hourly spend is back under the even pace of %d tokens an hour.",
+			f.HourlyTokens, f.HourlyLimit, f.Pace)
+	}
 	lines := []string{
 		fmt.Sprintf("%d consecutive %s supervisor sessions took no action on state digest %s. The %s trigger starts no session until the state digest changes.",
 			f.Sessions, f.TriggerKind, f.Digest, f.TriggerKind),
@@ -383,4 +387,47 @@ func loopSuspectedBody(f domain.SupervisorLoopSuspectedFacts) string {
 		lines = append(lines, "First of them: "+f.Since.UTC().Format(time.RFC3339))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// supervisorUnavailableBody returns the text of a supervisor.unavailable
+// event: why the supervisor starts no session, and when that resets.
+func supervisorUnavailableBody(f domain.SupervisorUnavailableFacts) string {
+	var why string
+	switch f.Reason {
+	case domain.SupervisorUnavailableBudget:
+		why = "its daily budget is spent"
+	case domain.SupervisorUnavailableCredential:
+		why = "its agent runtime refused its credential"
+	case domain.SupervisorUnavailablePaused:
+		why = "an operator paused it"
+	case domain.SupervisorUnavailableVelocity:
+		why = "its hourly spend is over its limit, so only sweeps start a session"
+	default:
+		why = f.Reason
+	}
+	lines := []string{"The supervisor cannot start the sessions it would start: " + why + ".", "Reason: " + f.Reason}
+	if f.Detail != "" {
+		lines = append(lines, "Detail: "+f.Detail)
+	}
+	if !f.Since.IsZero() {
+		lines = append(lines, "Since: "+f.Since.UTC().Format(time.RFC3339))
+	}
+	if !f.ResetsAt.IsZero() {
+		lines = append(lines, "Resets at: "+f.ResetsAt.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// supervisorAvailableBody returns the text of a supervisor.available
+// event: the supervisor starts sessions again.
+func supervisorAvailableBody(f domain.SupervisorAvailableFacts) string {
+	line := "The supervisor can start sessions again."
+	if f.Reason != "" {
+		line += " It could not (" + f.Reason + ")"
+		if !f.Since.IsZero() {
+			line += " since " + f.Since.UTC().Format(time.RFC3339)
+		}
+		line += "."
+	}
+	return line
 }

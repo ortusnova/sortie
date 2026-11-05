@@ -184,14 +184,51 @@ type HoldExpiredFacts struct {
 }
 
 // SupervisorLoopSuspectedFacts is the content of
-// supervisor.loop_suspected: the trigger kind whose consecutive sessions
-// took no action on one state digest, and that digest. The kind starts no
-// session until the digest changes.
+// supervisor.loop_suspected. For a no-op loop it names the trigger kind
+// whose consecutive sessions took no action on one state digest, and that
+// digest; the kind starts no session until the digest changes. For a
+// spend velocity HourlyTokens, the tokens of the last hour, exceeded
+// HourlyLimit, and only sweeps start a session until the hourly spend is
+// back under Pace, the even hourly pace of the daily budget.
 type SupervisorLoopSuspectedFacts struct {
-	TriggerKind string
-	Digest      string
-	Sessions    int
-	Since       time.Time
+	TriggerKind  string
+	Digest       string
+	Sessions     int
+	Since        time.Time
+	HourlyTokens int64
+	HourlyLimit  int64
+	Pace         int64
+}
+
+// Velocity reports whether f reports a spend velocity rather than a no-op
+// loop.
+func (f SupervisorLoopSuspectedFacts) Velocity() bool { return f.HourlyTokens > 0 }
+
+// Why the supervisor cannot start a session it would start, as
+// supervisor.unavailable reports it.
+const (
+	SupervisorUnavailableBudget     = "budget_exhausted"
+	SupervisorUnavailableCredential = "credential"
+	SupervisorUnavailablePaused     = "paused"
+	SupervisorUnavailableVelocity   = "velocity"
+)
+
+// SupervisorUnavailableFacts is the content of supervisor.unavailable:
+// why the supervisor cannot start a session it would start, since when,
+// and when that resets; ResetsAt is zero when it is not known.
+type SupervisorUnavailableFacts struct {
+	Reason   string
+	Detail   string
+	Since    time.Time
+	ResetsAt time.Time
+}
+
+// SupervisorAvailableFacts is the content of supervisor.available: the
+// supervisor can start a session again after it could not, for Reason,
+// since Since.
+type SupervisorAvailableFacts struct {
+	Reason string
+	Since  time.Time
 }
 
 func (SessionStartedFacts) messageFacts()            {}
@@ -212,6 +249,8 @@ func (BudgetHeldFacts) messageFacts()                {}
 func (SessionEscalatedFacts) messageFacts()          {}
 func (HoldExpiredFacts) messageFacts()               {}
 func (SupervisorLoopSuspectedFacts) messageFacts()   {}
+func (SupervisorUnavailableFacts) messageFacts()     {}
+func (SupervisorAvailableFacts) messageFacts()       {}
 
 // StoryRevertedFacts is the content of story.reverted: a story's merge
 // that a merged pull request reverted, so the story is no longer done.

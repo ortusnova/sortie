@@ -273,6 +273,8 @@ This section is intentionally redundant so a coding agent can implement the conf
 - `supervisor.max_tokens_per_day`: positive integer, default `2000000`; tokens less cache reads per UTC day; a session that reaches what is left is stopped
 - `supervisor.quiet_sweep_ms`: positive integer, default `7200000`; how often a sweep starts a session while the state digest is unchanged
 - `supervisor.noop_limit`: positive integer, default `3`; the consecutive sessions of one trigger kind that may take no action on one state digest before that kind starts no session until the digest changes
+- `supervisor.session_tokens`: positive integer, default `150000`; tokens less cache reads one session may spend; a session that reaches it is stopped with the outcome `session_cap`
+- `supervisor.velocity_factor`: positive integer, default `3`; how many times the even hourly pace of `supervisor.max_tokens_per_day` the last hour's tokens may exceed before only sweeps start a session
 - `health.deploy_state`: optional absolute path after `~` and `$VAR` expansion; the deploy state file a deploy kit writes, read by each health check
 - `merge_and_prove.deadline`: optional positive Go duration string, default `30m`; each wait after a merge-and-prove merge, for every host's deploy and then for the proven record
 - `merge_and_prove.hosts`: optional map of host name (`[A-Za-z0-9][A-Za-z0-9._-]*`) to an absolute deploy state file path after `~` and `$VAR` expansion; absent, the one host of `health.deploy_state`
