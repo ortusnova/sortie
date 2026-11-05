@@ -270,10 +270,10 @@ func TestScenario_AMissingTokenScopeMarkedDoneChecksAtOnce(t *testing.T) {
 
 	h.run()
 	done := h.o.PlatformFaultDoneFunc()
-	if got := done(waittest.Context(t), "pf-unknown", "taichi"); got.Status != PlatformFaultDoneNotFound {
+	if got := done(waittest.Context(t), "pf-unknown", "taichi", ""); got.Status != PlatformFaultDoneNotFound {
 		t.Errorf("marking an unknown fault done = %+v, want not found", got)
 	}
-	result := done(waittest.Context(t), faultID, "taichi")
+	result := done(waittest.Context(t), faultID, "taichi", "")
 	if result.Status != PlatformFaultDoneChecked || !result.Resolved {
 		t.Fatalf("marking the action done = %+v, want the fault checked and resolved", result)
 	}
@@ -325,7 +325,7 @@ func TestScenario_AMissingTokenScopeMarkedDoneDuringACheckChecksAgainAtOnce(t *t
 	if first := waittest.Receive(t, started, "the scheduled check"); first.ActionDone {
 		t.Fatalf("scheduled check = %+v, want it run before the action was marked done", first)
 	}
-	if got := h.o.PlatformFaultDoneFunc()(waittest.Context(t), fault.ID, "taichi"); got.Status != PlatformFaultDoneBusy {
+	if got := h.o.PlatformFaultDoneFunc()(waittest.Context(t), fault.ID, "taichi", ""); got.Status != PlatformFaultDoneBusy {
 		t.Fatalf("marking the action done during a check = %+v, want busy", got)
 	}
 	close(release)

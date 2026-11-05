@@ -389,7 +389,7 @@ func TestHealth_WorkerThatStaysUnreachable(t *testing.T) {
 		cancel()
 		<-stopped
 	})
-	result := done(ctx, faults[0].ID, "serghei")
+	result := done(ctx, faults[0].ID, "serghei", "")
 	if result.Status != PlatformFaultDoneChecked || !result.Resolved {
 		t.Fatalf("action done = %+v, want the fault resolved", result)
 	}

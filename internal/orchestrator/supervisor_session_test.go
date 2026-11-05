@@ -993,7 +993,7 @@ func TestScenario_ASupervisorQuestionForATokenScope(t *testing.T) {
 		}
 	})
 
-	done := h.o.PlatformFaultDoneFunc()(t.Context(), f.ID, "taichi")
+	done := h.o.PlatformFaultDoneFunc()(t.Context(), f.ID, "taichi", "")
 	if done.Status != PlatformFaultDoneChecked || !done.Resolved {
 		t.Fatalf("action done = %+v, want the check to pass and release the stories", done)
 	}
