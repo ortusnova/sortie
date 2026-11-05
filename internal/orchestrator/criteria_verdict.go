@@ -57,11 +57,27 @@ const (
 	CriteriaOutcomeRefused = "refused"
 )
 
-// CriterionVerdict is one criterion's entry in the criteria file.
+// CriterionReasonAfterDeploy is the reason of a live-proof criterion that
+// only a run against the deployed main settles, after the merge: Sortie
+// merges such a story through merge-and-prove, proves it after the deploy,
+// or reverts it.
+const CriterionReasonAfterDeploy = "after-deploy"
+
+// CriterionVerdict is one criterion's entry in the criteria file. Reason
+// says why a live-proof criterion needs a live run; [CriterionReasonAfterDeploy]
+// marks one only a deploy settles.
 type CriterionVerdict struct {
 	Criterion string `json:"criterion"`
 	Verdict   string `json:"verdict"`
 	Evidence  string `json:"evidence"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// afterDeploy reports whether c is a live-proof criterion that only a run
+// after the deploy settles.
+func (c CriterionVerdict) afterDeploy() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Verdict), CriterionLiveProof) &&
+		strings.EqualFold(strings.TrimSpace(c.Reason), CriterionReasonAfterDeploy)
 }
 
 // CriteriaVerdict is a review's verdict as a whole. Problem says what is
@@ -138,6 +154,34 @@ func evaluateCriteria(data []byte) CriteriaVerdict {
 	return v
 }
 
+// onlyAfterDeploy reports whether every criterion the verdict does not
+// find met is a live-proof one only a deploy settles, and at least one is.
+func (v CriteriaVerdict) onlyAfterDeploy() bool {
+	_, _, ok := v.afterDeployCriteria()
+	return ok
+}
+
+// afterDeployCriteria returns, when every criterion is met with evidence
+// or left to a proof after deploy and at least one is, the criteria left
+// to that proof, one per line. Otherwise it returns the first criterion
+// that keeps the story from merge-and-prove, numbered from 1, and false.
+func (v CriteriaVerdict) afterDeployCriteria() (left string, blocking int, ok bool) {
+	var b strings.Builder
+	for i, c := range v.Criteria {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(c.Verdict), CriterionMet) && strings.TrimSpace(c.Evidence) != "":
+		case c.afterDeploy():
+			fmt.Fprintf(&b, "- %s\n", verdictLine(c.Criterion))
+		default:
+			return "", i + 1, false
+		}
+	}
+	if b.Len() == 0 {
+		return "", 0, false
+	}
+	return b.String(), 0, true
+}
+
 // notMet lists the criteria whose verdict is not met, one per line.
 func (v CriteriaVerdict) notMet() string {
 	var b strings.Builder
@@ -145,6 +189,9 @@ func (v CriteriaVerdict) notMet() string {
 		verdict := strings.ToLower(strings.TrimSpace(c.Verdict))
 		if verdict == CriterionMet && strings.TrimSpace(c.Evidence) != "" {
 			continue
+		}
+		if reason := verdictLine(c.Reason); reason != "" && verdict == CriterionLiveProof {
+			verdict += ", " + reason
 		}
 		fmt.Fprintf(&b, "- criterion %d (%s): %s", i+1, verdict, verdictLine(c.Criterion))
 		if e := verdictLine(c.Evidence); e != "" {
@@ -216,6 +263,10 @@ func applyCriteriaVerdict(ctx context.Context, params HandleWorkerExitParams, en
 		if params.TrackerAdapter != nil {
 			comment := "Sortie does not merge this story's pull request yet: its review settles these criteria only by a live proof:\n\n" +
 				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once a comment on the pull request records it proven at its head (`" + LiveProofMarker + " <head sha>`), Sortie merges it once its CI passes and it does not conflict."
+			if v.onlyAfterDeploy() {
+				comment = "Sortie does not merge this story's pull request yet: its review settles these criteria only after a deploy:\n\n" +
+					v.notMet() + "\nMerge it through merge-and-prove (POST /api/v1/" + entry.Identifier + "/merge-and-prove) once its CI passes: Sortie merges it, waits for every host to deploy it, runs the live proof against the deployed main, and reverts the merge when no proven record lands by the deadline."
+			}
 			if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 				log.Warn("live-proof hold comment failed", slog.Any("error", err))
 			}

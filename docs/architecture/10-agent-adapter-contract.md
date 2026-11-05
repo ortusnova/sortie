@@ -401,6 +401,7 @@ The backend packages obey the adapter-family boundary rules: no cross-adapter im
 | `stage.not_advanced` | a hop decision's result is `failed` or `ceiling`: a due move was not made, and `Reason` carries the result | `warning` |
 | `session.escalated` | a caller acting for a running session posts to the escalate route (Section 13.7) and the issue's 60-second window has passed | `warning` |
 | `hold.expired` | a poll tick finds a lease on an issue that is not running past its expiry with no renewal (Section 13.7); the body names the holder, the reason, the last evidence, and the last renewal | `warning` |
+| `story.reverted` | merge-and-prove merges the revert of a story not proven after deploy by its deadline, or a poll tick finds a merged pull request on the forge that reverts a story's merge (Section 5.3.14); the body names the story's pull request and merge commit, the revert, who merged it, the reason, and the state the story returned to | `warning` |
 | `supervisor.loop_suspected` | `supervisor.noop_limit` consecutive supervisor sessions of one trigger kind took no action on the same state digest (Section 5.3.12); the body names the trigger kind, the digest, the sessions, and when the first started; the event names no issue and no `tracker_comment` destination receives it | `warning` |
 | `agent.message` | the agent calls `notify_operator` | set by the agent |
 

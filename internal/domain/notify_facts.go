@@ -212,3 +212,20 @@ func (BudgetHeldFacts) messageFacts()                {}
 func (SessionEscalatedFacts) messageFacts()          {}
 func (HoldExpiredFacts) messageFacts()               {}
 func (SupervisorLoopSuspectedFacts) messageFacts()   {}
+
+// StoryRevertedFacts is the content of story.reverted: a story's merge
+// that a merged pull request reverted, so the story is no longer done.
+// BySortie reports that Sortie opened and merged the revert because the
+// merged change was not proven live by its deadline; otherwise someone
+// merged a revert on the forge. Reason says why, and State is where the
+// story went, empty when Sortie left its state as it was.
+type StoryRevertedFacts struct {
+	PullRequest       string
+	MergeCommit       string
+	RevertPullRequest string
+	BySortie          bool
+	Reason            string
+	State             string
+}
+
+func (StoryRevertedFacts) messageFacts() {}

@@ -50,6 +50,7 @@ Top-level keys:
 - `environment`
 - `supervisor`
 - `health`
+- `merge_and_prove`
 
 Unknown keys should be ignored for forward compatibility.
 
@@ -682,6 +683,7 @@ Per-entry fields:
 | `stage.not_advanced` | A stage hop was due and not made, because the next stage's label could not be added or the hop ceiling was reached; the event carries the reason |
 | `session.escalated` | A caller acting for a running session asked Sortie to call people about it (Section 13.7); at most one per issue per 60 seconds |
 | `hold.expired` | A lease on an issue that is not running reached its expiry without a renewal (Section 13.7) |
+| `story.reverted` | A merged pull request reverted a story's merge: merge-and-prove's revert of a change not proven after deploy by its deadline, or one merged by anyone on the forge (Section 5.3.14) |
 | `supervisor.loop_suspected` | Consecutive supervisor sessions of one trigger kind took no action on one state digest, and the kind is suspended until the digest changes (Section 5.3.12); it names no issue, so `tracker_comment` never receives it |
 | `agent.message` | The agent called `notify_operator` |
 
@@ -795,6 +797,17 @@ Fields:
 - `credentials` (list of objects, optional): the credentials the runs use that the checks watch, each `{name, env, expires_command, login}`. `name` is required, `[A-Za-z0-9_-]+` and unique in the list; at least one of `env` and `expires_command` is set. `env` names a variable of Sortie's own environment that holds the value, which the check finds set, and whose JSON Web Token `exp` claim gives the expiry when `expires_command` is absent; under `remote`, where the worker's egress proxy holds the value, it is left out. `expires_command` is a shell command run on Sortie's host at each check that prints when the value expires (RFC 3339, or Unix seconds or milliseconds). `login` names the login that renews the value, which the check's person action names. Any other key fails validation.
 
 The section reloads: the next health check reads the new path and list. The full reference is in the [workflow reference](../workflow-reference.md#214-health--health-checks-before-runs-fail).
+
+#### 5.3.14 `merge_and_prove` (object, optional)
+
+How Sortie merges a story whose only unmet criteria are `live-proof` with the reason `after-deploy`, proves it after the deploy, or reverts it. The supervisor queues such a story with `POST /api/v1/{identifier}/merge-and-prove` (Section 13.7); Sortie keeps one in flight and moves it through the phases `merging`, `deploying`, `proving` and, when not proven, `reverting`, on the poll tick.
+
+Fields:
+
+- `deadline` (duration string, optional, default `30m`): how long each wait after the merge lasts: for every host to deploy a commit that holds the merge commit, and then, from the deploy, for a `sortie:live-proof proven <sha>` record on the pull request. A host that does not deploy it, or no proven record, by its deadline reverts the merge.
+- `hosts` (map of host name to path, optional): each host's deploy state file, in the format of `health.deploy_state`; absolute after `~` and `$VAR` expansion. Absent, the one host is `health.deploy_state`.
+
+A proven story gets its `merged` plan satisfaction and moves to the done state then; a reverted one returns to `tracker.release_state` with the reason and publishes `story.reverted`. On every poll tick Sortie also reads the merged pull requests of each repository it holds a merge record of; a merged revert of a story's merge, whoever merged it, deletes the story's record, so its dependents wait again, and moves the story out of its done state. The queue is stored in `merge_and_prove` (Section 19.2). The section reloads. The full reference is in the [workflow reference](../workflow-reference.md#215-merge_and_prove--merge-prove-after-deploy-or-revert).
 
 ### 5.4 Prompt Template Contract
 

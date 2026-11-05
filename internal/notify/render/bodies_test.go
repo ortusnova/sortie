@@ -559,6 +559,31 @@ func TestHoldExpiredBody(t *testing.T) {
 	}
 }
 
+func TestStoryRevertedBody(t *testing.T) {
+	t.Parallel()
+
+	got := storyRevertedBody(domain.StoryRevertedFacts{
+		PullRequest:       "o/kit#142",
+		MergeCommit:       "0123456789abcdef0123",
+		RevertPullRequest: "o/kit#150",
+		BySortie:          true,
+		Reason:            "no proven record by the deadline",
+		State:             "Todo",
+	})
+	want := "Its merge of o/kit#142 (0123456789ab) was reverted by o/kit#150, which Sortie merged because the change was not proven live in time.\n" +
+		"Reason: no proven record by the deadline\n" +
+		"The story is back in Todo and is not done; the stories it blocks wait for it again."
+	if got != want {
+		t.Errorf("storyRevertedBody() = %q, want %q", got, want)
+	}
+	got = storyRevertedBody(domain.StoryRevertedFacts{PullRequest: "o/kit#142", RevertPullRequest: "o/kit#144"})
+	want = "Its merge of o/kit#142 was reverted by o/kit#144, merged on the forge.\n" +
+		"The story is not done; the stories it blocks wait for it again."
+	if got != want {
+		t.Errorf("storyRevertedBody(by hand) = %q, want %q", got, want)
+	}
+}
+
 func TestLoopSuspectedBody(t *testing.T) {
 	t.Parallel()
 

@@ -66,6 +66,8 @@ func bodyOf(n domain.Notification) string {
 		return budgetHeldBody(f)
 	case domain.SessionEscalatedFacts:
 		return sessionEscalatedBody(f)
+	case domain.StoryRevertedFacts:
+		return storyRevertedBody(f)
 	case domain.HoldExpiredFacts:
 		return holdExpiredBody(f)
 	case domain.SupervisorLoopSuspectedFacts:

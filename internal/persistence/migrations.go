@@ -216,6 +216,9 @@ var migration1018SQL string
 //go:embed sql/1019_supervisor_action_profile.sql
 var migration1019SQL string
 
+//go:embed sql/1020_merge_and_prove.sql
+var migration1020SQL string
+
 // migrations lists upstream's migrations, numbered from 1 in upstream's
 // sequence, then the fork's, numbered from 1001. Upstream merges add lower
 // numbers, so a database that already ran fork migrations applies new
@@ -292,4 +295,5 @@ var migrations = []Migration{
 	{Version: 1017, Description: "supervisor question kinds and withdrawal, and supervisor_issues", SQL: migration1017SQL},
 	{Version: 1018, Description: "digest and actions columns on supervisor_sessions", SQL: migration1018SQL},
 	{Version: 1019, Description: "profile column on supervisor_actions", SQL: migration1019SQL},
+	{Version: 1020, Description: "merge_and_prove: stories merged, proven after deploy, or reverted", SQL: migration1020SQL},
 }

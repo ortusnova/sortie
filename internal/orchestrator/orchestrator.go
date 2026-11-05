@@ -417,6 +417,9 @@ type Orchestrator struct {
 	prCommentReader                   domain.PullRequestCommentReader
 	prDrafter                         domain.PullRequestDrafter
 	prFinder                          domain.PullRequestFinder
+	prReverter                        domain.PullRequestReverter
+	commitComparer                    domain.CommitComparer
+	revertFinder                      domain.RevertFinder
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
@@ -674,6 +677,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
 		o.prFinder, _ = params.SCMAdapter.(domain.PullRequestFinder)
+		o.prReverter, _ = params.SCMAdapter.(domain.PullRequestReverter)
+		o.commitComparer, _ = params.SCMAdapter.(domain.CommitComparer)
+		o.revertFinder, _ = params.SCMAdapter.(domain.RevertFinder)
 		if o.tokenInspector == nil {
 			o.tokenInspector, _ = params.SCMAdapter.(domain.SCMTokenInspector)
 		}
@@ -1269,6 +1275,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.startDueFaultChecks(ctx, time.Now())
 	o.runDueHealthChecks(ctx, cfg)
 	o.releaseParksByRecord(ctx, cfg, time.Now().UTC())
+	o.advanceMergeAndProve(ctx, cfg, time.Now().UTC())
+	o.detectReverts(ctx, cfg, time.Now().UTC())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
