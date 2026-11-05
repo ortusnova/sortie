@@ -553,8 +553,10 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 | `outcome`        | TEXT NOT NULL       | `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled`; empty with `ended_at` |
 | `error`          | TEXT NOT NULL       | Why the session ended other than completed, masked; empty otherwise |
 | `tokens`         | INTEGER NOT NULL    | Tokens less cache reads the session spent |
+| `digest`         | TEXT NOT NULL       | The state digest the session started on (migration 1018); `''` for a row written before |
+| `actions`        | INTEGER NOT NULL    | The `supervisor_actions` rows with `result` `done` stored while the session ran (migration 1018); `-1` while it runs, when the count could not be read, and for a row written before |
 
-The event loop writes a row when a session starts, and the session's goroutine records its end. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the newest row, which `GET /api/v1/state` serves as `last_session` until a session ends. Rows are never deleted.
+The event loop writes a row when a session starts, and the session's goroutine records its end and the actions it took, counted as the `done` rows of `supervisor_actions` with an `id` above the newest one when the session started. At the first loop iteration with a `supervisor` section, the loop reads the count of rows and the sum of `tokens` started since the current UTC midnight, which the daily budget counts from, and the 64 newest rows: the newest is the last session, whose `digest` the next trigger is compared with and which `GET /api/v1/state` serves as `last_session` until a session ends, and all of them rebuild each trigger kind's count of consecutive sessions that took no action on one digest, so a suspended kind stays suspended. Rows are never deleted.
 
 **`handoff_parts`**: the parts of a story a session could not do, from `.sortie/handoff.json` (Section 21.5) (migration 1015)
 
@@ -583,7 +585,7 @@ The event loop writes a row when a session starts, and the session's goroutine r
 
 The event loop writes the row when a run's exit records the part and at each change of its status. At startup every row is loaded before the first tick, so a story stays out of Done across a restart and a part recorded again by a later run is recognized; a `job` part that was `working` is loaded as `pending`, because its check job did not outlive the process, and is queued again. Rows are never deleted.
 
-**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1018)
+**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1019)
 
 | Column                | Type             | Notes |
 | --------------------- | ---------------- | ----- |

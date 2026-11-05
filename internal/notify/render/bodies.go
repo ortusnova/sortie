@@ -370,3 +370,17 @@ func shortSHA(sha string) string {
 	}
 	return sha
 }
+
+// loopSuspectedBody returns the text of a supervisor.loop_suspected
+// event: which trigger kind is suspended, on which state digest, and since
+// when its sessions took no action.
+func loopSuspectedBody(f domain.SupervisorLoopSuspectedFacts) string {
+	lines := []string{
+		fmt.Sprintf("%d consecutive %s supervisor sessions took no action on state digest %s. The %s trigger starts no session until the state digest changes.",
+			f.Sessions, f.TriggerKind, f.Digest, f.TriggerKind),
+	}
+	if !f.Since.IsZero() {
+		lines = append(lines, "First of them: "+f.Since.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(lines, "\n")
+}

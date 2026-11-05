@@ -10,7 +10,10 @@ import (
 func builtin(n domain.Notification) Text {
 	title, body := n.Message.Title, n.Message.Body
 	if n.Message.Facts != nil {
-		title = cmp.Or(n.Envelope.DisplayID, n.Envelope.Identifier, n.Envelope.IssueID) + ": " + string(n.Envelope.EventType)
+		title = string(n.Envelope.EventType)
+		if subject := cmp.Or(n.Envelope.DisplayID, n.Envelope.Identifier, n.Envelope.IssueID); subject != "" {
+			title = subject + ": " + title
+		}
 		body = bodyOf(n)
 	}
 
@@ -67,6 +70,8 @@ func bodyOf(n domain.Notification) string {
 		return storyRevertedBody(f)
 	case domain.HoldExpiredFacts:
 		return holdExpiredBody(f)
+	case domain.SupervisorLoopSuspectedFacts:
+		return loopSuspectedBody(f)
 	case domain.StageFacts:
 		return stageBody(n.Envelope.EventType, n.Envelope.Stage)
 	default:

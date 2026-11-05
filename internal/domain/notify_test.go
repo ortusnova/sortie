@@ -126,7 +126,7 @@ func TestEventTypes_Catalog(t *testing.T) {
 		"escalation.ci_failure", "escalation.review_comments", "escalation.bot_review",
 		"escalation.merge_conflicts", "escalation.auto_merge", "escalation.merge_completion",
 		"auto_merge.merged", "budget.held", "stage.advanced", "stage.not_advanced", "agent.message",
-		"session.escalated", "hold.expired", "story.reverted",
+		"session.escalated", "hold.expired", "story.reverted", "supervisor.loop_suspected",
 	}
 
 	got := EventTypes()
@@ -172,6 +172,7 @@ func TestEventType_Classification(t *testing.T) {
 		{"session.escalated", true, true, "warning"},
 		{"hold.expired", true, true, "warning"},
 		{"story.reverted", true, true, "warning"},
+		{"supervisor.loop_suspected", true, true, "warning"},
 		{"session.begun", false, false, ""},
 		{"", false, false, ""},
 	}

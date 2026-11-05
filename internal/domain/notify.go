@@ -45,6 +45,7 @@ const (
 	EventSessionEscalated          EventType = "session.escalated"
 	EventHoldExpired               EventType = "hold.expired"
 	EventStoryReverted             EventType = "story.reverted"
+	EventSupervisorLoopSuspected   EventType = "supervisor.loop_suspected"
 )
 
 // TrackerCommentKind is the reserved notifications kind of the built-in
@@ -70,6 +71,7 @@ var eventTypes = []EventType{
 	EventSessionEscalated,
 	EventHoldExpired,
 	EventStoryReverted,
+	EventSupervisorLoopSuspected,
 }
 
 // EventTypes returns the catalog in declaration order. The caller may
@@ -107,7 +109,8 @@ func (t EventType) Severity() string {
 		EventStageNotAdvanced,
 		EventSessionEscalated,
 		EventHoldExpired,
-		EventStoryReverted:
+		EventStoryReverted,
+		EventSupervisorLoopSuspected:
 		return "warning"
 	default:
 		return ""

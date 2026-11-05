@@ -29,9 +29,11 @@ type supervisorTriggerResponse struct {
 	At              time.Time `json:"at"`
 }
 
-// supervisorSessionResponse is one supervisor session. EndedAt and
-// Outcome are null while it runs.
+// supervisorSessionResponse is one supervisor session. EndedAt, Outcome
+// and Actions are null while it runs; ID is null for a session that was
+// not stored, and Digest for one stored before digests were.
 type supervisorSessionResponse struct {
+	ID           *int64                      `json:"id"`
 	StartedAt    time.Time                   `json:"started_at"`
 	EndedAt      *time.Time                  `json:"ended_at"`
 	Outcome      *string                     `json:"outcome"`
@@ -39,6 +41,27 @@ type supervisorSessionResponse struct {
 	Tokens       int64                       `json:"tokens"`
 	TriggerCount int                         `json:"trigger_count"`
 	Triggers     []supervisorTriggerResponse `json:"triggers"`
+	Digest       *string                     `json:"digest"`
+	Actions      *int                        `json:"actions"`
+}
+
+// supervisorDigestResponse is the state digest of the last supervisor
+// session that ran, and that session.
+type supervisorDigestResponse struct {
+	Digest           string    `json:"digest"`
+	SessionID        *int64    `json:"session_id"`
+	SessionStartedAt time.Time `json:"session_started_at"`
+	TriggerKind      string    `json:"trigger_kind"`
+}
+
+// supervisorSuspensionResponse is a trigger kind that starts no session
+// until the state digest changes.
+type supervisorSuspensionResponse struct {
+	Kind        string    `json:"kind"`
+	Digest      string    `json:"digest"`
+	Sessions    int       `json:"sessions"`
+	Since       time.Time `json:"since"`
+	SuspendedAt time.Time `json:"suspended_at"`
 }
 
 // supervisorBudgetResponse is the supervisor's spend in the current UTC
@@ -55,16 +78,18 @@ type supervisorBudgetResponse struct {
 // supervisorResponse is the supervisor's state as GET /api/v1/state
 // serves it.
 type supervisorResponse struct {
-	Status          string                      `json:"status"`
-	Agent           string                      `json:"agent"`
-	Unavailable     *string                     `json:"unavailable"`
-	Paused          *dispatchPausedResponse     `json:"paused"`
-	Running         *supervisorSessionResponse  `json:"running"`
-	LastSession     *supervisorSessionResponse  `json:"last_session"`
-	LastTrigger     *supervisorTriggerResponse  `json:"last_trigger"`
-	PendingTriggers []supervisorTriggerResponse `json:"pending_triggers"`
-	Budget          supervisorBudgetResponse    `json:"budget"`
-	NextSweepAt     *time.Time                  `json:"next_sweep_at"`
+	Status          string                         `json:"status"`
+	Agent           string                         `json:"agent"`
+	Unavailable     *string                        `json:"unavailable"`
+	Paused          *dispatchPausedResponse        `json:"paused"`
+	Running         *supervisorSessionResponse     `json:"running"`
+	LastSession     *supervisorSessionResponse     `json:"last_session"`
+	LastTrigger     *supervisorTriggerResponse     `json:"last_trigger"`
+	PendingTriggers []supervisorTriggerResponse    `json:"pending_triggers"`
+	Budget          supervisorBudgetResponse       `json:"budget"`
+	NextSweepAt     *time.Time                     `json:"next_sweep_at"`
+	LastDigest      *supervisorDigestResponse      `json:"last_digest"`
+	Suspended       []supervisorSuspensionResponse `json:"suspended_triggers"`
 }
 
 func toSupervisorPausedResponse(p *orchestrator.SupervisorPause) *dispatchPausedResponse {
@@ -90,7 +115,8 @@ func toSupervisorSessionResponse(s *orchestrator.SupervisorSession) *supervisorS
 	if s == nil {
 		return nil
 	}
-	return &supervisorSessionResponse{
+	resp := &supervisorSessionResponse{
+		ID:           positiveOrNil(s.ID),
 		StartedAt:    s.StartedAt.UTC(),
 		EndedAt:      faultTimeOrNil(s.EndedAt),
 		Outcome:      nonEmpty(s.Outcome),
@@ -98,7 +124,36 @@ func toSupervisorSessionResponse(s *orchestrator.SupervisorSession) *supervisorS
 		Tokens:       s.Tokens,
 		TriggerCount: s.TriggerCount,
 		Triggers:     toSupervisorTriggerResponses(s.Triggers),
+		Digest:       nonEmpty(s.Digest),
 	}
+	if s.Actions >= 0 && !s.EndedAt.IsZero() {
+		resp.Actions = new(s.Actions)
+	}
+	return resp
+}
+
+func positiveOrNil(id int64) *int64 {
+	if id <= 0 {
+		return nil
+	}
+	return &id
+}
+
+// toSupervisorDigestResponse returns the digest of the running session, or
+// else of the last session; nil while neither carries one.
+func toSupervisorDigestResponse(s *orchestrator.SupervisorSnapshot) *supervisorDigestResponse {
+	session := s.Running
+	if session == nil {
+		session = s.LastSession
+	}
+	if session == nil || session.Digest == "" {
+		return nil
+	}
+	resp := &supervisorDigestResponse{Digest: session.Digest, SessionID: positiveOrNil(session.ID), SessionStartedAt: session.StartedAt.UTC()}
+	if len(session.Triggers) > 0 {
+		resp.TriggerKind = session.Triggers[0].Kind
+	}
+	return resp
 }
 
 func toSupervisorResponse(s *orchestrator.SupervisorSnapshot) *supervisorResponse {
@@ -122,6 +177,13 @@ func toSupervisorResponse(s *orchestrator.SupervisorSnapshot) *supervisorRespons
 			TokensLimit:   s.Budget.TokensLimit,
 		},
 		NextSweepAt: faultTimeOrNil(s.NextSweepAt),
+		LastDigest:  toSupervisorDigestResponse(s),
+		Suspended:   make([]supervisorSuspensionResponse, 0, len(s.Suspended)),
+	}
+	for _, sus := range s.Suspended {
+		resp.Suspended = append(resp.Suspended, supervisorSuspensionResponse{
+			Kind: sus.Kind, Digest: sus.Digest, Sessions: sus.Sessions, Since: sus.Since.UTC(), SuspendedAt: sus.At.UTC(),
+		})
 	}
 	if s.LastTrigger != nil {
 		t := toSupervisorTriggerResponse(*s.LastTrigger)

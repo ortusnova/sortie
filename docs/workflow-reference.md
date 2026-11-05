@@ -1714,6 +1714,7 @@ The catalog is closed. Validation accepts exactly these names and rejects any ot
 | `stage.not_advanced` | A stage hop is due and not made, because the label add failed or the hop ceiling is reached. The event carries the reason, `failed` or `ceiling`. | `warning` |
 | `hold.expired` | A lease on an issue that is not running ([Leases on issues that are not running](#leases-on-issues-that-are-not-running)) reached its `until` without a renewal. The body names the holder, the reason, the last evidence, and when it was last renewed. A destination receives it only when its `events` lists it. | `warning` |
 | `story.reverted` | A merged pull request reverts a story's merge: the revert merge-and-prove merged because the change was not proven after deploy by its deadline, or one someone else merged on the forge ([Section 2.15](#215-merge_and_prove--merge-prove-after-deploy-or-revert)). The body names the story's pull request and merge commit, the revert, who merged it, the reason, and the state the story returned to. A destination receives it only when its `events` lists it. | `warning` |
+| `supervisor.loop_suspected` | `supervisor.noop_limit` consecutive supervisor sessions of one trigger kind took no action on the same state digest, and that kind starts no session until the digest changes ([A loop of no-ops](#213-supervisor--supervisor-session)). It names no issue: the body names the trigger kind, the digest, the number of sessions, and when the first of them started. A destination receives it only when its `events` lists it; `tracker_comment` never receives it. | `warning` |
 | `session.escalated` | A caller acting for a running session, normally an ACP broker relaying an agent's question or permission request, posts to `POST /api/v1/{identifier}/escalate` ([Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token)). At most one per issue per 60 seconds. The caller's text arrives masked of registered secrets as `agent_text`, and the event carries the kind, the run's rule, and the session link. A destination receives it only when its `events` lists it; nothing subscribes to it implicitly. | `warning` |
 | `agent.message` | The agent calls `notify_operator`. | Set by the agent. |
 
@@ -2244,6 +2245,8 @@ supervisor:
   sweep_interval_ms: 1800000
   max_sessions_per_day: 48
   max_tokens_per_day: 2000000
+  quiet_sweep_ms: 7200000
+  noop_limit: 3
 ```
 
 The supervisor is an agent session that settles what Sortie's own rules cannot: a park whose question Sortie could answer from the forge, a failure that fits no fault class, a pull request nobody moves, or held stories while a slot is free. It acts only through the supervisor token's routes (see **Supervisor token** in [Section 4.1](#41-http-server-serverport-serverhost-servercontrol_token)) and reads the state through the read-only API. Without the section no supervisor runs.
@@ -2252,7 +2255,9 @@ The supervisor is an agent session that settles what Sortie's own rules cannot: 
 | ----- | ---- | -------- | ------- | ----------- |
 | `supervisor.agent` | string | Yes | — | The agent kind the supervisor session runs, such as `claude-code`. Its command and settings come from the same places a story's session of that kind takes them: `agent.command` for the default kind, and the top-level block named for the kind. |
 | `supervisor.prompt` | string | Yes | — | The path of the supervisor's prompt template, relative to the directory of `WORKFLOW.md` when not absolute. `~` and `$VAR` expand. Sortie reads it at each session's start, so an edit takes effect at the next session. [`examples/supervisor.md`](../examples/supervisor.md) is a starting point. |
-| `supervisor.sweep_interval_ms` | integer | No | `1800000` | Time between two sweeps, each of which starts a session. Must be positive. |
+| `supervisor.sweep_interval_ms` | integer | No | `1800000` | Time between two sweeps. A sweep starts a session when the state digest changed, as any trigger does. Must be positive. |
+| `supervisor.quiet_sweep_ms` | integer | No | `7200000` | How often a sweep starts a session while the state digest is unchanged: the first sweep once this long has passed since the last session started. Two hours by default. Must be positive. |
+| `supervisor.noop_limit` | integer | No | `3` | The consecutive sessions of one trigger kind that may take no action on the same state digest; that kind then starts no session until the digest changes. Must be positive. |
 | `supervisor.max_sessions_per_day` | integer | No | `48` | The supervisor sessions one UTC day may start. Must be positive. |
 | `supervisor.max_tokens_per_day` | integer | No | `2000000` | The tokens, less cache reads (as `agent.max_tokens` counts them), the supervisor sessions of one UTC day may spend. A session whose spend reaches what the day has left is stopped with the outcome `budget_exhausted`. Must be positive. |
 
@@ -2265,10 +2270,27 @@ The section needs `server.supervisor_token`: Sortie exits at startup with a conf
 | `park` | A story parks, for any reason. |
 | `unclassified_failure` | A story stops on a repeated failure whose signature is in no fault class, which records a platform fault of class `unclassified`. A failure in a class does not trigger it. |
 | `stalled_reaction` | A pending pull request reaction made no progress for an hour: no new reaction, pull request head, or restarted watch since. Once per reaction and progress mark. |
-| `idle_slot` | A poll left a story slot free and dispatched nothing while stories are held (held for a reason other than a full slot or a live lease, by a platform fault, or by a budget). A story under a live lease is its holder's work and counts only once the lease expires. Once per set of held stories; a later poll with the same held stories triggers nothing. |
+| `idle_slot` | A poll left a story slot free and dispatched nothing while stories are held (held for a reason other than a full slot or a live lease, by a platform fault, or by a budget). A story under a live lease is its holder's work and counts only once the lease expires. Every such poll triggers; the state digest decides whether a session starts. |
 | `sweep` | Every `sweep_interval_ms`, the first one interval after startup. |
 
 A trigger that comes while a session runs waits, and the next session starts when that one ends, with every trigger that waited (at most 32; a second trigger of the same kind for the same story replaces the first). A trigger that comes while the day's budget is spent is dropped, and the state still shows it as `last_trigger`. No supervisor runs under `--once`.
+
+**The state digest.** A trigger of any kind, the sweep included, starts a session only when the state digest differs from the digest of the last session that ran; otherwise it is dropped, and `last_trigger` still shows it. The digest is a 16-hex-digit hash over what the supervisor could act on:
+
+| Part | What counts |
+| ---- | ----------- |
+| Held stories | Each story the dispatch pass held, with its reason (the four blocker reasons count as one, `blocked`), each story a platform fault holds, with the fault, and each budget-held story, with its reason. A story held for a full slot (`agent_slots_full`, `ssh_hosts_full`) does not count, so a slot that frees or fills changes nothing. |
+| Leases | Each lease on a story that is not running, with its holder and whether it is past its expiry. A renewal changes nothing. |
+| Parked stories | Each parked story, with its reason and its question (the park's statement). |
+| Story pull requests | Each pull request a pending reaction watches that is ready to merge (every check the reactions made passed, as `pulls` reports `waits_on: none`) or conflicts with its base (`waits_on: conflict`), with its head commit. |
+| Platform faults | Each open platform fault, with its class, whether a person marked its action done, and the stories it holds. |
+| Questions for a person | Each open platform fault whose person action is not marked done. |
+| Jobs | Each running live-proof or fix job: a run continued by a reaction, such as `live-proof`, `review` or `ci`. |
+| Time thresholds | A ready pull request that waited ready for 30 minutes at the same head, a lease past its expiry, and a parked story's question or a question for a person older than its alert age of 4 hours. Each threshold changes the digest once, when it is crossed. The 30 minutes count from when this process first saw the pull request ready, so a restart starts them again. |
+
+A **quiet sweep** is the exception: while the digest is unchanged, the first sweep once `supervisor.quiet_sweep_ms` has passed since the last session started runs a session, with the detail `the quiet sweep: the state digest is unchanged since the last session`. Each session's digest is stored with it in `supervisor_sessions`, so a restart compares against the last stored digest; `GET /api/v1/state` serves it as `supervisor.last_digest`.
+
+**A loop of no-ops.** A session took an action when the supervisor token made a request Sortie answered `done` while it ran (a `supervisor_actions` record with `result: done`). After `supervisor.noop_limit` consecutive sessions of one trigger kind (a session's kind is its first trigger's) that took no action on the same digest, that kind is suspended: its triggers start no session while the digest is that one, and the first trigger of the kind on another digest lifts the suspension. Sortie logs `supervisor loop suspected`, publishes `supervisor.loop_suspected` ([Event catalog](#event-catalog)), and the state API lists the kind in `supervisor.suspended_triggers`. A session a pause or a stop cut short, a session whose actions could not be counted, and a quiet sweep leave the count alone; a session that took an action resets its kind's count. The count is rebuilt from the stored sessions at startup, so a suspension outlives a restart.
 
 **Its own slot.** The supervisor session runs beside the story sessions, never in one of their slots: it does not count against `agent.max_concurrent_agents` or `agent.max_concurrent_agents_by_state`, and a story dispatches while it runs. It runs on Sortie's own host, whatever `environment.kind`, in the directory `supervisor` beside the database, with no workspace hooks and no Sortie tool server, for one turn bounded by `agent.turn_timeout_ms`.
 
@@ -2286,9 +2308,9 @@ Sortie then appends a section that holds the API URL, the supervisor token, ever
 
 **Asking a person.** For a credential, a key, a spec or story approval, an operator decision, or any action whose effect it cannot check, the supervisor raises a question with `POST /api/v1/supervisor/questions` (see [Platform Faults](#post-apiv1platform-faultsidaction-done--platform-faults)). The question names its kind (`credential`, `key`, `approval`, `decision`, `host_action`, or `live_proof`), the exact action, where to take it, the stories it holds, and what the supervisor already checked; it holds those stories out of dispatch, retries included, until a person marks the action done and its check passes. A second question of the same kind for one of its stories, or with the same action and place, joins the first whatever its wording, and the first keeps the new evidence, so each decision has one question. A question the supervisor raised that went stale, such as a live proof of a pull request the forge shows merged and reverted, it withdraws with `POST /api/v1/supervisor/questions/{id}/withdraw` and the evidence, optionally raising a replacement; the withdrawal releases the stories the question held. It cannot withdraw a question a person raised or a fault Sortie or a story's agent recorded. An issue it files with `POST /api/v1/issues` names its kind and the stories or fault signature it concerns, and joins an open issue of the same stories and kind, or the same signature, as a comment.
 
-**Pause and budget.** `POST /api/v1/supervisor/pause` stops the running session (outcome `paused`) and starts no new one; triggers keep coming in and wait. `POST /api/v1/supervisor/resume` starts a session at once for what waited. The pause is in memory and a restart clears it. Each session is stored in the `supervisor_sessions` table, so the day's budget and the last session outlive a restart. `GET /api/v1/state` serves the supervisor's status, its last trigger and its budget use as `supervisor`.
+**Pause and budget.** `POST /api/v1/supervisor/pause` stops the running session (outcome `paused`) and starts no new one; triggers keep coming in and wait. `POST /api/v1/supervisor/resume` starts a session at once for what waited. The pause is in memory and a restart clears it. Each session is stored in the `supervisor_sessions` table with its state digest and the actions it took, so the day's budget, the last session, its digest and the no-op counts outlive a restart. `GET /api/v1/state` serves the supervisor's status, its last trigger, its last digest, its suspended trigger kinds and its budget use as `supervisor`.
 
-**Reload.** The section reloads. A new prompt path, sweep interval or budget applies from the next loop iteration; a running session finishes with the settings it started with. Removing the section lets a running session finish and starts no new one.
+**Reload.** The section reloads. A new prompt path, sweep interval, quiet sweep interval, no-op limit or budget applies from the next loop iteration; a running session finishes with the settings it started with. Removing the section lets a running session finish and starts no new one.
 
 ---
 
@@ -3889,12 +3911,14 @@ A session whose `usage_arrival` is `none` contributes nothing to the token total
 | `agent` | `supervisor.agent`. |
 | `unavailable` | Why no session can start, such as a missing `server.supervisor_token`, the server being off, or an agent kind with no adapter; `null` otherwise. |
 | `paused` | The pause in force, `since`, `by` and `reason`; `null` while the supervisor runs. |
-| `running` | The running session, `null` when none runs: `started_at`, `tokens` spent so far, `trigger_count`, `triggers`, and `ended_at`, `outcome` and `error` all `null`. |
-| `last_session` | The newest session that ended, in the same shape, with `outcome` `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled` (Sortie stopped), and `error`; `null` before the first. A session read back after a restart carries its first trigger only. |
+| `running` | The running session, `null` when none runs: `id` (its `supervisor_sessions` row, `null` when it was not stored), `started_at`, `tokens` spent so far, `trigger_count`, `triggers`, `digest` (the state digest it started on), and `ended_at`, `outcome`, `error` and `actions` all `null`. |
+| `last_session` | The newest session that ended, in the same shape, with `outcome` `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled` (Sortie stopped), `error`, and `actions`, the supervisor actions Sortie took in it (`null` when they could not be counted); `null` before the first. A session read back after a restart carries its first trigger only; `digest` is `null` for a session stored before digests were. |
 | `last_trigger` | The newest trigger, started or dropped: `kind` (`park`, `unclassified_failure`, `stalled_reaction`, `idle_slot`, or `sweep`), `issue_identifier` (`null` for a trigger about no one story), `detail`, and `at`. `null` before the first. |
 | `pending_triggers` | The triggers waiting for the next session. |
 | `budget` | The current UTC day's use: `day`, `resets_at`, `sessions_used` of `sessions_limit`, and `tokens_used` (the running session included) of `tokens_limit`. |
 | `next_sweep_at` | When the next sweep comes due. |
+| `last_digest` | The state digest of the last session that ran, the running one first: `digest`, `session_id`, `session_started_at`, and `trigger_kind`, the session's first trigger. A trigger starts a session only when the state digest differs from it ([The state digest](#213-supervisor--supervisor-session)). `null` before the first session. |
+| `suspended_triggers` | The trigger kinds that start no session until the state digest changes, by kind: `kind`, `digest` (the digest they are suspended on), `sessions` (the consecutive sessions of the kind that took no action on it), `since` (when the first of them started), and `suspended_at`. `[]` when none is. |
 
 **Workers and what waits on them (`host`, `waits`, `pulls`):**
 
@@ -7366,6 +7390,8 @@ A flat reference of every configuration field, for quick lookup. The "Env Overri
 | `supervisor.sweep_interval_ms`          | integer          | `1800000`                    | —                                        | Time between sweeps; positive |
 | `supervisor.max_sessions_per_day`       | integer          | `48`                         | —                                        | Sessions per UTC day; positive |
 | `supervisor.max_tokens_per_day`         | integer          | `2000000`                    | —                                        | Tokens less cache reads per UTC day; positive; stops a session that reaches it |
+| `supervisor.quiet_sweep_ms`             | integer          | `7200000`                    | —                                        | How often a sweep starts a session on an unchanged state digest; positive |
+| `supervisor.noop_limit`                 | integer          | `3`                          | —                                        | Consecutive no-op sessions of one trigger kind on one digest before the kind is suspended; positive |
 | `health.deploy_state`                   | path             | _(none)_                     | —                                        | Deploy state file the deploy kit writes; checked with the other health checks |
 | `health.credentials`                    | `[map]`          | `[]`                         | —                                        | `name` required; `env`, `expires_command` (one at least), `login`; each watched for presence and expiry |
 | `merge_and_prove.deadline`              | duration         | `30m`                        | —                                        | Each wait after a merge-and-prove merge: for every host's deploy, then for the proven record |

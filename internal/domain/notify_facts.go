@@ -183,6 +183,17 @@ type HoldExpiredFacts struct {
 	Until     time.Time
 }
 
+// SupervisorLoopSuspectedFacts is the content of
+// supervisor.loop_suspected: the trigger kind whose consecutive sessions
+// took no action on one state digest, and that digest. The kind starts no
+// session until the digest changes.
+type SupervisorLoopSuspectedFacts struct {
+	TriggerKind string
+	Digest      string
+	Sessions    int
+	Since       time.Time
+}
+
 func (SessionStartedFacts) messageFacts()            {}
 func (SessionCompletedFacts) messageFacts()          {}
 func (SessionStoppedFacts) messageFacts()            {}
@@ -200,6 +211,7 @@ func (StageFacts) messageFacts()                     {}
 func (BudgetHeldFacts) messageFacts()                {}
 func (SessionEscalatedFacts) messageFacts()          {}
 func (HoldExpiredFacts) messageFacts()               {}
+func (SupervisorLoopSuspectedFacts) messageFacts()   {}
 
 // StoryRevertedFacts is the content of story.reverted: a story's merge
 // that a merged pull request reverted, so the story is no longer done.
