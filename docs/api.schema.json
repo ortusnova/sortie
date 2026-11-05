@@ -6574,6 +6574,37 @@
       ],
       "type": "object"
     },
+    "SupervisorDigestResponse": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_started_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "trigger_kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "session_id",
+        "session_started_at",
+        "trigger_kind"
+      ],
+      "type": "object"
+    },
     "SupervisorIssueResponse": {
       "properties": {
         "action": {
@@ -6661,6 +6692,16 @@
         "budget": {
           "$ref": "#/$defs/SupervisorBudgetResponse"
         },
+        "last_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorDigestResponse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "last_session": {
           "anyOf": [
             {
@@ -6728,6 +6769,19 @@
         "status": {
           "type": "string"
         },
+        "suspended_triggers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorSuspensionResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "unavailable": {
           "anyOf": [
             {
@@ -6749,7 +6803,9 @@
         "last_trigger",
         "pending_triggers",
         "budget",
-        "next_sweep_at"
+        "next_sweep_at",
+        "last_digest",
+        "suspended_triggers"
       ],
       "type": "object"
     },
@@ -6796,6 +6852,26 @@
     },
     "SupervisorSessionResponse": {
       "properties": {
+        "actions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "ended_at": {
           "anyOf": [
             {
@@ -6811,6 +6887,16 @@
           "anyOf": [
             {
               "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
             },
             {
               "type": "null"
@@ -6852,13 +6938,45 @@
         }
       },
       "required": [
+        "id",
         "started_at",
         "ended_at",
         "outcome",
         "error",
         "tokens",
         "trigger_count",
-        "triggers"
+        "triggers",
+        "digest",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "SupervisorSuspensionResponse": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "sessions": {
+          "type": "integer"
+        },
+        "since": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "suspended_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "digest",
+        "sessions",
+        "since",
+        "suspended_at"
       ],
       "type": "object"
     },

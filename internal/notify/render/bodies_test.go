@@ -558,3 +558,28 @@ func TestHoldExpiredBody(t *testing.T) {
 		t.Errorf("holdExpiredBody(no by) = %q", got)
 	}
 }
+
+func TestLoopSuspectedBody(t *testing.T) {
+	t.Parallel()
+
+	since := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	got := loopSuspectedBody(domain.SupervisorLoopSuspectedFacts{TriggerKind: "idle_slot", Digest: "4f2a9c01d3e5b778", Sessions: 3, Since: since})
+	want := "3 consecutive idle_slot supervisor sessions took no action on state digest 4f2a9c01d3e5b778. " +
+		"The idle_slot trigger starts no session until the state digest changes.\n" +
+		"First of them: 2026-11-04T09:00:00Z"
+	if got != want {
+		t.Errorf("loopSuspectedBody() = %q, want %q", got, want)
+	}
+}
+
+func TestBuiltin_TitleWithoutAnIssue(t *testing.T) {
+	t.Parallel()
+
+	n := domain.Notification{
+		Envelope: domain.NotificationEnvelope{EventType: domain.EventSupervisorLoopSuspected},
+		Message:  domain.NotificationMessage{Severity: "warning", Facts: domain.SupervisorLoopSuspectedFacts{TriggerKind: "sweep", Digest: "d", Sessions: 3}},
+	}
+	if got := builtin(n).Title; got != "supervisor.loop_suspected" {
+		t.Errorf("title = %q, want the event type alone", got)
+	}
+}
