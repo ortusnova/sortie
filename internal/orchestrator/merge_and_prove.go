@@ -212,9 +212,11 @@ func mergeAndProveHolds(state *State, issueID string) bool {
 // when its latest criteria verdict leaves only criteria a live proof
 // settles after deploy, its pull request's CI passed at its head, and, for
 // a ui story, its click-proofs are recorded at that head. The story queues
-// behind the one in flight; the poll tick merges it, waits for every host
-// to deploy it, runs the live-proof job against the deployed main, and
-// ends it done once proven, or reverts the merge.
+// behind the one in flight; the poll tick marks a draft ready for review,
+// merges it, waits for every host to deploy it, runs the live-proof job
+// against the deployed main, and ends it done once proven, or reverts the
+// merge. A refusal for a live criterion whose reason is not after-deploy
+// requests a fresh criteria review of the head ([Supervisor.reviewStaleVerdict]).
 func (s Supervisor) MergeAndProve(ctx context.Context, identifier string) SupervisorResult {
 	issue, r, ok := s.lookupOnLoop(ctx, identifier)
 	if !ok {
@@ -255,6 +257,9 @@ func (s Supervisor) MergeAndProve(ctx context.Context, identifier string) Superv
 	defer cancel()
 	criteria, r, ok := s.afterDeployCriteria(fctx, issue)
 	if !ok {
+		if r.Code == "live_proof_not_after_deploy" {
+			return s.reviewStaleVerdict(ctx, fctx, issue, r)
+		}
 		return r
 	}
 	pr, r, ok := s.pullRequestOf(fctx, issue)
@@ -274,9 +279,9 @@ func (s Supervisor) MergeAndProve(ctx context.Context, identifier string) Superv
 		return precondition(issue, "already_merged", formatPullRequest(pr)+" is already merged")
 	case status.Closed:
 		return precondition(issue, "pull_request_closed", formatPullRequest(pr)+" is closed")
-	case status.Draft:
-		return precondition(issue, "draft", formatPullRequest(pr)+" is a draft")
-	case status.Mergeability != domain.MergeabilityClean && status.Mergeability != domain.MergeabilityUnstable:
+	case status.Draft && s.o.prReadier == nil:
+		return SupervisorResult{Status: SupervisorUnsupported, Message: formatPullRequest(pr) + " is a draft, and the forge adapter cannot mark a pull request ready for review", IssueID: issue.issueID, Identifier: identifier}
+	case !status.Draft && status.Mergeability != domain.MergeabilityClean && status.Mergeability != domain.MergeabilityUnstable:
 		return precondition(issue, "not_mergeable", fmt.Sprintf("%s is not mergeable: %s", formatPullRequest(pr), status.Mergeability))
 	case status.HeadSHA == "":
 		return precondition(issue, "not_mergeable", "the forge reports no head commit for "+formatPullRequest(pr))
@@ -439,7 +444,8 @@ func (o *Orchestrator) commentStory(ctx context.Context, e *MergeAndProveEntry, 
 }
 
 // mergeStep merges the pull request at the head whose CI passed, or takes
-// the merge someone else made, and starts the wait for the deploy. A pull
+// the merge someone else made, and starts the wait for the deploy. A draft
+// is marked ready for review first, and merged on the next tick. A pull
 // request that closed, moved its head, or that the forge refuses to merge
 // ends the story's run with nothing merged.
 func (o *Orchestrator) mergeStep(ctx context.Context, cfg config.ServiceConfig, e *MergeAndProveEntry, now time.Time) {
@@ -465,6 +471,20 @@ func (o *Orchestrator) mergeStep(ctx context.Context, cfg config.ServiceConfig, 
 		return
 	case !strings.EqualFold(status.HeadSHA, e.Head):
 		o.giveUpMergeAndProve(ctx, e, fmt.Sprintf("the head of %s moved from %s to %s after the story was accepted, so its CI is not known to pass", formatPullRequest(pr), e.Head, status.HeadSHA))
+		return
+	case status.Draft:
+		if o.prReadier == nil {
+			o.giveUpMergeAndProve(ctx, e, formatPullRequest(pr)+" is a draft, and the forge adapter cannot mark a pull request ready for review")
+			return
+		}
+		if err := o.prReadier.MarkPullRequestReadyForReview(fctx, pr.Number, pr.Owner, pr.Repo); err != nil {
+			e.Waiting = "the forge did not mark the draft ready for review: " + err.Error()
+			log.Warn("merge-and-prove could not mark the draft ready for review, trying again on the next tick", slog.Any("error", err))
+			return
+		}
+		e.Waiting = formatPullRequest(pr) + " was a draft and is marked ready for review; Sortie merges it on the next tick"
+		log.Info("merge-and-prove marked the draft pull request ready for review", slog.String("pull_request", formatPullRequest(pr)))
+		o.notifyObservers()
 		return
 	default:
 		strategy := o.autoMergeConfig.Strategy

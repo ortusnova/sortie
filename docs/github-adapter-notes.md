@@ -138,6 +138,8 @@ The SCM adapter also implements the optional `domain.PullRequestCommentReader`. 
 
 The SCM adapter also implements the optional `domain.PullRequestDrafter`, which `POST /api/v1/{identifier}/draft` uses. GitHub's REST API cannot turn an open pull request back into a draft, so `MarkPullRequestDraft` makes two GraphQL calls: a query for the pull request's node `id` and `isDraft`, then, unless it is already a draft, the `convertPullRequestToDraft` mutation with that id. A mutation that answers without `isDraft: true` is a payload error. The token needs Pull requests write access, as merging does.
 
+It implements the optional `domain.PullRequestReadier` too, which merge-and-prove uses to mark a draft ready for review before it merges it. `MarkPullRequestReadyForReview` makes the same node query, then, only for a draft, the `markPullRequestReadyForReview` mutation with that id. A mutation that answers with `isDraft: true`, or without the pull request, is a payload error. The token needs the same access.
+
 ## The scope preflight can only verify one token kind
 
 The auto-merge scope preflight reads the scopes header GitHub returns on a rate-limit read. Classic personal access tokens populate that header. Fine-grained tokens and GitHub App installation tokens do not, and there is no substitute surface for them.
