@@ -150,6 +150,11 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			{Name: "hosts", Type: FieldMap},
 		},
 	},
+	"off_loop": {
+		Fields: []FieldDef{
+			{Name: "workers", Type: FieldInt},
+		},
+	},
 	"supervisor": {
 		Fields: []FieldDef{
 			{Name: "agent", Type: FieldString},

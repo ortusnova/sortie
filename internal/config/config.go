@@ -106,6 +106,10 @@ type ServiceConfig struct {
 	// is merged, deployed and proven, or reverted.
 	MergeAndProve MergeAndProveConfig
 
+	// OffLoop configures the runner of the calls Sortie makes off its
+	// event loop.
+	OffLoop OffLoopConfig
+
 	// Environment selects where the workspace code of every issue runs.
 	// Its Kind is [EnvironmentKindLocal] when the workflow has no
 	// environment block.
@@ -646,6 +650,7 @@ var knownTopLevelKeys = map[string]bool{
 	"health":        true,
 
 	"merge_and_prove": true,
+	"off_loop":        true,
 }
 
 // NewServiceConfig converts a raw front matter map into a validated
@@ -857,6 +862,11 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		return ServiceConfig{}, err
 	}
 
+	offLoop, err := buildOffLoopConfig(raw)
+	if err != nil {
+		return ServiceConfig{}, err
+	}
+
 	registerConfigSecrets(tracker, reactions, notifications, extensions, raw)
 
 	cfg := ServiceConfig{
@@ -877,6 +887,7 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		Supervisor:              supervisor,
 		Health:                  health,
 		MergeAndProve:           mergeAndProve,
+		OffLoop:                 offLoop,
 		conversions:             conversions,
 		envSet:                  envKeys,
 	}
