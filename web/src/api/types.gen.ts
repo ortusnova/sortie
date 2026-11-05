@@ -209,6 +209,7 @@ export interface Declaration {
 
 export interface DeployedHostResponse {
   host: string;
+  branch: string;
   commit: string;
 }
 

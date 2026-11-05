@@ -18,16 +18,18 @@ import (
 	"github.com/sortie-ai/sortie/internal/persistence"
 )
 
-// proveForge is a fake forge of the repository o/kit: pull requests by
-// number with their status, CI and conversation comments, which merges,
-// opens reverts, compares commits and lists merged reverts.
+// proveForge is a fake forge of the repositories o/kit, o/sortie and
+// o/homelab: pull requests by number, unique across them, with their
+// status, CI and conversation comments, which merges, opens reverts,
+// compares commits and lists merged reverts.
 type proveForge struct {
 	controlledSCMAdapter
 	mu       sync.Mutex
 	pulls    map[int]*domain.PRMergeStatus
 	ci       map[int]string
 	comments map[int][]domain.ReviewComment
-	contains map[string]bool // deployed commit -> holds the merge commit
+	contains map[string]bool // deployed commit or base branch -> holds the merge commit
+	compared []string        // "owner/repo commit" of each comparison asked
 	merges   []int
 	reverts  []int // the pull requests a revert was opened of
 	merged   []domain.MergedRevert
@@ -73,7 +75,7 @@ func newProveForge() *proveForge {
 func (f *proveForge) open(n int, head string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.pulls[n] = &domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: head, BranchName: fmt.Sprintf("sortie/ONS-%d", n)}
+	f.pulls[n] = &domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: head, BranchName: fmt.Sprintf("sortie/ONS-%d", n), BaseBranch: "main"}
 	f.ci[n] = "success"
 }
 
@@ -123,10 +125,17 @@ func (f *proveForge) RevertPullRequest(_ context.Context, n int, _, _, _, _ stri
 	return domain.PullRequest{Number: number, Created: true}, nil
 }
 
-func (f *proveForge) CommitContains(_ context.Context, _, _, commit, _ string) (bool, error) {
+func (f *proveForge) CommitContains(_ context.Context, owner, repo, commit, _ string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.compared = append(f.compared, owner+"/"+repo+" "+commit)
 	return f.contains[commit], nil
+}
+
+func (f *proveForge) comparisons() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.compared)
 }
 
 func (f *proveForge) FindMergedReverts(context.Context, string, string, time.Time) ([]domain.MergedRevert, error) {
@@ -248,12 +257,19 @@ func newProveFixture(t *testing.T) *proveFixture {
 // and its criteria verdict.
 func (f *proveFixture) addStory(t *testing.T, n int, criteria, outcome string, labels ...string) {
 	t.Helper()
+	f.addStoryIn(t, "kit", n, criteria, outcome, labels...)
+}
+
+// addStoryIn adds ONS-<n> in review with its watched pull request
+// o/<repo>#<n> and its criteria verdict.
+func (f *proveFixture) addStoryIn(t *testing.T, repo string, n int, criteria, outcome string, labels ...string) {
+	t.Helper()
 	id, identifier := fmt.Sprintf("id-%d", n), fmt.Sprintf("ONS-%d", n)
 	f.stories.add(id, identifier, "In Review", labels...)
 	f.forge.open(n, headSHA(n))
 	f.o.state.PendingReactions[ReactionKey(id, ReactionKindAutoMerge)] = &PendingReaction{
 		IssueID: id, Identifier: identifier, Kind: ReactionKindAutoMerge, Attempt: 1,
-		KindData:  &AutoMergeReactionData{PRNumber: n, Owner: "o", Repo: "kit", Branch: "sortie/" + identifier, SHA: headSHA(n)},
+		KindData:  &AutoMergeReactionData{PRNumber: n, Owner: "o", Repo: repo, Branch: "sortie/" + identifier, SHA: headSHA(n)},
 		AgentKind: "claude-code", RuleName: "check",
 	}
 	if err := f.store.UpsertCriteriaVerdict(t.Context(), persistence.CriteriaVerdict{
@@ -263,10 +279,28 @@ func (f *proveFixture) addStory(t *testing.T, n int, criteria, outcome string, l
 	}
 }
 
-// deploy writes the deploy state file of host naming commit.
+// deploy writes the deploy state file of host naming commit as the kit's
+// own and as what it deployed of o/kit, the only repository it lists.
 func (f *proveFixture) deploy(t *testing.T, host, commit string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"status": "succeeded", "commit": commit, "main": commit, "updated_at": f.t0})
+	f.deployRepos(t, host, commit, map[string]any{"o/kit": map[string]string{"branch": "main", "commit": commit}})
+}
+
+// deployRepos writes the deploy state file of host naming the kit's
+// commit and, unless repositories is nil, the repositories field.
+func (f *proveFixture) deployRepos(t *testing.T, host, commit string, repositories any) {
+	t.Helper()
+	state := map[string]any{"status": "succeeded", "commit": commit, "main": commit, "updated_at": f.t0}
+	if repositories != nil {
+		state["repositories"] = repositories
+	}
+	f.writeDeployState(t, host, state)
+}
+
+// writeDeployState writes state as the deploy state file of host.
+func (f *proveFixture) writeDeployState(t *testing.T, host string, state any) {
+	t.Helper()
+	body, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +367,7 @@ func liveProofScheduled(state *State, id string) bool {
 	return r != nil && r.ReactionKind == ReactionKindLiveProof
 }
 
-// Scenario "Proven in time": a kit story merges through the route, both
+// Scenario "Proven in time": an agentic-orchestration (o/kit) story merges through the route, both
 // hosts deploy it, and its live proof is proven 12 minutes later. The
 // story is Done, and the next queued story's merge starts.
 func TestMergeAndProve_ProvenInTime(t *testing.T) {
@@ -368,7 +402,7 @@ func TestMergeAndProve_ProvenInTime(t *testing.T) {
 	f.forge.holds("new-main")
 	f.deploy(t, "p1", "new-main")
 	f.tick(t, f.t0.Add(3*time.Minute))
-	if snap = f.snapshot(t); snap.InFlight.Phase != MergeAndProveDeploying || !strings.Contains(snap.InFlight.Waiting, "taichi deployed old-taichi") {
+	if snap = f.snapshot(t); snap.InFlight.Phase != MergeAndProveDeploying || !strings.Contains(snap.InFlight.Waiting, "taichi deployed o/kit at old-taichi") {
 		t.Fatalf("in flight with one host deployed = %+v, want it deploying, waiting on taichi", snap.InFlight)
 	}
 
@@ -377,7 +411,7 @@ func TestMergeAndProve_ProvenInTime(t *testing.T) {
 	f.tick(t, deployed)
 	snap = f.snapshot(t)
 	if snap.InFlight.Phase != MergeAndProveProving || !snap.InFlight.Deadline.Equal(deployed.Add(30*time.Minute)) ||
-		!slices.Equal(snap.InFlight.Deployed, []DeployedHost{{"p1", "new-main"}, {"taichi", "new-main"}}) {
+		!slices.Equal(snap.InFlight.Deployed, []DeployedHost{{"p1", "main", "new-main"}, {"taichi", "main", "new-main"}}) {
 		t.Fatalf("in flight once both hosts deployed = %+v, want proving with its own deadline", snap.InFlight)
 	}
 	if !liveProofScheduled(f.o.state, "id-1") {
@@ -482,7 +516,7 @@ func TestMergeAndProve_HostThatDoesNotDeployReverts(t *testing.T) {
 	f.deploy(t, "p1", "main-2")
 	f.tick(t, f.t0.Add(30*time.Minute))
 	got := f.snapshot(t).InFlight
-	if got.Phase != MergeAndProveReverting || !strings.Contains(got.Reason, "taichi deployed old-taichi") {
+	if got.Phase != MergeAndProveReverting || !strings.Contains(got.Reason, "taichi deployed o/kit at old-taichi") {
 		t.Fatalf("at the deploy deadline = %+v, want reverting naming taichi", got)
 	}
 	if liveProofScheduled(f.o.state, "id-1") {
@@ -506,6 +540,185 @@ func TestMergeAndProve_UnprovenRecordReverts(t *testing.T) {
 	got := f.snapshot(t).InFlight
 	if got.Phase != MergeAndProveReverting || !strings.Contains(got.Reason, "p1 answers 404") {
 		t.Fatalf("after the unproven record = %+v, want reverting with its text", got)
+	}
+}
+
+// Scenario "A Sortie pull request": p1 lists o/sortie on plan-bench and
+// taichi does not. Only p1 is waited on, its o/sortie commit is the one
+// compared, in o/sortie, and the proof starts whatever kit commit either
+// host deployed.
+func TestMergeAndProve_SortiePullRequest(t *testing.T) {
+	t.Parallel()
+	f := newProveFixture(t)
+	f.addStoryIn(t, "sortie", 3, afterDeployCriteria, CriteriaOutcomeLiveProof)
+	lists := func(sortie string) map[string]any {
+		return map[string]any{
+			"o/kit":    map[string]string{"branch": "main", "commit": "old-kit"},
+			"o/sortie": map[string]string{"branch": "plan-bench", "commit": sortie},
+		}
+	}
+	f.deployRepos(t, "p1", "old-kit", lists("old-sortie"))
+	f.deploy(t, "taichi", "old-kit")
+	f.accept(t, "ONS-3")
+	f.tick(t, f.t0)
+	merge := mergeSHA(3)
+
+	f.tick(t, f.t0.Add(time.Minute))
+	got := f.snapshot(t).InFlight
+	if got.Phase != MergeAndProveDeploying || !strings.Contains(got.Waiting, "p1 deployed o/sortie at old-sortie") || strings.Contains(got.Waiting, "taichi") {
+		t.Fatalf("before p1 deploys = %+v, want deploying, waiting on p1 only", got)
+	}
+
+	f.forge.holds("new-sortie")
+	f.deployRepos(t, "p1", "old-kit", lists("new-sortie"))
+	deployed := f.t0.Add(4 * time.Minute)
+	f.tick(t, deployed)
+	got = f.snapshot(t).InFlight
+	if got.Phase != MergeAndProveProving || !got.Deadline.Equal(deployed.Add(30*time.Minute)) ||
+		!slices.Equal(got.Deployed, []DeployedHost{{"p1", "plan-bench", "new-sortie"}}) {
+		t.Fatalf("once p1 deployed = %+v, want proving with p1's o/sortie commit", got)
+	}
+	for _, c := range f.forge.comparisons() {
+		if c != "o/sortie old-sortie" && c != "o/sortie new-sortie" {
+			t.Errorf("forge compared %q, want only p1's o/sortie commits, in o/sortie", c)
+		}
+	}
+	request := f.o.state.RetryAttempts["id-3"]
+	if request == nil || request.ReactionKind != ReactionKindLiveProof || request.Continuation.Repo != "sortie" {
+		t.Fatalf("live-proof job = %+v, want one on o/sortie#3", request)
+	}
+	onLoop(t, f.o, func() { f.o.state.RetryAttempts = map[string]*RetryEntry{} })
+
+	f.forge.comment(3, "c-3", LiveProofMarker+" "+merge)
+	f.tick(t, deployed.Add(5*time.Minute))
+	if state := f.stories.stateOf("id-3"); state != "Done" {
+		t.Errorf("ONS-3 = %q, want Done", state)
+	}
+	if row, found := f.planMerge(t, "id-3"); !found || row.PR != "o/sortie#3" || row.Ref != merge {
+		t.Errorf("ONS-3 merge record = %+v, %v, want o/sortie#3 at the merge commit", row, found)
+	}
+}
+
+// Scenario "A homelab pull request": no host lists o/homelab, so the merge
+// counts as deployed once the forge shows it on the base branch, the proof
+// starts against main at once and its deadline starts then.
+func TestMergeAndProve_RepositoryNoHostDeploys(t *testing.T) {
+	t.Parallel()
+	f := newProveFixture(t)
+	f.addStoryIn(t, "homelab", 3, afterDeployCriteria, CriteriaOutcomeLiveProof)
+	f.accept(t, "ONS-3")
+	f.tick(t, f.t0)
+	merge := mergeSHA(3)
+
+	f.tick(t, f.t0.Add(time.Minute))
+	got := f.snapshot(t).InFlight
+	if got.Phase != MergeAndProveDeploying || !strings.Contains(got.Waiting, "no host deploys o/homelab") || !strings.Contains(got.Waiting, "base branch main") {
+		t.Fatalf("before the forge shows the merge on main = %+v, want deploying, waiting on the base branch", got)
+	}
+
+	f.forge.holds("main")
+	onMain := f.t0.Add(2 * time.Minute)
+	f.tick(t, onMain)
+	got = f.snapshot(t).InFlight
+	if got.Phase != MergeAndProveProving || !got.Deadline.Equal(onMain.Add(30*time.Minute)) ||
+		!slices.Equal(got.Deployed, []DeployedHost{{"", "main", merge}}) {
+		t.Fatalf("once the merge is on main = %+v, want proving from then, deployed at main", got)
+	}
+	if c := f.forge.comparisons(); !slices.Equal(c[len(c)-1:], []string{"o/homelab main"}) {
+		t.Errorf("comparisons = %v, want main compared in o/homelab", c)
+	}
+	request := f.o.state.RetryAttempts["id-3"]
+	if request == nil || request.ReactionKind != ReactionKindLiveProof {
+		t.Fatal("no live-proof job scheduled")
+	}
+	if body := afterDeployProofRequest(f.o.state.MergeAndProve["id-3"]); !strings.Contains(body, "no host deploys o/homelab; the merge commit is on its base branch main") {
+		t.Errorf("live-proof request = %q, want it to name the base branch", body)
+	}
+	onLoop(t, f.o, func() { f.o.state.RetryAttempts = map[string]*RetryEntry{} })
+
+	f.forge.comment(3, "c-3", LiveProofMarker+" "+merge[:12])
+	f.tick(t, onMain.Add(10*time.Minute))
+	if state := f.stories.stateOf("id-3"); state != "Done" {
+		t.Errorf("ONS-3 = %q, want Done", state)
+	}
+}
+
+// A host whose deploy state cannot say what it deployed of each
+// repository counts as behind, never as not deploying the repository:
+// the merge of a repository no other host lists waits on it and reverts at
+// the deadline with the host as the reason.
+func TestMergeAndProve_HostWithoutRepositoriesIsBehind(t *testing.T) {
+	t.Parallel()
+	for name, write := range map[string]func(t *testing.T, f *proveFixture){
+		"no repositories field": func(t *testing.T, f *proveFixture) { f.deployRepos(t, "p1", "kit-1", nil) },
+		"malformed repositories": func(t *testing.T, f *proveFixture) {
+			f.deployRepos(t, "p1", "kit-1", []string{"o/homelab"})
+		},
+		"no commit": func(t *testing.T, f *proveFixture) {
+			f.writeDeployState(t, "p1", map[string]any{"status": "deploying", "updated_at": f.t0,
+				"repositories": map[string]any{"o/kit": map[string]string{"branch": "main", "commit": "kit-1"}}})
+		},
+		"unreadable": func(t *testing.T, f *proveFixture) { f.writeDeployState(t, "p1", "not a state") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newProveFixture(t)
+			f.addStoryIn(t, "homelab", 3, afterDeployCriteria, CriteriaOutcomeLiveProof)
+			f.forge.holds("main")
+			write(t, f)
+			f.accept(t, "ONS-3")
+			f.tick(t, f.t0)
+
+			f.tick(t, f.t0.Add(time.Minute))
+			got := f.snapshot(t).InFlight
+			if got.Phase != MergeAndProveDeploying || !strings.HasPrefix(got.Waiting, "p1: its deploy state") {
+				t.Fatalf("with p1's deploy state %s = %+v, want deploying, p1 behind with its reason", name, got)
+			}
+			if strings.Contains(got.Waiting, "taichi") || strings.Contains(got.Waiting, "no host deploys") {
+				t.Errorf("waiting = %q, want p1 alone as the reason", got.Waiting)
+			}
+			f.tick(t, f.t0.Add(30*time.Minute))
+			if got = f.snapshot(t).InFlight; got.Phase != MergeAndProveReverting || !strings.Contains(got.Reason, "p1: its deploy state") {
+				t.Errorf("at the deadline = %+v, want reverting naming p1", got)
+			}
+		})
+	}
+}
+
+// A restart in deploying of a repository no host deploys reads the hosts
+// and the forge anew, and a restart in proving keeps what it deployed.
+func TestMergeAndProve_RestartInDeployingNoHostDeploys(t *testing.T) {
+	t.Parallel()
+	f := newProveFixture(t)
+	f.addStoryIn(t, "homelab", 3, afterDeployCriteria, CriteriaOutcomeLiveProof)
+	f.accept(t, "ONS-3")
+	f.tick(t, f.t0)
+	f.restart(t)
+	if got := f.snapshot(t).InFlight; got == nil || got.Phase != MergeAndProveDeploying || got.MergeCommit != mergeSHA(3) {
+		t.Fatalf("restored in flight = %+v, want deploying the merge", got)
+	}
+	f.forge.holds("main")
+	f.tick(t, f.t0.Add(3*time.Minute))
+	f.restart(t)
+	want := []DeployedHost{{"", "main", mergeSHA(3)}}
+	if got := f.snapshot(t).InFlight; got.Phase != MergeAndProveProving || !got.Deadline.Equal(f.t0.Add(33*time.Minute)) || !slices.Equal(got.Deployed, want) {
+		t.Fatalf("restored after the deploy = %+v, want proving until t0+33m, deployed at main", got)
+	}
+}
+
+func TestParseDeployed(t *testing.T) {
+	t.Parallel()
+	for _, deployed := range [][]DeployedHost{
+		nil,
+		{{"p1", "plan-bench", "aaa"}, {"taichi", "", "bbb"}},
+		{{"", "release/1,2@x", "ccc"}},
+	} {
+		if got := parseDeployed(formatDeployed(deployed)); !slices.Equal(got, deployed) {
+			t.Errorf("parseDeployed(formatDeployed(%v)) = %v", deployed, got)
+		}
+	}
+	if got := parseDeployed("p1=aaa,taichi=bbb"); !slices.Equal(got, []DeployedHost{{"p1", "", "aaa"}, {"taichi", "", "bbb"}}) {
+		t.Errorf("parseDeployed(stored before branches) = %v", got)
 	}
 }
 
@@ -606,8 +819,9 @@ func TestMergeAndProve_RestartInEachPhase(t *testing.T) {
 
 	// Proving: the job was runtime-only, so it is scheduled again.
 	f.restart(t)
-	if got := f.snapshot(t).InFlight; got.Phase != MergeAndProveProving || len(got.Deployed) != 2 {
-		t.Fatalf("restored in flight = %+v, want proving with both hosts", got)
+	if got := f.snapshot(t).InFlight; got.Phase != MergeAndProveProving ||
+		!slices.Equal(got.Deployed, []DeployedHost{{"p1", "main", "new-main"}, {"taichi", "main", "new-main"}}) {
+		t.Fatalf("restored in flight = %+v, want proving with both hosts and their branch", got)
 	}
 	f.tick(t, f.t0.Add(10*time.Minute))
 	if !liveProofScheduled(f.o.state, "id-1") {

@@ -29,6 +29,40 @@ func TestRead_TheKitsFile(t *testing.T) {
 	}
 }
 
+func TestParse_Repositories(t *testing.T) {
+	t.Parallel()
+
+	s, err := Parse([]byte(`{"status":"succeeded","commit":"aaa","updated_at":"2026-11-03T11:58:00Z","repositories":{` +
+		`"ortusnova/agentic-orchestration":{"branch":"main","commit":"aaa"},"ortusnova/sortie":{"branch":"plan-bench","commit":"bbb"}}}`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if r, ok := s.Repository("OrtusNova/Sortie"); !ok || r != (Repository{Branch: "plan-bench", Commit: "bbb"}) {
+		t.Errorf("Repository(sortie) = %+v, %v, want plan-bench at bbb", r, ok)
+	}
+	if r, ok := s.Repository("ortusnova/homelab"); ok {
+		t.Errorf("Repository(homelab) = %+v, want none listed", r)
+	}
+
+	for name, content := range map[string]string{
+		"absent": `{"status":"succeeded","updated_at":"2026-11-03T11:58:00Z"}`,
+		"null":   `{"status":"succeeded","updated_at":"2026-11-03T11:58:00Z","repositories":null}`,
+	} {
+		s, err := Parse([]byte(content))
+		if err != nil || s.Repositories != nil || s.RepositoriesError != nil {
+			t.Errorf("Parse(%s) = %+v, %v, want no repositories and no error", name, s, err)
+		}
+	}
+
+	s, err = Parse([]byte(`{"status":"succeeded","updated_at":"2026-11-03T11:58:00Z","repositories":["ortusnova/sortie"]}`))
+	if err != nil {
+		t.Fatalf("Parse(malformed repositories) error = %v, want the state read: the health check does not depend on it", err)
+	}
+	if s.Repositories != nil || s.RepositoriesError == nil {
+		t.Errorf("Parse(malformed repositories) = %+v, want no repositories and the reason", s)
+	}
+}
+
 func TestRead_RefusesWhatIsNotADeployState(t *testing.T) {
 	t.Parallel()
 

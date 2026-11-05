@@ -1,7 +1,8 @@
 // Package deploystate reads the deploy state file a deploy kit writes
 // for the Sortie it deploys, and says whether that deploy is healthy: the
 // last deploy did not fail, the deployed commit has not stayed behind
-// main, and the kit still writes the file.
+// main, and the kit still writes the file. The file also lists, by
+// repository the kit deploys, the branch and commit it deployed.
 package deploystate
 
 import (
@@ -53,6 +54,36 @@ type State struct {
 
 	// UpdatedAt is when the kit last wrote the file.
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Repositories is what the kit deployed of each repository it
+	// deploys, by owner/repo; nil when the file has no repositories
+	// field.
+	Repositories map[string]Repository `json:"-"`
+
+	// RepositoriesError says why the repositories field could not be
+	// read; nil when it was read or is absent. It does not fail [Parse]:
+	// the health of the deploy does not depend on it.
+	RepositoriesError error `json:"-"`
+}
+
+// Repository is the branch and commit a kit deployed of one repository.
+type Repository struct {
+	Branch string `json:"branch"`
+	Commit string `json:"commit"`
+}
+
+// Repository returns what s lists of the repository owner/repo, matched
+// without regard to case.
+func (s State) Repository(ownerRepo string) (Repository, bool) {
+	if r, ok := s.Repositories[ownerRepo]; ok {
+		return r, true
+	}
+	for name, r := range s.Repositories {
+		if strings.EqualFold(name, ownerRepo) {
+			return r, true
+		}
+	}
+	return Repository{}, false
 }
 
 // Read reads and checks the file at path.
@@ -74,9 +105,21 @@ func Read(path string) (State, error) {
 
 // Parse reads raw as a deploy state file and checks its fields.
 func Parse(raw []byte) (State, error) {
-	var s State
-	if err := json.Unmarshal(raw, &s); err != nil {
+	var file struct {
+		State
+		Repositories json.RawMessage `json:"repositories"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
 		return State{}, fmt.Errorf("not a deploy state object: %w", err)
+	}
+	s := file.State
+	if len(file.Repositories) > 0 && string(file.Repositories) != "null" {
+		var repos map[string]Repository
+		if err := json.Unmarshal(file.Repositories, &repos); err != nil {
+			s.RepositoriesError = fmt.Errorf("repositories is not a map of owner/repo to branch and commit: %w", err)
+		} else {
+			s.Repositories = repos
+		}
 	}
 	switch s.Status {
 	case StatusSucceeded, StatusFailed, StatusDeploying:

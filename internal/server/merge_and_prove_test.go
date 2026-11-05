@@ -15,7 +15,7 @@ func TestMergeAndProveResponse(t *testing.T) {
 	got := toMergeAndProveResponse(orchestrator.SnapshotMergeAndProve{
 		InFlight: &orchestrator.SnapshotMergeAndProveEntry{
 			IssueID: "id-1", Identifier: "ONS-1", Phase: orchestrator.MergeAndProveProving, PullRequest: "o/kit#1",
-			Head: "h1", MergeCommit: "m1", Deployed: []orchestrator.DeployedHost{{Host: "p1", Commit: "d1"}},
+			Head: "h1", MergeCommit: "m1", Deployed: []orchestrator.DeployedHost{{Host: "p1", Branch: "plan-bench", Commit: "d1"}},
 			QueuedAt: at, PhaseAt: at.Add(5 * time.Minute), Deadline: at.Add(35 * time.Minute), Waiting: "no record yet",
 		},
 		Queue: []orchestrator.SnapshotMergeAndProveEntry{{
@@ -25,7 +25,7 @@ func TestMergeAndProveResponse(t *testing.T) {
 	})
 	in := got.InFlight
 	if in == nil || in.Phase != "proving" || in.Deadline == nil || !in.Deadline.Equal(at.Add(35*time.Minute)) ||
-		in.MergeCommit == nil || *in.MergeCommit != "m1" || len(in.Deployed) != 1 || in.Waiting == nil {
+		in.MergeCommit == nil || *in.MergeCommit != "m1" || len(in.Deployed) != 1 || in.Deployed[0].Branch != "plan-bench" || in.Waiting == nil {
 		t.Fatalf("in_flight = %+v, want ONS-1 proving with its deadline", in)
 	}
 	if len(got.Queue) != 1 {

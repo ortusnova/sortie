@@ -599,7 +599,7 @@ The event loop writes the row when a run's exit records the part and at each cha
 | `head`                | TEXT NOT NULL    | The head whose CI passed when the story was accepted, which the merge requires |
 | `criteria`            | TEXT NOT NULL    | The criteria left to the proof after deploy, one per line |
 | `merge_commit`        | TEXT NOT NULL    | Set once the pull request merged |
-| `deployed`            | TEXT NOT NULL    | `host=commit` pairs, comma-separated, once every host deployed the merge |
+| `deployed`            | TEXT NOT NULL    | `host=commit@branch` pairs (`@branch` URL-query-escaped, absent in rows stored before it), comma-separated, once every host that deploys the pull request's repository deployed the merge; one pair with an empty host, the base branch and the merge commit when no host deploys it |
 | `queued_at`           | TEXT NOT NULL    | RFC 3339 UTC |
 | `phase_at`            | TEXT NOT NULL    | RFC 3339 UTC of the phase's start |
 | `deadline`            | TEXT NOT NULL    | RFC 3339 UTC; empty in the queue and while merging |

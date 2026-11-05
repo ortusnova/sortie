@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,8 +25,10 @@ const (
 	MergeAndProveQueued = "queued"
 	// MergeAndProveMerging: Sortie merges its pull request.
 	MergeAndProveMerging = "merging"
-	// MergeAndProveDeploying: Sortie waits for every host to deploy a
-	// commit that holds the merge commit, until the deadline.
+	// MergeAndProveDeploying: Sortie waits for every host that deploys
+	// the pull request's repository to deploy a commit of it that holds
+	// the merge commit, or, when none does, for the merge commit on the
+	// base branch, until the deadline.
 	MergeAndProveDeploying = "deploying"
 	// MergeAndProveProving: the live-proof job runs against the deployed
 	// main, and Sortie waits for its record until the deadline.
@@ -49,10 +52,46 @@ const mergeAndProveBound = 20 * time.Second
 // maxMergeAndProveReason caps the reason a revert carries.
 const maxMergeAndProveReason = 1000
 
-// DeployedHost is the commit one host deployed.
+// DeployedHost is the branch and commit one host deployed of the pull
+// request's repository. Host is empty when no host deploys that
+// repository: Branch is then the pull request's base branch and Commit
+// the merge commit on it.
 type DeployedHost struct {
 	Host   string `json:"host"`
+	Branch string `json:"branch"`
 	Commit string `json:"commit"`
+}
+
+// formatDeployed is the stored form of deployed: host=commit pairs, each
+// commit followed by @ and its branch when known, comma-separated.
+func formatDeployed(deployed []DeployedHost) string {
+	pairs := make([]string, 0, len(deployed))
+	for _, d := range deployed {
+		pair := d.Host + "=" + d.Commit
+		if d.Branch != "" {
+			pair += "@" + url.QueryEscape(d.Branch)
+		}
+		pairs = append(pairs, pair)
+	}
+	return strings.Join(pairs, ",")
+}
+
+// parseDeployed reads what formatDeployed wrote, and the host=commit
+// pairs stored before branches were.
+func parseDeployed(s string) []DeployedHost {
+	var out []DeployedHost
+	for pair := range strings.SplitSeq(s, ",") {
+		host, rest, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		commit, branch, _ := strings.Cut(rest, "@")
+		if b, err := url.QueryUnescape(branch); err == nil {
+			branch = b
+		}
+		out = append(out, DeployedHost{Host: host, Branch: branch, Commit: commit})
+	}
+	return out
 }
 
 // MergeAndProveEntry is one story in merge-and-prove: queued, or in flight
@@ -106,14 +145,10 @@ func formatOptionalTime(t time.Time) string {
 }
 
 func mergeAndProveRow(e *MergeAndProveEntry) persistence.MergeAndProve {
-	deployed := make([]string, 0, len(e.Deployed))
-	for _, d := range e.Deployed {
-		deployed = append(deployed, d.Host+"="+d.Commit)
-	}
 	return persistence.MergeAndProve{
 		IssueID: e.IssueID, Identifier: e.Identifier, Seq: e.Seq, Phase: e.Phase,
 		PullRequest: formatPullRequest(e.PullRequest), Branch: e.PullRequest.Branch, Head: e.Head,
-		Criteria: e.Criteria, MergeCommit: e.MergeCommit, Deployed: strings.Join(deployed, ","),
+		Criteria: e.Criteria, MergeCommit: e.MergeCommit, Deployed: formatDeployed(e.Deployed),
 		QueuedAt: formatOptionalTime(e.QueuedAt), PhaseAt: formatOptionalTime(e.PhaseAt), Deadline: formatOptionalTime(e.Deadline),
 		RevertPR: e.RevertPR, Reason: e.Reason,
 		AgentKind: e.AgentKind, ConfiguredModel: e.ConfiguredModel, RuleName: e.RuleName, TemplateID: e.TemplateID,
@@ -141,11 +176,7 @@ func PopulateMergeAndProve(state *State, rows []persistence.MergeAndProve, log *
 			Criteria: r.Criteria, MergeCommit: r.MergeCommit, RevertPR: r.RevertPR, Reason: r.Reason,
 			QueuedAt: parseFaultTime(r.QueuedAt), PhaseAt: parseFaultTime(r.PhaseAt), Deadline: parseFaultTime(r.Deadline),
 			AgentKind: r.AgentKind, ConfiguredModel: r.ConfiguredModel, RuleName: r.RuleName, TemplateID: r.TemplateID,
-		}
-		for pair := range strings.SplitSeq(r.Deployed, ",") {
-			if host, commit, ok := strings.Cut(pair, "="); ok {
-				e.Deployed = append(e.Deployed, DeployedHost{Host: host, Commit: commit})
-			}
+			Deployed: parseDeployed(r.Deployed),
 		}
 		state.MergeAndProve[e.IssueID] = e
 		state.MergeAndProveSeq = max(state.MergeAndProveSeq, e.Seq)
@@ -492,8 +523,8 @@ func (o *Orchestrator) mergeStep(ctx context.Context, cfg config.ServiceConfig, 
 	recordIssueOutcome(ctx, o.store, mergedOutcome(e.IssueID, "merge-and-prove", pr.Number, pr.Owner, pr.Repo, now), log)
 	o.setMergeAndProvePhase(ctx, e, MergeAndProveDeploying, now, now.Add(cfg.MergeAndProve.Deadline))
 	log.Info("merge-and-prove merged the pull request", slog.String("merge_commit", e.MergeCommit))
-	o.commentStory(ctx, e, fmt.Sprintf("Sortie merged %s as %s through merge-and-prove. It waits until %s for every host to deploy it, then runs the live proof of these criteria against the deployed main:\n\n%s\nWithout a proven record by its deadline, Sortie reverts the merge and returns the story to %s.",
-		formatPullRequest(pr), e.MergeCommit, e.Deadline.Format(time.RFC3339), e.Criteria, cfg.Tracker.ReleaseState))
+	o.commentStory(ctx, e, fmt.Sprintf("Sortie merged %s as %s through merge-and-prove. It waits until %s for every host that deploys %s/%s to deploy it (with none, for the merge commit on its base branch), then runs the live proof of these criteria against what is deployed:\n\n%s\nWithout a proven record by its deadline, Sortie reverts the merge and returns the story to %s.",
+		formatPullRequest(pr), e.MergeCommit, e.Deadline.Format(time.RFC3339), pr.Owner, pr.Repo, e.Criteria, cfg.Tracker.ReleaseState))
 }
 
 // dropPullRequestWatches removes the issue's pull request watches once
@@ -514,12 +545,18 @@ func (o *Orchestrator) giveUpMergeAndProve(ctx context.Context, e *MergeAndProve
 }
 
 // deployStep reads each host's deploy state and starts the live proof
-// once every host deployed a commit that holds the merge commit. A host
-// still without it at the deadline reverts the merge.
+// once every host that deploys the pull request's repository deployed a
+// commit of it that holds the merge commit. When every host's deploy
+// state is read and none lists the repository, the merge counts as
+// deployed once the forge shows the merge commit on the pull request's
+// base branch. A host whose deploy state cannot say what it deployed
+// counts as behind. A host still behind at the deadline reverts the
+// merge.
 func (o *Orchestrator) deployStep(ctx context.Context, cfg config.ServiceConfig, e *MergeAndProveEntry, now time.Time) {
 	fctx, cancel := context.WithTimeout(ctx, mergeAndProveBound)
 	defer cancel()
 	hosts := cfg.DeployHosts(o.hostName)
+	repo := e.PullRequest.Owner + "/" + e.PullRequest.Repo
 	var behind []string
 	var deployed []DeployedHost
 	for _, h := range hosts {
@@ -531,19 +568,41 @@ func (o *Orchestrator) deployStep(ctx context.Context, cfg config.ServiceConfig,
 		case st.Commit == "":
 			behind = append(behind, h.Name+": its deploy state names no commit ("+st.Status+")")
 			continue
+		case st.RepositoriesError != nil:
+			behind = append(behind, h.Name+": its deploy state's repositories are unreadable: "+st.RepositoriesError.Error())
+			continue
+		case st.Repositories == nil:
+			behind = append(behind, h.Name+": its deploy state has no repositories field, so what it deployed of "+repo+" is not known")
+			continue
 		}
-		holds, err := o.commitHolds(fctx, e, st.Commit)
+		r, lists := st.Repository(repo)
+		switch {
+		case !lists:
+			continue
+		case r.Commit == "":
+			behind = append(behind, h.Name+": its deploy state lists "+repo+" with no commit ("+st.Status+")")
+			continue
+		}
+		holds, err := o.commitHolds(fctx, e, r.Commit)
 		switch {
 		case err != nil:
-			behind = append(behind, h.Name+": the forge could not compare "+st.Commit+": "+err.Error())
+			behind = append(behind, h.Name+": the forge could not compare "+repo+" at "+r.Commit+": "+err.Error())
 		case !holds:
-			behind = append(behind, h.Name+" deployed "+st.Commit+" ("+st.Status+"), which does not hold "+e.MergeCommit)
+			behind = append(behind, h.Name+" deployed "+repo+" at "+r.Commit+" ("+st.Status+"), which does not hold "+e.MergeCommit)
 		default:
-			deployed = append(deployed, DeployedHost{Host: h.Name, Commit: strings.ToLower(st.Commit)})
+			deployed = append(deployed, DeployedHost{Host: h.Name, Branch: r.Branch, Commit: strings.ToLower(r.Commit)})
 		}
 	}
 	if len(hosts) == 0 {
 		behind = append(behind, "no host's deploy state is configured")
+	}
+	if len(behind) == 0 && len(deployed) == 0 {
+		d, why := o.mergedOnBase(fctx, e, repo)
+		if why != "" {
+			behind = append(behind, why)
+		} else {
+			deployed = []DeployedHost{d}
+		}
 	}
 	if len(behind) == 0 {
 		e.Deployed = deployed
@@ -557,8 +616,30 @@ func (o *Orchestrator) deployStep(ctx context.Context, cfg config.ServiceConfig,
 	}
 }
 
-// commitHolds reports whether commit holds e's merge commit, asking the
-// forge once per commit.
+// mergedOnBase returns the merge commit on the pull request's base branch
+// once the forge shows it there, for a repository no host deploys; else
+// what the wait is on.
+func (o *Orchestrator) mergedOnBase(ctx context.Context, e *MergeAndProveEntry, repo string) (DeployedHost, string) {
+	pr := e.PullRequest
+	status, err := o.scmAdapter.GetMergeability(ctx, pr.Number, pr.Owner, pr.Repo)
+	switch {
+	case err != nil:
+		return DeployedHost{}, "no host deploys " + repo + ", and the forge read of " + formatPullRequest(pr) + " failed: " + err.Error()
+	case status.BaseBranch == "":
+		return DeployedHost{}, "no host deploys " + repo + ", and the forge names no base branch of " + formatPullRequest(pr)
+	}
+	on, err := o.commitComparer.CommitContains(ctx, pr.Owner, pr.Repo, status.BaseBranch, e.MergeCommit)
+	switch {
+	case err != nil:
+		return DeployedHost{}, "no host deploys " + repo + ", and the forge could not compare its base branch " + status.BaseBranch + ": " + err.Error()
+	case !on:
+		return DeployedHost{}, "no host deploys " + repo + ", and the forge does not show merge commit " + e.MergeCommit + " on its base branch " + status.BaseBranch + " yet"
+	}
+	return DeployedHost{Branch: status.BaseBranch, Commit: e.MergeCommit}, ""
+}
+
+// commitHolds reports whether commit holds e's merge commit in the pull
+// request's repository, asking the forge once per commit.
 func (o *Orchestrator) commitHolds(ctx context.Context, e *MergeAndProveEntry, commit string) (bool, error) {
 	commit = strings.ToLower(commit)
 	if strings.HasPrefix(commit, e.MergeCommit) || (len(commit) >= minClickProofsSHA && strings.HasPrefix(e.MergeCommit, commit)) {
@@ -637,9 +718,17 @@ func capReason(s string) string {
 // afterDeployProofRequest is the request the live-proof job answers after
 // the deploy.
 func afterDeployProofRequest(e *MergeAndProveEntry) string {
+	repo := e.PullRequest.Owner + "/" + e.PullRequest.Repo
 	deployed := make([]string, 0, len(e.Deployed))
 	for _, d := range e.Deployed {
-		deployed = append(deployed, d.Host+" at "+d.Commit)
+		switch {
+		case d.Host == "":
+			deployed = append(deployed, "no host deploys "+repo+"; the merge commit is on its base branch "+d.Branch)
+		case d.Branch != "":
+			deployed = append(deployed, d.Host+" at "+d.Commit+" of "+d.Branch)
+		default:
+			deployed = append(deployed, d.Host+" at "+d.Commit)
+		}
 	}
 	return LiveProofRequestMarker + "\n" +
 		"Live proof of " + e.Identifier + " after deploy, requested by Sortie's merge-and-prove.\n" +
@@ -647,7 +736,7 @@ func afterDeployProofRequest(e *MergeAndProveEntry) string {
 		"Merge commit: " + e.MergeCommit + "\n" +
 		"Deployed: " + strings.Join(deployed, ", ") + "\n" +
 		"Deadline: " + e.Deadline.UTC().Format(time.RFC3339) + "\n" +
-		"Prove these criteria against the deployed hosts, running main as deployed, not against a checkout:\n" + e.Criteria +
+		"Prove these criteria against what is deployed of " + repo + ", not against a checkout:\n" + e.Criteria +
 		"Then comment on the pull request `" + LiveProofMarker + " " + e.MergeCommit + "` when every one is proven, or `" +
 		LiveProofUnprovenMarker + " " + e.MergeCommit + "` with what failed. Without a proven record by the deadline, Sortie reverts the merge."
 }

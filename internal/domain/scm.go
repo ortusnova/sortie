@@ -358,7 +358,8 @@ type PullRequestReverter interface {
 // Implementations must be safe for concurrent use.
 type CommitComparer interface {
 	// CommitContains reports whether ancestor is commit itself or one of
-	// its ancestors in owner/repo. A commit the forge does not know is a
+	// its ancestors in owner/repo. commit may also name a branch, whose
+	// head is then compared. A commit the forge does not know is a
 	// [*SCMError] of Kind [ErrSCMNotFound].
 	CommitContains(ctx context.Context, owner, repo, commit, ancestor string) (bool, error)
 }

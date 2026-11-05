@@ -7,9 +7,12 @@ import (
 	"github.com/sortie-ai/sortie/internal/redact"
 )
 
-// deployedHostResponse is the commit one host deployed a merge in.
+// deployedHostResponse is the branch and commit one host deployed a
+// merge in. Host is empty when no host deploys the pull request's
+// repository: Branch is then its base branch and Commit the merge commit.
 type deployedHostResponse struct {
 	Host   string `json:"host"`
+	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 }
 
@@ -58,7 +61,7 @@ func toMergeAndProveEntryResponse(e orchestrator.SnapshotMergeAndProveEntry) mer
 		Waiting:           nonEmpty(redact.Mask(e.Waiting)),
 	}
 	for _, d := range e.Deployed {
-		r.Deployed = append(r.Deployed, deployedHostResponse{Host: d.Host, Commit: d.Commit})
+		r.Deployed = append(r.Deployed, deployedHostResponse{Host: d.Host, Branch: d.Branch, Commit: d.Commit})
 	}
 	if !e.Deadline.IsZero() {
 		d := e.Deadline.UTC()

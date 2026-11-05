@@ -919,6 +919,9 @@
     },
     "DeployedHostResponse": {
       "properties": {
+        "branch": {
+          "type": "string"
+        },
         "commit": {
           "type": "string"
         },
@@ -928,6 +931,7 @@
       },
       "required": [
         "host",
+        "branch",
         "commit"
       ],
       "type": "object"
