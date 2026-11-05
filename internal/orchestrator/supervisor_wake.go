@@ -40,7 +40,11 @@ const (
 //     failure, which triggers its own session; the end of a parked story's
 //     live-proof job is the one end a rule acts on (wakePark.ProofsEnded);
 //   - how long a question waits on a person: only a person answers it,
-//     and the park or the question itself is in the digest.
+//     and the park or the question itself is in the digest;
+//   - a ready or conflicting pull request, and its ready age, while its
+//     story is parked or held by a platform fault (pullHeld): the
+//     supervisor acts on the hold first, and the pull request comes back
+//     when the hold ends.
 type supervisorWake struct {
 	Held      []wakeHold     `json:"held"`
 	Leases    []wakeLease    `json:"leases"`
@@ -79,8 +83,9 @@ type wakePark struct {
 }
 
 // wakePull is a story pull request that is ready to merge or conflicts,
-// at its head; Old once a ready one waited supervisorReadyAge. The
-// supervisor merges a ready one, or starts the fix of a conflicting one.
+// at its head, of a story neither parked nor held by a platform fault;
+// Old once a ready one waited supervisorReadyAge. The supervisor merges a
+// ready one, or starts the fix of a conflicting one.
 type wakePull struct {
 	PullRequest string `json:"pull_request"`
 	IssueID     string `json:"issue_id"`
@@ -187,10 +192,26 @@ func pullHead(reactions []*PendingReaction) string {
 	return ""
 }
 
+// pullHeld reports whether the story issueID is parked or held by a
+// platform fault, a question for a person among them. The supervisor
+// merges or fixes no pull request of such a story while the hold stands:
+// it answers or releases the park, or a person clears the fault, and that
+// change is in the digest. A proven live proof of a parked story, which
+// the supervisor merges, comes in as the end of its job (ProofsEnded).
+func pullHeld(state *State, issueID string) bool {
+	if _, ok := state.Parked[issueID]; ok {
+		return true
+	}
+	_, ok := state.FaultHolds[issueID]
+	return ok
+}
+
 // observeSupervisorWake returns the wake state of state at now. It keeps,
 // per ready pull request and head, when it was first seen ready, so a pull
 // request crosses supervisorReadyAge once; a restart starts that wait
-// again. Must run on the event loop.
+// again. The wait goes on while the pull request's story is held, so a
+// pull request that waited out its age while held comes back old when the
+// hold ends. Must run on the event loop.
 func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 	w := supervisorWake{
 		Held: []wakeHold{}, Leases: []wakeLease{}, Parked: []wakePark{}, Pulls: []wakePull{},
@@ -258,6 +279,9 @@ func observeSupervisorWake(state *State, now time.Time) supervisorWake {
 			}
 			readySince[mark] = since
 			pull.Old = now.Sub(since) >= supervisorReadyAge
+		}
+		if pullHeld(state, pull.IssueID) {
+			continue
 		}
 		w.Pulls = append(w.Pulls, pull)
 	}

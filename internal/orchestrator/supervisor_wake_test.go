@@ -649,3 +649,70 @@ func TestScenario_BlockedStoriesAndRunsThatComeAndGo(t *testing.T) {
 		}
 	})
 }
+
+// A ready or conflicting pull request of a parked or fault-held story is
+// left out of the digest, with its ready age, while the hold stands; its
+// wait goes on, so it comes back old when the hold ends.
+func TestSupervisorWake_APullRequestOfAHeldStoryIsLeftOut(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	state := NewState(1000, 2, 0, nil, AgentTotals{})
+	state.Parked["id-3"] = &ParkedEntry{Identifier: "ONS-3", Reason: "agent_blocked", ParkedAt: now}
+	state.FaultHolds["id-4"] = "pf-1"
+	base := supervisorStateDigest(state, now)
+
+	state.PendingReactions[ReactionKey("id-3", ReactionKindReview)] = readyReviewEntry("id-3", 3, "head-3")
+	state.PendingReactions[ReactionKey("id-4", ReactionKindMergeConflict)] = conflictEntry("id-4", 4, "head-4", now)
+	for _, at := range []time.Duration{0, supervisorReadyAge + time.Minute} {
+		if got := supervisorStateDigest(state, now.Add(at)); got != base {
+			t.Errorf("at %v the held stories' pull requests changed the digest", at)
+		}
+	}
+
+	delete(state.Parked, "id-3")
+	delete(state.FaultHolds, "id-4")
+	w := observeSupervisorWake(state, now.Add(supervisorReadyAge+2*time.Minute))
+	if len(w.Pulls) != 2 || !w.Pulls[0].Old || w.Pulls[1].State != wakePullConflicting {
+		t.Errorf("pulls after the holds ended = %+v, want the ready one old and the conflicting one", w.Pulls)
+	}
+}
+
+// Scenario "A parked story's pull request waits ready": the supervisor
+// merges nothing of a parked story, so its pull request ready past 30
+// minutes starts no session; releasing the park starts one.
+func TestScenario_AParkedStorysPullRequestWaitsReady(t *testing.T) {
+	t.Parallel()
+	h := newSupHarness(t, nil)
+	h.run()
+
+	start := time.Now()
+	h.onLoop(func(context.Context) {
+		h.o.state.PendingReactions[ReactionKey("id-41", ReactionKindReview)] = readyReviewEntry("id-41", 41, "head-41")
+	})
+	h.park("id-41", "ONS-41")
+	first := h.waitSessions(1)
+
+	idle := func(at time.Duration, change func(s *State)) {
+		h.onLoop(func(ctx context.Context) {
+			if change != nil {
+				change(h.o.state)
+			}
+			noteSupervisorTrigger(h.o.state, SupervisorTrigger{Kind: SupervisorTriggerIdleSlot, Detail: "test"})
+			h.o.superviseOnLoop(ctx, start.Add(at))
+		})
+	}
+	for _, at := range []time.Duration{29 * time.Minute, 31 * time.Minute, 45 * time.Minute} {
+		idle(at, nil)
+		if snap := h.waitSessions(1); snap.LastSession.Digest != first.LastSession.Digest {
+			t.Fatalf("at %v the digest moved to %s, want the parked story's pull request left out", at, snap.LastSession.Digest)
+		}
+	}
+
+	idle(50*time.Minute, func(s *State) { delete(s.Parked, "id-41") })
+	if snap := h.waitSessions(2); snap.LastSession.Digest == first.LastSession.Digest {
+		t.Errorf("releasing the park left the digest %s, want it changed", first.LastSession.Digest)
+	}
+	idle(55*time.Minute, nil)
+	h.waitSessions(2)
+}
