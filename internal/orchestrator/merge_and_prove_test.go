@@ -731,7 +731,7 @@ func TestStoryRevert_HandRevertInFlight(t *testing.T) {
 	f.forge.mu.Lock()
 	f.forge.merged = []domain.MergedRevert{{Number: 150, Commits: []string{mergeSHA(1)[:10]}}}
 	f.forge.mu.Unlock()
-	f.tick(t, f.t0.Add(time.Minute))
+	f.tick(t, f.t0.Add(config.DefaultRevertScanInterval))
 	if state := f.stories.stateOf("id-1"); state != "Todo" {
 		t.Errorf("ONS-1 = %q, want Todo", state)
 	}

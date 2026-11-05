@@ -14,7 +14,7 @@ import (
 )
 
 // parkRecordReadBound bounds the tracker and forge reads of one parked
-// story's record check on the event loop.
+// story's record check, off the event loop.
 const parkRecordReadBound = 20 * time.Second
 
 // releaseParksByRecord reads, under plan control, the pull request of each
@@ -25,8 +25,9 @@ const parkRecordReadBound = 20 * time.Second
 // passed review's does, and Sortie seeds the pull request's watches at that
 // head, so auto-merge's own checks decide the merge. A park whose story has
 // no criteria verdict, a refused one, or one no record settles is never
-// released here, nor is one whose record names another commit. Runs on the
-// event loop.
+// released here, nor is one whose record names another commit. The reads
+// run off the event loop ([Orchestrator.startParkRecordCheck]). Must run
+// on the event loop.
 func (o *Orchestrator) releaseParksByRecord(ctx context.Context, cfg config.ServiceConfig, now time.Time) {
 	if len(o.state.Parked) == 0 && len(o.state.ParkRecordChecked) == 0 {
 		return
@@ -57,67 +58,99 @@ func (o *Orchestrator) releaseParksByRecord(ctx context.Context, cfg config.Serv
 		if workerHolds(o.state, id) {
 			continue
 		}
+		if o.parkRecordReads[id] {
+			continue
+		}
 		o.state.ParkRecordChecked[id] = now
-		o.checkParkRecord(ctx, cfg, loader, id, now)
+		o.startParkRecordCheck(ctx, cfg, loader, id, now)
 	}
 }
 
-// checkParkRecord releases the park of issueID when its pull request holds
-// the records its verdict leaves open at its head, and otherwise leaves the
-// park as it is.
-func (o *Orchestrator) checkParkRecord(ctx context.Context, cfg config.ServiceConfig, loader CriteriaVerdictLoader, issueID string, now time.Time) {
+// parkRecordFound is what a park record read found off the event loop:
+// the story's pull request at its head, moved on the tracker to the
+// handoff state, and the comments that record what its review left open.
+type parkRecordFound struct {
+	pr         pullRequestRef
+	commentIDs []string
+}
+
+// startParkRecordCheck reads, off the event loop, whether the pull request
+// of issueID's park holds the records its verdict leaves open at its head,
+// and releases the park on the loop when it does. At most one read of an
+// issue is in flight. Must run on the event loop.
+func (o *Orchestrator) startParkRecordCheck(ctx context.Context, cfg config.ServiceConfig, loader CriteriaVerdictLoader, issueID string, now time.Time) {
 	park := o.state.Parked[issueID]
+	issue, known := lookupSupervised(o.state, park.Identifier)
+	if !known {
+		return
+	}
+	if o.parkRecordReads == nil {
+		o.parkRecordReads = map[string]bool{}
+	}
+	o.parkRecordReads[issueID] = true
 	log := logging.WithIssue(o.logger, issueID, park.Identifier)
+	o.state.TrackerOpsWg.Go(func() {
+		found, ok := o.readParkRecord(ctx, cfg, loader, issueID, issue, log)
+		o.runOnLoop(ctx, func(loopCtx context.Context) {
+			delete(o.parkRecordReads, issueID)
+			if ok && o.state.Parked[issueID] == park {
+				o.releaseParkByRecord(loopCtx, cfg, issueID, park, found, now, log)
+			}
+		})
+	})
+}
+
+// readParkRecord reads whether the pull request of issueID holds the
+// records its verdict leaves open at its head, and when it does moves the
+// story to the handoff state. It reads no runtime state, so it runs off
+// the event loop.
+func (o *Orchestrator) readParkRecord(ctx context.Context, cfg config.ServiceConfig, loader CriteriaVerdictLoader, issueID string, issue supervisedIssue, log *slog.Logger) (parkRecordFound, bool) {
 	rctx, cancel := context.WithTimeout(ctx, parkRecordReadBound)
 	defer cancel()
 
 	v, found, err := loader.LoadCriteriaVerdict(rctx, issueID)
 	if err != nil {
 		log.Warn("parked story's criteria verdict read failed", slog.Any("error", err))
-		return
+		return parkRecordFound{}, false
 	}
 	if !found || (v.Outcome != CriteriaOutcomeMet && v.Outcome != CriteriaOutcomeLiveProof) {
-		return
-	}
-	issue, known := lookupSupervised(o.state, park.Identifier)
-	if !known {
-		return
+		return parkRecordFound{}, false
 	}
 	pr, refused, ok := o.Supervisor().pullRequestOf(rctx, issue)
 	if !ok {
 		log.Debug("parked story's pull request not found", slog.String("reason", refused.Message))
-		return
+		return parkRecordFound{}, false
 	}
 	tracked, err := o.trackerAdapter.FetchIssueByID(rctx, issueID)
 	if err != nil {
 		log.Warn("parked story's tracker read failed", slog.Any("error", err))
-		return
+		return parkRecordFound{}, false
 	}
 	if isTerminalState(tracked.State, cfg.Tracker.TerminalStates) {
-		return
+		return parkRecordFound{}, false
 	}
 	needs := recordsNeeded(slices.ContainsFunc(tracked.Labels, isUIReviewLabel), v.Outcome)
 	if len(needs) == 0 {
-		return
+		return parkRecordFound{}, false
 	}
 	status, err := o.scmAdapter.GetMergeability(rctx, pr.Number, pr.Owner, pr.Repo)
 	if err != nil {
 		log.Warn("parked story's pull request read failed", slog.Int("pr_number", pr.Number), slog.Any("error", err))
-		return
+		return parkRecordFound{}, false
 	}
 	if status.Merged || status.Closed || status.HeadSHA == "" {
-		return
+		return parkRecordFound{}, false
 	}
 	comments, err := o.prCommentReader.FetchPullRequestComments(rctx, pr.Number, pr.Owner, pr.Repo)
 	if err != nil {
 		log.Warn("parked story's pull request comments read failed", slog.Int("pr_number", pr.Number), slog.Any("error", err))
-		return
+		return parkRecordFound{}, false
 	}
 	commentIDs, missing := recordsAtHead(comments, status.HeadSHA, needs)
 	if missing != "" {
 		log.Debug("parked story's pull request lacks a record at its head",
 			slog.Int("pr_number", pr.Number), slog.String("head_sha", status.HeadSHA), slog.String("record", missing))
-		return
+		return parkRecordFound{}, false
 	}
 	pr.HeadSHA = status.HeadSHA
 	if pr.Branch == "" {
@@ -131,9 +164,17 @@ func (o *Orchestrator) checkParkRecord(ctx context.Context, cfg config.ServiceCo
 		if err != nil {
 			log.Warn("park release by record could not move the story to the handoff state, keeping the park",
 				slog.String("handoff_state", cfg.Tracker.HandoffState), slog.Any("error", err))
-			return
+			return parkRecordFound{}, false
 		}
 	}
+	return parkRecordFound{pr: pr, commentIDs: commentIDs}, true
+}
+
+// releaseParkByRecord releases park, whose story readParkRecord found
+// recorded at its pull request's head and moved to the handoff state, and
+// seeds the pull request's watches. Must run on the event loop.
+func (o *Orchestrator) releaseParkByRecord(ctx context.Context, cfg config.ServiceConfig, issueID string, park *ParkedEntry, found parkRecordFound, now time.Time, log *slog.Logger) {
+	pr, commentIDs := found.pr, found.commentIDs
 	record := ParkRecord{PullRequest: formatPullRequest(pr), Head: pr.HeadSHA, Comments: commentIDs}
 	park.Record = &record
 	unparkIssue(ctx, o.state, issueID, unparkTriggerRecord, o.store, log)

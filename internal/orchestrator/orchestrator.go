@@ -421,6 +421,8 @@ type Orchestrator struct {
 	prReverter                        domain.PullRequestReverter
 	commitComparer                    domain.CommitComparer
 	revertFinder                      domain.RevertFinder
+	revertScan                        revertScanSchedule
+	parkRecordReads                   map[string]bool // issue IDs whose park record read is in flight; loop-only
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool

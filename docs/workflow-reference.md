@@ -2397,6 +2397,7 @@ The deploy check fails when the file cannot be read, is longer than 64 KiB, is n
 ```yaml
 merge_and_prove:
   deadline: 30m
+  revert_scan_interval: 3m
   hosts:
     p1: ~/.local/state/stage0/deploy.json
     taichi: /srv/stage0/taichi/deploy.json
@@ -2407,6 +2408,7 @@ Some acceptance criteria are settled only by a run against the deployed main, af
 | Field | Type | Required | Default | Description |
 | ----- | ---- | -------- | ------- | ----------- |
 | `merge_and_prove.deadline` | duration string | No | `30m` | How long each wait after the merge lasts: for every host to deploy the merge commit, and then, from the deploy, for the live proof's record. A positive Go duration such as `30m` or `1h`. |
+| `merge_and_prove.revert_scan_interval` | duration string | No | `3m` | How often Sortie reads the forge for merged reverts of the stories it holds a merge record of ([A reverted story is not done](#215-merge_and_prove--merge-prove-after-deploy-or-revert)). At least `1m`. The scan runs off the event loop, one at a time, and reads only the pull requests merged since the previous scan (after a start, from the oldest record less seven days). |
 | `merge_and_prove.hosts` | map of host name to path | No | the one host of `health.deploy_state` | Each host's deploy state file, in the format of the [deploy state file](#deploy-state-file). A host name is letters, digits, `.`, `_` and `-`; a path is absolute after `~` and `$VAR` expansion. Without it, the one host is `health.deploy_state`, named by Sortie's host name. With neither, the route refuses every story with `no_deploy_state`. |
 
 **The route.** `POST /api/v1/{identifier}/merge-and-prove` takes the control token or the supervisor token (whose request carries `evidence`, as for every supervisor action). It accepts a story only when:
@@ -2436,7 +2438,7 @@ A proven story gets its `merged` plan satisfaction then, not at the merge, so th
 
 **Restart.** The queue and the story in flight are stored (table `merge_and_prove`), so a restart goes on from the phase it was in: a merge the forge made meanwhile is taken, the hosts are read anew, a revert opened before the restart is the one merged, and the live-proof job, which does not outlive the process, is scheduled again when no run of the story is going. The deadlines are stored and keep running.
 
-**A reverted story is not done.** On every poll tick Sortie reads the merged pull requests of each repository it holds a merge record of (on GitHub, the closed pull requests updated since the last read, and from the oldest record less seven days after a start). A merged pull request that says it reverts a story's merge, whoever merged it, undoes that story: GitHub's revert button writes `Reverts owner/repo#N` naming the story's pull request, and `git revert` writes `This reverts commit <sha>` naming its merge commit. Sortie deletes the story's `merged` plan satisfaction, so the stories it blocks wait for it again within that sync, moves a story in a terminal state (other than `tracker.cancel_state`) or the handoff state to `tracker.release_state`, comments the revert on it, and publishes `story.reverted`. A story merge-and-prove has in flight ends as reverted. A record whose pull request is not kept is matched by its merge commit. Re-landing a reverted change needs a new pull request.
+**A reverted story is not done.** Once per `merge_and_prove.revert_scan_interval` (default `3m`) Sortie reads the merged pull requests of each repository it holds a merge record of (on GitHub, the closed pull requests updated since the last read, and from the oldest record less seven days after a start). The read runs off the event loop, so a slow forge holds neither the poll tick nor `GET /api/v1/state`, and a scan does not start while one is in flight. A merged pull request that says it reverts a story's merge, whoever merged it, undoes that story: GitHub's revert button writes `Reverts owner/repo#N` naming the story's pull request, and `git revert` writes `This reverts commit <sha>` naming its merge commit. Sortie deletes the story's `merged` plan satisfaction, so the stories it blocks wait for it again within that scan, moves a story in a terminal state (other than `tracker.cancel_state`) or the handoff state to `tracker.release_state`, comments the revert on it, and publishes `story.reverted`. A story merge-and-prove has in flight ends as reverted. A record whose pull request is not kept is matched by its merge commit. Re-landing a reverted change needs a new pull request.
 
 **Reload.** The section reloads: the next tick reads the new deadline for a phase that starts after it, and the new hosts.
 

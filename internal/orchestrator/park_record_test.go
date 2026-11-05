@@ -101,6 +101,7 @@ func newParkRecordFixture(t *testing.T, state *State, labels []string, outcome s
 func (f *parkRecordFixture) release(t *testing.T, now time.Time) {
 	t.Helper()
 	onLoop(t, f.o, func() { f.o.releaseParksByRecord(t.Context(), f.o.workflowManager.Config(), now) })
+	f.o.state.TrackerOpsWg.Wait()
 }
 
 // reconcileParams is what the poll tick hands the reaction passes.
@@ -437,5 +438,69 @@ func TestParkRecord_ReadsOncePerPollInterval(t *testing.T) {
 	f.release(t, parkRecordNow.Add(interval))
 	if v := f.view(t); v.park != nil || v.release == nil {
 		t.Errorf("park %+v, release %+v one poll interval later; want it released", v.park, v.release)
+	}
+}
+
+// gatedComments is a comment reader that blocks until the test opens
+// gate, as a slow forge does, and counts its reads.
+type gatedComments struct {
+	domain.PullRequestCommentReader
+	mu      sync.Mutex
+	reads   int
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (g *gatedComments) FetchPullRequestComments(ctx context.Context, n int, owner, repo string) ([]domain.ReviewComment, error) {
+	g.mu.Lock()
+	g.reads++
+	g.mu.Unlock()
+	g.entered <- struct{}{}
+	select {
+	case <-g.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return g.PullRequestCommentReader.FetchPullRequestComments(ctx, n, owner, repo)
+}
+
+// The park record read runs off the event loop: while the forge does not
+// answer, the loop answers at once and no second read of the story
+// starts; once it answers, the park is released as before.
+func TestParkRecord_ReadRunsOffTheLoop(t *testing.T) {
+	t.Parallel()
+	f := newParkRecordFixture(t, nil, nil, CriteriaOutcomeLiveProof, recordComment("c-9", LiveProofMarker, parkRecordHead))
+	gated := &gatedComments{PullRequestCommentReader: f.comments, entered: make(chan struct{}, 4), gate: make(chan struct{})}
+	f.o.prCommentReader = gated
+	cfg := f.o.workflowManager.Config()
+
+	start := time.Now()
+	onLoop(t, f.o, func() { f.o.releaseParksByRecord(t.Context(), cfg, parkRecordNow) })
+	select {
+	case <-gated.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the park record read did not reach the forge")
+	}
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("releaseParksByRecord held the loop %v with the forge blocked, want under 100ms", took)
+	}
+	start = time.Now()
+	var parked bool
+	onLoop(t, f.o, func() { _, parked = f.o.state.Parked["id-39"] })
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("the loop answered in %v during the read, want under 100ms", took)
+	}
+	if !parked {
+		t.Error("the park was released before the forge answered")
+	}
+	onLoop(t, f.o, func() { f.o.releaseParksByRecord(t.Context(), cfg, parkRecordNow.Add(time.Hour)) })
+
+	close(gated.gate)
+	f.o.state.TrackerOpsWg.Wait()
+	if gated.reads != 1 {
+		t.Errorf("comment reads = %d, want 1: a read was in flight", gated.reads)
+	}
+	if v := f.view(t); v.park != nil {
+		t.Error("the story is still parked after its record landed")
 	}
 }
