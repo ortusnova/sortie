@@ -31,6 +31,7 @@ type proveForge struct {
 	merges   []int
 	reverts  []int // the pull requests a revert was opened of
 	merged   []domain.MergedRevert
+	readied  []int // the pull requests marked ready for review
 }
 
 func mergeSHA(n int) string { return fmt.Sprintf("%040x", 0xabc000+n) }
@@ -62,6 +63,9 @@ func newProveForge() *proveForge {
 		p := f.pulls[n]
 		if p.HeadSHA != head {
 			return domain.MergeResult{}, &domain.SCMError{Kind: domain.ErrSCMConflict, Message: "head moved"}
+		}
+		if p.Draft {
+			return domain.MergeResult{}, &domain.SCMError{Kind: domain.ErrSCMConflict, Message: "a draft cannot be merged"}
 		}
 		p.Merged, p.Closed, p.MergeCommitSHA = true, true, mergeSHA(n)
 		f.merges = append(f.merges, n)
@@ -170,6 +174,29 @@ func (s *storyTracker) TransitionIssue(_ context.Context, id, target string) err
 	s.issues[id].State = target
 	s.moves = append(s.moves, id+" "+target)
 	return nil
+}
+
+func (s *storyTracker) AddLabel(_ context.Context, id, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !slices.Contains(s.issues[id].Labels, label) {
+		s.issues[id].Labels = append(s.issues[id].Labels, label)
+	}
+	return nil
+}
+
+func (s *storyTracker) issue(id string) domain.Issue {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	is := *s.issues[id]
+	is.Labels = slices.Clone(is.Labels)
+	return is
+}
+
+func (s *storyTracker) setState(id, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[id].State = state
 }
 
 func (s *storyTracker) CommentIssue(_ context.Context, id, body string) error {
@@ -704,7 +731,7 @@ func TestStoryRevert_HandRevertInFlight(t *testing.T) {
 	f.forge.mu.Lock()
 	f.forge.merged = []domain.MergedRevert{{Number: 150, Commits: []string{mergeSHA(1)[:10]}}}
 	f.forge.mu.Unlock()
-	f.tick(t, f.t0.Add(time.Minute))
+	f.tick(t, f.t0.Add(config.DefaultRevertScanInterval))
 	if state := f.stories.stateOf("id-1"); state != "Todo" {
 		t.Errorf("ONS-1 = %q, want Todo", state)
 	}

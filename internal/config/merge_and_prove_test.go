@@ -16,13 +16,14 @@ func TestMergeAndProveConfig(t *testing.T) {
 		want      MergeAndProveConfig
 		wantField string
 	}{
-		{name: "absent", want: MergeAndProveConfig{Deadline: 30 * time.Minute}},
-		{name: "empty", section: map[string]any{}, want: MergeAndProveConfig{Deadline: 30 * time.Minute}},
-		{name: "deadline", section: map[string]any{"deadline": "45m"}, want: MergeAndProveConfig{Deadline: 45 * time.Minute}},
+		{name: "absent", want: MergeAndProveConfig{Deadline: 30 * time.Minute, RevertScanInterval: 3 * time.Minute}},
+		{name: "empty", section: map[string]any{}, want: MergeAndProveConfig{Deadline: 30 * time.Minute, RevertScanInterval: 3 * time.Minute}},
+		{name: "deadline", section: map[string]any{"deadline": "45m"}, want: MergeAndProveConfig{Deadline: 45 * time.Minute, RevertScanInterval: 3 * time.Minute}},
+		{name: "revert scan interval", section: map[string]any{"revert_scan_interval": "5m"}, want: MergeAndProveConfig{Deadline: 30 * time.Minute, RevertScanInterval: 5 * time.Minute}},
 		{
 			name:    "hosts",
 			section: map[string]any{"hosts": map[string]any{"taichi": "$SORTIE_TEST_KIT_DIR/taichi.json", "p1": "/var/lib/stage0/./deploy.json"}},
-			want: MergeAndProveConfig{Deadline: 30 * time.Minute, Hosts: []DeployHost{
+			want: MergeAndProveConfig{Deadline: 30 * time.Minute, RevertScanInterval: 3 * time.Minute, Hosts: []DeployHost{
 				{Name: "p1", DeployState: "/var/lib/stage0/deploy.json"},
 				{Name: "taichi", DeployState: "/var/lib/stage0/taichi.json"},
 			}},
@@ -32,6 +33,8 @@ func TestMergeAndProveConfig(t *testing.T) {
 		{name: "deadline not a duration", section: map[string]any{"deadline": "soon"}, wantField: "merge_and_prove.deadline"},
 		{name: "deadline zero", section: map[string]any{"deadline": "0s"}, wantField: "merge_and_prove.deadline"},
 		{name: "deadline a number", section: map[string]any{"deadline": 30}, wantField: "merge_and_prove.deadline"},
+		{name: "revert scan interval zero", section: map[string]any{"revert_scan_interval": "0s"}, wantField: "merge_and_prove.revert_scan_interval"},
+		{name: "revert scan interval below a minute", section: map[string]any{"revert_scan_interval": "15s"}, wantField: "merge_and_prove.revert_scan_interval"},
 		{name: "hosts a list", section: map[string]any{"hosts": []any{"/a"}}, wantField: "merge_and_prove.hosts"},
 		{name: "host path relative", section: map[string]any{"hosts": map[string]any{"p1": "deploy.json"}}, wantField: "merge_and_prove.hosts.p1"},
 		{name: "host path blank", section: map[string]any{"hosts": map[string]any{"p1": " "}}, wantField: "merge_and_prove.hosts.p1"},
