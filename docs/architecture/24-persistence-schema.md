@@ -472,6 +472,7 @@ One row per `POST /api/v1/<issue_identifier>/sessions`. An issue's session budge
 | `detail`           | TEXT NOT NULL       | The error code and message answered, masked; empty on success                          |
 | `pull_request`     | TEXT NOT NULL       | `owner/repo#N` the action named; may be empty                                          |
 | `merge_commit`     | TEXT NOT NULL       | The merge commit the forge gave; may be empty                                          |
+| `profile`          | TEXT NOT NULL       | The job profile a fix run or live-proof request named; empty for none (migration 1019) |
 | `acted_at`         | TEXT NOT NULL       | RFC 3339 timestamp with nanoseconds, in UTC; indexed                                   |
 
 One row per request the supervisor token makes to a control route, written by the HTTP server after it answers; a failed write is logged and the answer stands. Rows are never deleted. `GET /api/v1/state` reads the 50 newest by `id`.
@@ -585,7 +586,7 @@ The event loop writes a row when a session starts, and the session's goroutine r
 
 The event loop writes the row when a run's exit records the part and at each change of its status. At startup every row is loaded before the first tick, so a story stays out of Done across a restart and a part recorded again by a later run is recognized; a `job` part that was `working` is loaded as `pending`, because its check job did not outlive the process, and is queued again. Rows are never deleted.
 
-**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1019)
+**`merge_and_prove`**: the stories merge-and-prove queued or has in flight (Section 13.7) (migration 1020)
 
 | Column                | Type             | Notes |
 | --------------------- | ---------------- | ----- |

@@ -153,7 +153,7 @@ func TestHandleRetryTimer_WaitsForAWorker(t *testing.T) {
 	params := defaultRetryParams(t, store, tracker)
 	params.PollIntervalMS = 60_000
 	wait := &WorkerHold{Capabilities: []string{"nested"}, Waiting: []string{"worker p1: no nested virtualization"}}
-	params.WorkerWait = func(domain.Issue) *WorkerHold { return wait }
+	params.WorkerWait = func(domain.Issue, string) *WorkerHold { return wait }
 	dispatched := 0
 	params.MakeWorkerFn = func(_, _, _, _, _ string, _ domain.AgentAdapter, _ AttemptSettings) WorkerFunc {
 		dispatched++

@@ -63,6 +63,7 @@ type remoteRunEntry struct {
 	ConfiguredModel     string                       `json:"configured_model,omitempty"`
 	ConfiguredEffort    string                       `json:"configured_effort,omitempty"`
 	ContinuationContext map[string]any               `json:"continuation_context,omitempty"`
+	JobProfile          string                       `json:"job_profile,omitempty"`
 	ReactionKind        string                       `json:"reaction_kind,omitempty"`
 	Trigger             string                       `json:"trigger,omitempty"`
 	UsageLimitNotified  bool                         `json:"usage_limit_notified,omitempty"`
@@ -130,7 +131,7 @@ func snapshotRemoteEntry(entry *RunningEntry) remoteRunEntry {
 		AgentKind: entry.AgentKind, RuleName: entry.RuleName, TemplateID: entry.TemplateID,
 		StageLineage: entry.StageLineage, FirstAfterHop: entry.FirstAfterHop, RuleSettingsApplied: entry.RuleSettingsApplied,
 		ConfiguredModel: entry.ConfiguredModel, ConfiguredEffort: entry.ConfiguredEffort,
-		ContinuationContext: storableContinuation(entry.ContinuationContext), ReactionKind: entry.ReactionKind, Trigger: entry.Trigger,
+		ContinuationContext: storableContinuation(entry.ContinuationContext), JobProfile: entry.JobProfile, ReactionKind: entry.ReactionKind, Trigger: entry.Trigger,
 		UsageLimitNotified: entry.UsageLimitNotified, Continuation: entry.Continuation, SessionID: entry.SessionID,
 		BrokerURL: entry.BrokerURL, BrokerViewerToken: entry.BrokerViewerToken, HeldTotal: entry.HeldTotal,
 		TurnCount: entry.TurnCount, InputTokens: entry.AgentInputTokens, OutputTokens: entry.AgentOutputTokens,
@@ -152,6 +153,7 @@ func (s remoteRunEntry) restoreInto(entry *RunningEntry) {
 	entry.StageLineage, entry.FirstAfterHop = s.StageLineage, s.FirstAfterHop
 	entry.RuleSettingsApplied, entry.ConfiguredModel, entry.ConfiguredEffort = s.RuleSettingsApplied, s.ConfiguredModel, s.ConfiguredEffort
 	entry.ContinuationContext = s.ContinuationContext
+	entry.JobProfile = s.JobProfile
 	entry.ReactionKind, entry.Trigger, entry.UsageLimitNotified = s.ReactionKind, s.Trigger, s.UsageLimitNotified
 	entry.Continuation = s.Continuation
 	entry.SessionID = s.SessionID
@@ -413,6 +415,9 @@ func (o *Orchestrator) adoptRemoteRuns(ctx context.Context) {
 		runCtx := ctx
 		if e.ContinuationContext != nil {
 			runCtx = WithContinuationContext(runCtx, e.ContinuationContext)
+		}
+		if e.JobProfile != "" {
+			runCtx = withJobProfile(runCtx, e.JobProfile)
 		}
 		if e.UsageLimitNotified {
 			runCtx = withUsageLimitNotified(runCtx)

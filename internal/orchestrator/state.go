@@ -286,6 +286,11 @@ type RunningEntry struct {
 	// into the worker session. Nil for normal dispatches.
 	ContinuationContext map[string]any
 
+	// JobProfile names the environment.remote.profiles entry the run's
+	// remote job runs with, in place of its repository's image and
+	// requirements; empty for the repository's own.
+	JobProfile string
+
 	// ReactionKind is the reaction type that caused this dispatch, empty
 	// for first dispatches and non-reaction retries. Runtime-only.
 	ReactionKind string
@@ -446,6 +451,11 @@ type RetryEntry struct {
 	// ContinuationContext carries reaction continuation data for
 	// first-turn template injection. Nil for non-reaction retries.
 	ContinuationContext map[string]any
+
+	// JobProfile names the environment.remote.profiles entry the retry's
+	// remote job runs with; empty for its repository's own.
+	// Runtime-only.
+	JobProfile string
 
 	// ReactionKind is the reaction type that triggered this retry. A known
 	// non-empty value causes MarkReactionDispatched after successful
