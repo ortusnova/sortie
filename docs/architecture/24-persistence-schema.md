@@ -550,7 +550,7 @@ One row per held issue, written by each hold, renewal, and expiry, and deleted b
 | `triggers`       | INTEGER NOT NULL    | How many triggers started the session |
 | `started_at`     | TEXT NOT NULL       | UTC, at a fixed nanosecond width so the text order is the time order; indexed |
 | `ended_at`       | TEXT NOT NULL       | UTC in the same layout; empty while the session runs or when Sortie stopped before recording its end |
-| `outcome`        | TEXT NOT NULL       | `completed`, `failed`, `paused`, `budget_exhausted`, or `cancelled`; empty with `ended_at` |
+| `outcome`        | TEXT NOT NULL       | `completed`, `failed`, `paused`, `budget_exhausted`, `session_cap`, or `cancelled`; empty with `ended_at` |
 | `error`          | TEXT NOT NULL       | Why the session ended other than completed, masked; empty otherwise |
 | `tokens`         | INTEGER NOT NULL    | Tokens less cache reads the session spent |
 | `digest`         | TEXT NOT NULL       | The state digest the session started on (migration 1018); `''` for a row written before |

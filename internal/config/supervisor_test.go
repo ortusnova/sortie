@@ -25,6 +25,8 @@ func TestSupervisorConfig(t *testing.T) {
 				MaxTokensPerDay:   DefaultSupervisorMaxTokensPerDay,
 				QuietSweepMS:      DefaultSupervisorQuietSweepMS,
 				NoopLimit:         DefaultSupervisorNoopLimit,
+				SessionTokens:     DefaultSupervisorSessionTokens,
+				VelocityFactor:    DefaultSupervisorVelocityFactor,
 			},
 		},
 		{
@@ -32,11 +34,11 @@ func TestSupervisorConfig(t *testing.T) {
 			section: map[string]any{
 				"agent": "codex", "prompt": "/etc/sortie/supervisor.md",
 				"sweep_interval_ms": 600000, "max_sessions_per_day": "12", "max_tokens_per_day": 500000,
-				"quiet_sweep_ms": 3600000, "noop_limit": 5,
+				"quiet_sweep_ms": 3600000, "noop_limit": 5, "session_tokens": 90000, "velocity_factor": 2,
 			},
 			want: SupervisorConfig{
 				Agent: "codex", Prompt: "/etc/sortie/supervisor.md", SweepIntervalMS: 600000, MaxSessionsPerDay: 12, MaxTokensPerDay: 500000,
-				QuietSweepMS: 3600000, NoopLimit: 5,
+				QuietSweepMS: 3600000, NoopLimit: 5, SessionTokens: 90000, VelocityFactor: 2,
 			},
 		},
 		{name: "not a map", section: "on", wantField: "supervisor"},
@@ -47,6 +49,8 @@ func TestSupervisorConfig(t *testing.T) {
 		{name: "a text token budget", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "max_tokens_per_day": "lots"}, wantField: "supervisor.max_tokens_per_day"},
 		{name: "a zero quiet sweep", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "quiet_sweep_ms": 0}, wantField: "supervisor.quiet_sweep_ms"},
 		{name: "a zero no-op limit", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "noop_limit": 0}, wantField: "supervisor.noop_limit"},
+		{name: "a zero session cap", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "session_tokens": 0}, wantField: "supervisor.session_tokens"},
+		{name: "a negative velocity factor", section: map[string]any{"agent": "claude-code", "prompt": "p.md", "velocity_factor": -3}, wantField: "supervisor.velocity_factor"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

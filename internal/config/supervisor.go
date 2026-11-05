@@ -27,6 +27,15 @@ const (
 	// kind that may take no action on the same state digest before that
 	// kind is suspended.
 	DefaultSupervisorNoopLimit = 3
+
+	// DefaultSupervisorSessionTokens is the tokens, less cache reads, one
+	// supervisor session may spend before it is stopped.
+	DefaultSupervisorSessionTokens = 150_000
+
+	// DefaultSupervisorVelocityFactor is how many times the even hourly
+	// pace of the daily token budget the last hour may spend before only
+	// sweeps start a session.
+	DefaultSupervisorVelocityFactor = 3
 )
 
 // SupervisorConfig is the parsed supervisor section: the agent that
@@ -60,6 +69,15 @@ type SupervisorConfig struct {
 	// take no action on the same state digest before that kind starts no
 	// session until the digest changes.
 	NoopLimit int
+
+	// SessionTokens bounds the tokens, less cache reads, one supervisor
+	// session spends; a session that reaches it is stopped.
+	SessionTokens int
+
+	// VelocityFactor is how many times the even hourly pace of
+	// MaxTokensPerDay the tokens of the last hour may reach before only
+	// sweeps start a session.
+	VelocityFactor int
 }
 
 // Enabled reports whether the workflow configures a supervisor.
@@ -106,6 +124,8 @@ func buildSupervisorConfig(raw map[string]any) (SupervisorConfig, error) {
 		MaxTokensPerDay:   DefaultSupervisorMaxTokensPerDay,
 		QuietSweepMS:      DefaultSupervisorQuietSweepMS,
 		NoopLimit:         DefaultSupervisorNoopLimit,
+		SessionTokens:     DefaultSupervisorSessionTokens,
+		VelocityFactor:    DefaultSupervisorVelocityFactor,
 	}
 	for _, f := range []struct {
 		key  string
@@ -116,6 +136,8 @@ func buildSupervisorConfig(raw map[string]any) (SupervisorConfig, error) {
 		{"max_tokens_per_day", &cfg.MaxTokensPerDay},
 		{"quiet_sweep_ms", &cfg.QuietSweepMS},
 		{"noop_limit", &cfg.NoopLimit},
+		{"session_tokens", &cfg.SessionTokens},
+		{"velocity_factor", &cfg.VelocityFactor},
 	} {
 		if v, exists := m[f.key]; !exists || v == nil {
 			continue

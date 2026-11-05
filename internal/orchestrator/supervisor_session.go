@@ -31,11 +31,12 @@ const (
 
 // How a supervisor session ended.
 const (
-	SupervisorOutcomeCompleted = "completed"        // the turn completed
-	SupervisorOutcomeFailed    = "failed"           // the prompt, the session start, or the turn failed
-	SupervisorOutcomePaused    = "paused"           // a pause stopped it
-	SupervisorOutcomeBudget    = "budget_exhausted" // it reached the daily token budget
-	SupervisorOutcomeCancelled = "cancelled"        // Sortie stopped
+	SupervisorOutcomeCompleted  = "completed"        // the turn completed
+	SupervisorOutcomeFailed     = "failed"           // the prompt, the session start, or the turn failed
+	SupervisorOutcomePaused     = "paused"           // a pause stopped it
+	SupervisorOutcomeBudget     = "budget_exhausted" // it reached the daily token budget
+	SupervisorOutcomeSessionCap = "session_cap"      // it reached supervisor.session_tokens
+	SupervisorOutcomeCancelled  = "cancelled"        // Sortie stopped
 )
 
 // What the supervisor is doing, as the state API serves it.
@@ -62,8 +63,9 @@ const (
 )
 
 var (
-	errSupervisorPaused = errors.New("the operator paused the supervisor")
-	errSupervisorBudget = errors.New("the supervisor reached its daily token budget")
+	errSupervisorPaused     = errors.New("the operator paused the supervisor")
+	errSupervisorBudget     = errors.New("the supervisor reached its daily token budget")
+	errSupervisorSessionCap = errors.New("the supervisor session reached supervisor.session_tokens")
 )
 
 // SupervisorTrigger is one event that asks for a supervisor session.
@@ -117,12 +119,18 @@ type SupervisorSuspension struct {
 // SupervisorBudget is the supervisor's spend in the current UTC day
 // against its daily budget.
 type SupervisorBudget struct {
-	Day           time.Time // UTC midnight that began the day
-	ResetsAt      time.Time
-	SessionsUsed  int
-	SessionsLimit int
-	TokensUsed    int64
-	TokensLimit   int64
+	Day                time.Time // UTC midnight that began the day
+	ResetsAt           time.Time
+	SessionsUsed       int
+	SessionsLimit      int
+	TokensUsed         int64
+	TokensLimit        int64
+	SessionTokensLimit int64 // supervisor.session_tokens
+	HourTokensUsed     int64 // the tokens of the last hour, the running session's included
+	HourTokensLimit    int64 // the hourly spend over which only sweeps start a session
+	HourPace           int64 // the even hourly pace of the daily token budget
+	Reserve            bool  // less than a fifth of the day's tokens is left
+	Velocity           bool  // the hourly spend went over HourTokensLimit and is not yet back under HourPace
 }
 
 // SupervisorSnapshot is the supervisor's runtime state for the state API.
@@ -138,6 +146,11 @@ type SupervisorSnapshot struct {
 	Budget      SupervisorBudget
 	NextSweepAt time.Time
 	Suspended   []SupervisorSuspension // sorted by kind
+	Available   bool                   // the supervisor can start the sessions it would start
+	Reason      string                 // why it cannot: budget_exhausted, credential, paused or velocity; empty while available
+	ResetsAt    time.Time              // when Reason resets, zero when not known
+	Since       time.Time              // when the supervisor became unavailable, zero while available
+	Deferred    []SupervisorDeferral
 }
 
 // supervisorRun is the running supervisor session.
@@ -146,8 +159,10 @@ type supervisorRun struct {
 	startedAt time.Time
 	triggers  []SupervisorTrigger
 	digest    string
-	quiet     bool  // a quiet sweep: the digest is the last session's
-	mark      int64 // the newest supervisor action before it started; -1 when unknown
+	quiet     bool   // a quiet sweep: the digest is the last session's
+	mark      int64  // the newest supervisor action before it started; -1 when unknown
+	kind      string // the agent kind it runs
+	sampled   int64  // its tokens already counted in the hourly spend; the event loop's only
 	tokens    atomic.Int64
 	cancel    context.CancelCauseFunc
 }
@@ -181,6 +196,10 @@ type supervisorState struct {
 	readySince   map[string]time.Time // owner/repo#number@head of each ready pull request to when it was first seen ready
 	noops        map[string]*noopStreak
 	suspended    map[string]*SupervisorSuspension
+	spend        []spendSample // the tokens spent in about the last hour
+	velocity     bool
+	deferred     []SupervisorDeferral
+	avail        supervisorAvailability
 }
 
 func newSupervisorState() *supervisorState {
@@ -222,16 +241,23 @@ func noteSupervisorTrigger(state *State, t SupervisorTrigger) {
 	t.At = t.At.UTC()
 	last := t
 	s.lastTrigger = &last
-	for i, p := range s.pending {
+	s.pending = keepTrigger(s.pending, t)
+}
+
+// keepTrigger returns triggers with t kept: in place of one of its kind
+// and story, else appended, the oldest dropped past
+// maxPendingSupervisorTriggers.
+func keepTrigger(triggers []SupervisorTrigger, t SupervisorTrigger) []SupervisorTrigger {
+	for i, p := range triggers {
 		if p.Kind == t.Kind && p.IssueID == t.IssueID {
-			s.pending[i] = t
-			return
+			triggers[i] = t
+			return triggers
 		}
 	}
-	if len(s.pending) >= maxPendingSupervisorTriggers {
-		s.pending = slices.Delete(s.pending, 0, 1)
+	if len(triggers) >= maxPendingSupervisorTriggers {
+		triggers = slices.Delete(triggers, 0, 1)
 	}
-	s.pending = append(s.pending, t)
+	return append(triggers, t)
 }
 
 // reactionProgressAt is the newest time a pending reaction recorded
@@ -383,6 +409,9 @@ func (o *Orchestrator) loadSupervisorUsage(ctx context.Context, now time.Time) {
 		row := &recent[i]
 		quiet := row.TriggerKind == SupervisorTriggerSweep && prev != nil && row.Digest != "" && row.Digest == prev.Digest
 		s.noteSessionNoops(row.TriggerKind, row.Digest, quiet, row.Outcome, row.Actions, row.StartedAt, cmp.Or(row.EndedAt, row.StartedAt))
+		if !row.EndedAt.IsZero() && now.Sub(row.EndedAt) < time.Hour {
+			s.noteSpend(row.EndedAt, row.Tokens)
+		}
 		prev = row
 	}
 	if prev == nil {
@@ -516,10 +545,19 @@ func (o *Orchestrator) superviseOnLoop(ctx context.Context, now time.Time) {
 	if !sc.Enabled() || o.once != nil {
 		if s.enabled {
 			s.enabled, s.pending, s.nextSweepAt, s.unavailable = false, nil, time.Time{}, ""
+			s.deferred, s.avail = nil, supervisorAvailability{}
 			o.notifyObservers()
 		}
 		return
 	}
+	o.superviseStep(ctx, sc, now)
+	o.noteSupervisorAvailability(ctx, sc, now)
+}
+
+// superviseStep is superviseOnLoop's work while a supervisor is
+// configured. Must run on the event loop.
+func (o *Orchestrator) superviseStep(ctx context.Context, sc config.SupervisorConfig, now time.Time) {
+	s := o.state.supervisor
 	s.cfg = sc
 	interval := time.Duration(sc.SweepIntervalMS) * time.Millisecond
 	if !s.enabled {
@@ -537,7 +575,12 @@ func (o *Orchestrator) superviseOnLoop(ctx context.Context, now time.Time) {
 		noteSupervisorTrigger(o.state, SupervisorTrigger{Kind: SupervisorTriggerSweep, Detail: "the periodic sweep", At: now})
 		s.nextSweepAt = now.Add(interval)
 	}
+	o.sampleSupervisorSpend(now)
+	o.guardSupervisorSpend(ctx, sc, now)
 	if s.run != nil || s.pause != nil || len(s.pending) == 0 {
+		return
+	}
+	if supervisorCredentialFault(o.state, sc.Agent) != nil {
 		return
 	}
 	digest := supervisorStateDigest(o.state, now)
@@ -561,7 +604,7 @@ func (o *Orchestrator) superviseOnLoop(ctx context.Context, now time.Time) {
 			o.logger.Warn("supervisor budget exhausted, no session starts until the next UTC day",
 				slog.String("reason", reason), slog.Int("triggers_dropped", len(s.pending)))
 		}
-		s.pending = nil
+		s.pending, s.deferred = nil, nil
 		o.notifyObservers()
 		return
 	}
@@ -576,7 +619,7 @@ func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.Sup
 	triggers := s.pending
 	s.pending = nil
 	runCtx, cancel := context.WithCancelCause(ctx)
-	run := &supervisorRun{startedAt: now.UTC(), triggers: triggers, digest: digest, quiet: quiet, mark: -1, cancel: cancel}
+	run := &supervisorRun{startedAt: now.UTC(), triggers: triggers, digest: digest, quiet: quiet, mark: -1, kind: sc.Agent, cancel: cancel}
 	s.run = run
 	s.sessionsUsed++
 
@@ -609,6 +652,7 @@ func (o *Orchestrator) startSupervisorSession(ctx context.Context, sc config.Sup
 		triggers:    triggers,
 		digest:      buildSupervisorDigest(o.state, now),
 		tokensLeft:  int64(sc.MaxTokensPerDay) - s.tokensUsed,
+		sessionCap:  int64(sc.SessionTokens),
 		workflowDir: filepath.Dir(o.workflowManager.WorkflowAbsPath()),
 	}
 	log := o.logger.With(slog.String("supervisor_trigger", first.Kind), slog.Int("triggers", len(triggers)))
@@ -654,6 +698,10 @@ func (o *Orchestrator) endSupervisorSession(ctx context.Context, run *supervisor
 	if s.run == run {
 		s.run = nil
 	}
+	if d := result.tokens - run.sampled; d > 0 {
+		s.noteSpend(result.endedAt, d)
+		run.sampled = result.tokens
+	}
 	if !utcDay(run.startedAt).Before(s.day) {
 		s.tokensUsed += result.tokens
 	}
@@ -672,6 +720,9 @@ func (o *Orchestrator) endSupervisorSession(ctx context.Context, run *supervisor
 		log.Warn("supervisor session ended", attrs...)
 	} else {
 		log.Info("supervisor session ended", attrs...)
+	}
+	if result.credential != "" {
+		o.recordAgentCredentialRefused(ctx, run.kind, "the supervisor's session", result.credential)
 	}
 	kind := run.triggers[0].Kind
 	if suspension := s.noteSessionNoops(kind, run.digest, run.quiet, result.outcome, result.actions, run.startedAt, result.endedAt); suspension != nil {
@@ -694,16 +745,18 @@ type supervisorLaunch struct {
 	triggers    []SupervisorTrigger
 	digest      supervisorDigest
 	tokensLeft  int64
+	sessionCap  int64
 	workflowDir string
 }
 
 // supervisorResult is how a supervisor session ended.
 type supervisorResult struct {
-	endedAt time.Time
-	outcome string
-	err     string
-	tokens  int64
-	actions int // the supervisor actions Sortie took in the session; -1 when not counted
+	endedAt    time.Time
+	outcome    string
+	err        string
+	tokens     int64
+	actions    int    // the supervisor actions Sortie took in the session; -1 when not counted
+	credential string // the refusal, when the agent runtime refused or could not confirm its credential
 }
 
 // publishLoopSuspected logs that a trigger kind is suspended and publishes
@@ -715,15 +768,21 @@ func (o *Orchestrator) publishLoopSuspected(ctx context.Context, suspension *Sup
 		slog.String("digest", suspension.Digest),
 		slog.Int("sessions", suspension.Sessions),
 	)
+	o.publishSupervisorEvent(ctx, domain.EventSupervisorLoopSuspected, domain.SupervisorLoopSuspectedFacts{
+		TriggerKind: suspension.Kind, Digest: suspension.Digest, Sessions: suspension.Sessions, Since: suspension.Since,
+	}, log)
+}
+
+// publishSupervisorEvent routes a supervisor event to every destination
+// whose events list it. The event names no story, so it never goes to
+// tracker_comment.
+func (o *Orchestrator) publishSupervisorEvent(ctx context.Context, t domain.EventType, facts domain.MessageFacts, log *slog.Logger) {
 	if o.router == nil {
 		return
 	}
-	_, delivery := o.router.Route(orchestratorNotification(domain.EventSupervisorLoopSuspected, "", domain.NotificationEnvelope{},
-		domain.SupervisorLoopSuspectedFacts{
-			TriggerKind: suspension.Kind, Digest: suspension.Digest, Sessions: suspension.Sessions, Since: suspension.Since,
-		})).SplitTrackerComment()
+	_, delivery := o.router.Route(orchestratorNotification(t, "", domain.NotificationEnvelope{}, facts)).SplitTrackerComment()
 	if delivery.Empty() {
-		log.Info("supervisor loop suspicion had no destination", slog.String("event_type", string(domain.EventSupervisorLoopSuspected)))
+		log.Info("supervisor event had no destination", slog.String("event_type", string(t)))
 		return
 	}
 	deliverDetached(ctx, &o.state.TrackerOpsWg, delivery, log, nil)
@@ -750,7 +809,7 @@ func supervisorPromptOf(launch supervisorLaunch) (string, error) {
 
 // runSupervisorSession runs one supervisor session of one turn and
 // returns how it ended. A session whose tokens reach what the day's
-// budget has left is stopped.
+// budget has left, or supervisor.session_tokens, is stopped.
 func (o *Orchestrator) runSupervisorSession(ctx context.Context, run *supervisorRun, launch supervisorLaunch, log *slog.Logger) supervisorResult {
 	ended := func(err error) supervisorResult {
 		r := supervisorResult{endedAt: time.Now().UTC(), outcome: SupervisorOutcomeCompleted, tokens: run.tokens.Load()}
@@ -759,10 +818,15 @@ func (o *Orchestrator) runSupervisorSession(ctx context.Context, run *supervisor
 			r.outcome, r.err = SupervisorOutcomePaused, cause.Error()
 		case errors.Is(cause, errSupervisorBudget):
 			r.outcome, r.err = SupervisorOutcomeBudget, cause.Error()
+		case errors.Is(cause, errSupervisorSessionCap):
+			r.outcome, r.err = SupervisorOutcomeSessionCap, fmt.Sprintf("%s at %d tokens", cause.Error(), r.tokens)
 		case ctx.Err() != nil:
 			r.outcome, r.err = SupervisorOutcomeCancelled, "Sortie stopped the session"
 		case err != nil:
 			r.outcome, r.err = SupervisorOutcomeFailed, err.Error()
+			if agentErr, ok := errors.AsType[*domain.AgentError](err); ok && agentErr.Kind == domain.ErrCredentialUnverified {
+				r.credential = agentErr.Message
+			}
 		}
 		return r
 	}
@@ -797,8 +861,11 @@ func (o *Orchestrator) runSupervisorSession(ctx context.Context, run *supervisor
 			return
 		}
 		run.tokens.Store(tokens)
-		if tokens >= launch.tokensLeft {
+		switch {
+		case tokens >= launch.tokensLeft:
 			run.cancel(errSupervisorBudget)
+		case launch.sessionCap > 0 && tokens >= launch.sessionCap:
+			run.cancel(errSupervisorSessionCap)
 		}
 	}
 	turnCtx, cancelTurn := context.WithTimeout(ctx, time.Duration(effectiveTurnTimeoutMS(launch.cfg.Agent.TurnTimeoutMS))*time.Millisecond)
@@ -830,7 +897,7 @@ func (o *Orchestrator) stopSupervisor() {
 
 // snapshotSupervisor returns the supervisor's state for the state API, or
 // nil while no supervisor is configured.
-func snapshotSupervisor(state *State) *SupervisorSnapshot {
+func snapshotSupervisor(state *State, now time.Time) *SupervisorSnapshot {
 	s := state.supervisor
 	if s == nil || !s.enabled {
 		return nil
@@ -845,8 +912,18 @@ func snapshotSupervisor(state *State) *SupervisorSnapshot {
 			Day: s.day, ResetsAt: s.day.Add(24 * time.Hour),
 			SessionsUsed: s.sessionsUsed, SessionsLimit: sc.MaxSessionsPerDay,
 			TokensUsed: s.tokensUsed, TokensLimit: int64(sc.MaxTokensPerDay),
+			SessionTokensLimit: int64(sc.SessionTokens),
+			HourTokensUsed:     s.hourSpend(now),
+			Reserve:            inReserve(sc, s.tokensUsed),
+			Velocity:           s.velocity,
 		},
+		Available: s.avail.reason == "",
+		Reason:    s.avail.reason,
+		ResetsAt:  s.avail.resetsAt,
+		Since:     s.avail.since,
+		Deferred:  slices.Clone(s.deferred),
 	}
+	snap.Budget.HourPace, snap.Budget.HourTokensLimit = hourlyPace(sc)
 	if s.pause != nil {
 		snap.Pause = new(*s.pause)
 	}
@@ -865,6 +942,7 @@ func snapshotSupervisor(state *State) *SupervisorSnapshot {
 			Digest: s.run.digest, Actions: persistence.SupervisorActionsUnknown,
 		}
 		snap.Budget.TokensUsed += tokens
+		snap.Budget.HourTokensUsed += tokens - s.run.sampled
 	}
 	for _, kind := range slices.Sorted(maps.Keys(s.suspended)) {
 		snap.Suspended = append(snap.Suspended, *s.suspended[kind])

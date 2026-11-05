@@ -6547,9 +6547,24 @@
           "format": "date-time",
           "type": "string"
         },
+        "hour_pace": {
+          "type": "integer"
+        },
+        "hour_tokens_limit": {
+          "type": "integer"
+        },
+        "hour_tokens_used": {
+          "type": "integer"
+        },
+        "reserve": {
+          "type": "boolean"
+        },
         "resets_at": {
           "format": "date-time",
           "type": "string"
+        },
+        "session_tokens_limit": {
+          "type": "integer"
         },
         "sessions_limit": {
           "type": "integer"
@@ -6562,6 +6577,9 @@
         },
         "tokens_used": {
           "type": "integer"
+        },
+        "velocity": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -6570,7 +6588,48 @@
         "sessions_used",
         "sessions_limit",
         "tokens_used",
-        "tokens_limit"
+        "tokens_limit",
+        "session_tokens_limit",
+        "hour_tokens_used",
+        "hour_tokens_limit",
+        "hour_pace",
+        "reserve",
+        "velocity"
+      ],
+      "type": "object"
+    },
+    "SupervisorDeferralResponse": {
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "guard": {
+          "type": "string"
+        },
+        "issue_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "issue_identifier",
+        "detail",
+        "at",
+        "guard"
       ],
       "type": "object"
     },
@@ -6689,8 +6748,24 @@
         "agent": {
           "type": "string"
         },
+        "available": {
+          "type": "boolean"
+        },
         "budget": {
           "$ref": "#/$defs/SupervisorBudgetResponse"
+        },
+        "deferred_triggers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SupervisorDeferralResponse"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "last_digest": {
           "anyOf": [
@@ -6756,6 +6831,27 @@
             }
           ]
         },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resets_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "running": {
           "anyOf": [
             {
@@ -6791,6 +6887,17 @@
               "type": "null"
             }
           ]
+        },
+        "unavailable_since": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -6805,7 +6912,12 @@
         "budget",
         "next_sweep_at",
         "last_digest",
-        "suspended_triggers"
+        "suspended_triggers",
+        "available",
+        "reason",
+        "resets_at",
+        "unavailable_since",
+        "deferred_triggers"
       ],
       "type": "object"
     },

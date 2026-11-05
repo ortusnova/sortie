@@ -717,14 +717,23 @@ func (o *Orchestrator) noteAgentCredentialRefused(ctx context.Context, result Wo
 	if result.AgentAdapter == "" || !errors.As(result.StartupError, &agentErr) || agentErr.Kind != domain.ErrCredentialUnverified {
 		return
 	}
+	o.recordAgentCredentialRefused(ctx, result.AgentAdapter, result.Identifier+"'s session", agentErr.Message)
+}
+
+// recordAgentCredentialRefused records that the runtime of the agent
+// kind refused or could not confirm its credential in session, with the
+// runtime's message: a platform fault that holds every later dispatch of
+// that kind, and every supervisor session of it, until a person signs it
+// in again and marks it done. Must run on the event loop.
+func (o *Orchestrator) recordAgentCredentialRefused(ctx context.Context, kind, session, message string) {
 	finding := healthFinding{
-		Key:   healthKeyAgentCredential + result.AgentAdapter,
+		Key:   healthKeyAgentCredential + kind,
 		Class: healthClassCredentials,
-		Cause: fmt.Sprintf("the %s agent runtime refused or could not confirm its credential: %s", result.AgentAdapter, agentErr.Message),
-		Detail: fmt.Sprintf("The credential verification of %s's session failed. No session of the %s agent kind is dispatched until a person signs it in again and marks this done.",
-			result.Identifier, result.AgentAdapter),
+		Cause: fmt.Sprintf("the %s agent runtime refused or could not confirm its credential: %s", kind, message),
+		Detail: fmt.Sprintf("The credential verification of %s failed. No session of the %s agent kind is dispatched until a person signs it in again and marks this done.",
+			session, kind),
 		Action: &failcause.PersonAction{
-			Action: fmt.Sprintf("Sign the %s agent runtime in again on %s, then mark this done", result.AgentAdapter, o.hostName),
+			Action: fmt.Sprintf("Sign the %s agent runtime in again on %s, then mark this done", kind, o.hostName),
 			Where:  fmt.Sprintf("%s, as the user Sortie runs as", o.hostName),
 		},
 		Holds: true,

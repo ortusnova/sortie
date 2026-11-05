@@ -70,8 +70,17 @@ func (f *fakeSupervisorPause) snapshot() (orchestrator.RuntimeSnapshotResult, er
 		Budget: orchestrator.SupervisorBudget{
 			Day: day, ResetsAt: day.Add(24 * time.Hour),
 			SessionsUsed: 3, SessionsLimit: 48, TokensUsed: 4200, TokensLimit: 2_000_000,
+			SessionTokensLimit: 150_000, HourTokensUsed: 1200, HourTokensLimit: 249_999, HourPace: 83_333,
 		},
 		NextSweepAt: day.Add(9 * time.Hour),
+		Available:   true,
+		Deferred: []orchestrator.SupervisorDeferral{{
+			SupervisorTrigger: orchestrator.SupervisorTrigger{Kind: orchestrator.SupervisorTriggerIdleSlot, Detail: "a free slot", At: day.Add(8*time.Hour + 30*time.Minute)},
+			Guard:             orchestrator.SupervisorGuardReserve,
+		}},
+	}
+	if f.pause != nil {
+		snap.Supervisor.Available, snap.Supervisor.Reason, snap.Supervisor.Since = false, "paused", f.pause.Since
 	}
 	return snap, nil
 }
@@ -123,6 +132,10 @@ func TestSupervisorPause_OperatorPausesAndResumes(t *testing.T) {
 	if sup["status"] != "paused" || sup["paused"].(map[string]any)["by"] != "taichi" {
 		t.Errorf("state supervisor = %v, want paused by taichi", sup)
 	}
+	if sup["available"] != false || sup["reason"] != "paused" || sup["resets_at"] != nil || sup["unavailable_since"] != "2026-11-03T09:00:00Z" {
+		t.Errorf("state supervisor availability = %v %v %v %v, want unavailable for the pause with no reset",
+			sup["available"], sup["reason"], sup["resets_at"], sup["unavailable_since"])
+	}
 
 	status, body = callDispatchPause(t, ts, http.MethodPost, "/api/v1/supervisor/resume", operator, "")
 	if status != http.StatusOK || body["supervisor_paused"] != nil {
@@ -130,8 +143,8 @@ func TestSupervisorPause_OperatorPausesAndResumes(t *testing.T) {
 	}
 	_, state = callDispatchPause(t, ts, http.MethodGet, "/api/v1/state", "", "")
 	sup, _ = state["supervisor"].(map[string]any)
-	if sup["status"] != "idle" || sup["paused"] != nil {
-		t.Errorf("state supervisor after resume = %v, want idle", sup)
+	if sup["status"] != "idle" || sup["paused"] != nil || sup["available"] != true || sup["reason"] != nil || sup["unavailable_since"] != nil {
+		t.Errorf("state supervisor after resume = %v, want idle and available", sup)
 	}
 }
 
@@ -156,6 +169,20 @@ func TestSupervisorState_ServesStatusLastTriggerAndBudget(t *testing.T) {
 	if budget["sessions_used"] != float64(3) || budget["sessions_limit"] != float64(48) || budget["tokens_used"] != float64(4200) ||
 		budget["tokens_limit"] != float64(2_000_000) || budget["resets_at"] != "2026-11-04T00:00:00Z" {
 		t.Errorf("budget = %v, want 3 of 48 sessions and 4200 of 2000000 tokens", budget)
+	}
+	if budget["session_tokens_limit"] != float64(150_000) || budget["hour_tokens_used"] != float64(1200) || budget["hour_tokens_limit"] != float64(249_999) ||
+		budget["hour_pace"] != float64(83_333) || budget["reserve"] != false || budget["velocity"] != false {
+		t.Errorf("budget = %v, want the session cap and the hourly spend against its pace", budget)
+	}
+	if sup["available"] != true || sup["reason"] != nil || sup["resets_at"] != nil || sup["unavailable_since"] != nil {
+		t.Errorf("availability = %v %v %v %v, want available", sup["available"], sup["reason"], sup["resets_at"], sup["unavailable_since"])
+	}
+	deferred, _ := sup["deferred_triggers"].([]any)
+	if len(deferred) != 1 {
+		t.Fatalf("deferred_triggers = %#v, want the idle slot", sup["deferred_triggers"])
+	}
+	if d, _ := deferred[0].(map[string]any); d["kind"] != "idle_slot" || d["guard"] != "reserve" || d["issue_identifier"] != nil || d["at"] != "2026-11-03T08:30:00Z" {
+		t.Errorf("deferred_triggers[0] = %v, want the idle slot deferred by the reserve", d)
 	}
 	last, _ := sup["last_session"].(map[string]any)
 	if last["outcome"] != "completed" || last["tokens"] != float64(1200) || last["trigger_count"] != float64(1) ||

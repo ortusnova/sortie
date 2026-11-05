@@ -45,6 +45,8 @@ const (
 	EventSessionEscalated          EventType = "session.escalated"
 	EventHoldExpired               EventType = "hold.expired"
 	EventSupervisorLoopSuspected   EventType = "supervisor.loop_suspected"
+	EventSupervisorUnavailable     EventType = "supervisor.unavailable"
+	EventSupervisorAvailable       EventType = "supervisor.available"
 )
 
 // TrackerCommentKind is the reserved notifications kind of the built-in
@@ -70,6 +72,8 @@ var eventTypes = []EventType{
 	EventSessionEscalated,
 	EventHoldExpired,
 	EventSupervisorLoopSuspected,
+	EventSupervisorUnavailable,
+	EventSupervisorAvailable,
 }
 
 // EventTypes returns the catalog in declaration order. The caller may
@@ -93,7 +97,7 @@ func (t EventType) FromOrchestrator() bool {
 // t, or "" for [EventAgentMessage] and for a value outside the catalog.
 func (t EventType) Severity() string {
 	switch t {
-	case EventTypeSessionStarted, EventSessionCompleted, EventAutoMergeMerged, EventStageAdvanced:
+	case EventTypeSessionStarted, EventSessionCompleted, EventAutoMergeMerged, EventStageAdvanced, EventSupervisorAvailable:
 		return "info"
 	case EventSessionStopped,
 		EventSessionFailed,
@@ -107,7 +111,8 @@ func (t EventType) Severity() string {
 		EventStageNotAdvanced,
 		EventSessionEscalated,
 		EventHoldExpired,
-		EventSupervisorLoopSuspected:
+		EventSupervisorLoopSuspected,
+		EventSupervisorUnavailable:
 		return "warning"
 	default:
 		return ""

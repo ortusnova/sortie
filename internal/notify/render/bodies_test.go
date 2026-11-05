@@ -583,3 +583,47 @@ func TestBuiltin_TitleWithoutAnIssue(t *testing.T) {
 		t.Errorf("title = %q, want the event type alone", got)
 	}
 }
+
+func TestLoopSuspectedBody_Velocity(t *testing.T) {
+	t.Parallel()
+
+	got := loopSuspectedBody(domain.SupervisorLoopSuspectedFacts{HourlyTokens: 300000, HourlyLimit: 250000, Pace: 83333})
+	want := "The supervisor spent 300000 tokens in the last hour, over its limit of 250000. " +
+		"Only sweeps start a supervisor session until the hourly spend is back under the even pace of 83333 tokens an hour."
+	if got != want {
+		t.Errorf("loopSuspectedBody(velocity) = %q, want %q", got, want)
+	}
+}
+
+func TestSupervisorAvailabilityBodies(t *testing.T) {
+	t.Parallel()
+
+	since := time.Date(2026, 11, 4, 6, 8, 0, 0, time.UTC)
+	got := supervisorUnavailableBody(domain.SupervisorUnavailableFacts{
+		Reason: domain.SupervisorUnavailableBudget, Detail: "the supervisor spent 3000000 of 3000000 tokens today",
+		Since: since, ResetsAt: time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC),
+	})
+	want := "The supervisor cannot start the sessions it would start: its daily budget is spent.\n" +
+		"Reason: budget_exhausted\n" +
+		"Detail: the supervisor spent 3000000 of 3000000 tokens today\n" +
+		"Since: 2026-11-04T06:08:00Z\n" +
+		"Resets at: 2026-11-05T00:00:00Z"
+	if got != want {
+		t.Errorf("supervisorUnavailableBody() = %q, want %q", got, want)
+	}
+	if got := supervisorUnavailableBody(domain.SupervisorUnavailableFacts{Reason: domain.SupervisorUnavailablePaused}); got !=
+		"The supervisor cannot start the sessions it would start: an operator paused it.\nReason: paused" {
+		t.Errorf("supervisorUnavailableBody(paused) = %q", got)
+	}
+	if got := supervisorAvailableBody(domain.SupervisorAvailableFacts{Reason: domain.SupervisorUnavailablePaused, Since: since}); got !=
+		"The supervisor can start sessions again. It could not (paused) since 2026-11-04T06:08:00Z." {
+		t.Errorf("supervisorAvailableBody() = %q", got)
+	}
+	n := domain.Notification{
+		Envelope: domain.NotificationEnvelope{EventType: domain.EventSupervisorAvailable},
+		Message:  domain.NotificationMessage{Severity: "info", Facts: domain.SupervisorAvailableFacts{}},
+	}
+	if got := builtin(n); got.Title != "supervisor.available" || got.Body != "The supervisor can start sessions again." {
+		t.Errorf("builtin(supervisor.available) = %+v", got)
+	}
+}

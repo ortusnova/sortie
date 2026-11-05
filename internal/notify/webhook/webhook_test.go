@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
 )
@@ -401,5 +402,63 @@ func TestWebhook_Send_Escalation(t *testing.T) {
 	want = strings.TrimSuffix(want, "}") + `,"escalation":{"kind":"question","rule":"implement","url":"https://viewer.example/s/1"}}`
 	if got := string(getBody()); got != want {
 		t.Errorf("Send(session.escalated) body = %s, want %s", got, want)
+	}
+}
+
+func TestWebhook_Send_Supervisor(t *testing.T) {
+	t.Parallel()
+
+	resets := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		event domain.EventType
+		facts domain.MessageFacts
+		want  string
+	}{
+		{
+			name:  "unavailable",
+			event: domain.EventSupervisorUnavailable,
+			facts: domain.SupervisorUnavailableFacts{Reason: domain.SupervisorUnavailableBudget, ResetsAt: resets},
+			want:  `{"reason":"budget_exhausted","resets_at":"2026-11-05T00:00:00Z"}`,
+		},
+		{
+			name:  "available",
+			event: domain.EventSupervisorAvailable,
+			facts: domain.SupervisorAvailableFacts{Reason: domain.SupervisorUnavailablePaused},
+			want:  `{"reason":"paused"}`,
+		},
+		{
+			name:  "velocity",
+			event: domain.EventSupervisorLoopSuspected,
+			facts: domain.SupervisorLoopSuspectedFacts{HourlyTokens: 300000, HourlyLimit: 250000, Pace: 83333},
+			want:  `{"hourly_tokens":300000,"hourly_limit":250000,"pace":83333}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv, getBody := captureServer(t)
+			n, err := newNotifier(map[string]any{"url": srv.URL})
+			if err != nil {
+				t.Fatalf("newNotifier: %v", err)
+			}
+			notification := domain.Notification{
+				Envelope: domain.NotificationEnvelope{NotificationID: "n-1", EventType: tt.event},
+				Message:  domain.NotificationMessage{Severity: tt.event.Severity(), Facts: tt.facts},
+			}
+			if err := n.Send(context.Background(), notification); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+			var got struct {
+				EventType  string          `json:"event_type"`
+				Supervisor json.RawMessage `json:"supervisor"`
+			}
+			if err := json.Unmarshal(getBody(), &got); err != nil {
+				t.Fatalf("decode %s: %v", getBody(), err)
+			}
+			if got.EventType != string(tt.event) || string(got.Supervisor) != tt.want {
+				t.Errorf("payload = %s, want event_type %s and supervisor %s", getBody(), tt.event, tt.want)
+			}
+		})
 	}
 }

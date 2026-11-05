@@ -2688,7 +2688,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.PlatformFaults = snapshotPlatformFaults(state)
 	snap.HandoffParts = snapshotHandoffParts(state)
 	snap.SessionGrants = maps.Clone(state.sessionGrants.totals)
-	snap.Supervisor = snapshotSupervisor(state)
+	snap.Supervisor = snapshotSupervisor(state, now)
 
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
