@@ -34,15 +34,18 @@ const (
 )
 
 // SupervisorResult is the answer to a supervisor action. Code names a
-// [SupervisorPrecondition] that does not hold.
+// [SupervisorPrecondition] that does not hold. ReviewRequested is set
+// only on a refusal that may request a fresh criteria review: whether
+// this refusal requested one.
 type SupervisorResult struct {
-	Status      SupervisorStatus
-	Code        string
-	Message     string
-	IssueID     string
-	Identifier  string
-	PullRequest string // owner/repo#number
-	MergeCommit string
+	Status          SupervisorStatus
+	Code            string
+	Message         string
+	IssueID         string
+	Identifier      string
+	PullRequest     string // owner/repo#number
+	MergeCommit     string
+	ReviewRequested *bool
 }
 
 // Supervisor carries out the actions a supervisor may take besides

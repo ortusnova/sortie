@@ -107,6 +107,27 @@ func (f *fakeSupervisor) RequestLiveProof(_ context.Context, id, criterion, prof
 
 func (f *fakeSupervisor) MergeAndProve(_ context.Context, id string) orchestrator.SupervisorResult {
 	f.called("merge_and_prove")
+	if id == "ONS-9" || id == "ONS-10" {
+		requested := id == "ONS-9"
+		return orchestrator.SupervisorResult{
+			Status: orchestrator.SupervisorPrecondition, Code: "live_proof_not_after_deploy", IssueID: "id-" + id[4:], Identifier: id,
+			Message: "criterion 1 of the story's review keeps it from merge-and-prove", PullRequest: "o/r#" + id[4:], ReviewRequested: &requested,
+		}
+	}
+	r := f.result(id)
+	if r.Status == orchestrator.SupervisorDone {
+		r.PullRequest = "o/r#12"
+	}
+	return r
+}
+
+// RequestReview requests a review of ONS-7, and answers ONS-8 that one
+// runs.
+func (f *fakeSupervisor) RequestReview(_ context.Context, id string) orchestrator.SupervisorResult {
+	f.called("review")
+	if id == "ONS-8" {
+		return orchestrator.SupervisorResult{Status: orchestrator.SupervisorPrecondition, Code: "review_running", Message: "a criteria review of issue ONS-8 is running", IssueID: "id-8", Identifier: id}
+	}
 	r := f.result(id)
 	if r.Status == orchestrator.SupervisorDone {
 		r.PullRequest = "o/r#12"
@@ -413,6 +434,7 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 		{"/api/v1/issues", `{"title": "Flaky seed", "body": "seen twice", "kind": "platform_defect", "stories": ["ONS-7"]}`, "file_issue", "file_issue platform_defect Flaky seed"},
 		{"/api/v1/ONS-7/live-proof", `{}`, "live_proof", "live_proof seen in run 4"},
 		{"/api/v1/ONS-7/merge-and-prove", `{}`, "merge_and_prove", "merge_and_prove"},
+		{"/api/v1/ONS-7/review", `{}`, "review_requested", "review"},
 		{"/api/v1/supervisor/questions", `{"kind": "credential", "action": "Give the token the workflow scope", "where": "GitHub token settings", "stories": ["ONS-7"], "checked": "the push of ONS-7 failed twice on the scope"}`, "ask_person", "ask_person Give the token the workflow scope"},
 		{"/api/v1/ONS-7/hold", `{"by": "supervisor"}`, "hold", "hold supervisor seen in run 4"},
 		{"/api/v1/ONS-7/release", `{}`, "release_hold", "release_hold"},
@@ -447,8 +469,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if grants := h.grants.calls(); len(grants) != 1 || grants[0].By != "supervisor" || grants[0].Cap != 4 {
 		t.Errorf("grants = %+v, want one by the supervisor capped at 4", grants)
 	}
-	if n := len(h.supervisorActions(t)); n != 28 {
-		t.Errorf("records = %d, want 28: a rejection and an action per route", n)
+	if n := len(h.supervisorActions(t)); n != 30 {
+		t.Errorf("records = %d, want 30: a rejection and an action per route", n)
 	}
 
 	// The control token reaches the same routes, needs no evidence and
@@ -459,8 +481,8 @@ func TestSupervisor_AllowedActions(t *testing.T) {
 	if status, _ := h.do(t, http.MethodPost, "/api/v1/ONS-7/merge", tokenLive1, `{}`); status != http.StatusForbidden {
 		t.Errorf("merge with a session token = %d, want 403", status)
 	}
-	if n := len(h.supervisorActions(t)); n != 28 {
-		t.Errorf("records after operator calls = %d, want still 28", n)
+	if n := len(h.supervisorActions(t)); n != 30 {
+		t.Errorf("records after operator calls = %d, want still 30", n)
 	}
 }
 
@@ -514,5 +536,43 @@ func TestSupervisor_LiveProofNamesItsJobProfile(t *testing.T) {
 	}
 	if latest := h.supervisorActions(t)[0]; latest["profile"] != nil {
 		t.Errorf("record = %v, want no profile", latest)
+	}
+}
+
+// A merge-and-prove refused for a live criterion of another reason says
+// whether it requested a fresh review, and the refusal is recorded as the
+// supervisor's action.
+func TestSupervisor_MergeAndProveRefusalSaysWhetherAReviewWasRequested(t *testing.T) {
+	t.Parallel()
+	h := newSupervisorHarness(t, 4)
+
+	for _, tt := range []struct {
+		identifier string
+		requested  bool
+	}{{"ONS-9", true}, {"ONS-10", false}} {
+		status, body := h.do(t, http.MethodPost, "/api/v1/"+tt.identifier+"/merge-and-prove", testSupervisorToken, `{"evidence": "the review predates after-deploy"}`)
+		if status != http.StatusConflict || body["error"].(map[string]any)["code"] != "live_proof_not_after_deploy" || body["review_requested"] != tt.requested {
+			t.Errorf("merge-and-prove of %s = %d %v, want 409 live_proof_not_after_deploy with review_requested %v", tt.identifier, status, body, tt.requested)
+		}
+		latest := h.supervisorActions(t)[0]
+		if latest["action"] != "merge_and_prove" || latest["issue_identifier"] != tt.identifier || latest["result"] != persistence.SupervisorRejected ||
+			latest["pull_request"] != "o/r#"+tt.identifier[4:] || !strings.HasPrefix(latest["detail"].(string), "live_proof_not_after_deploy") {
+			t.Errorf("record = %v, want the refusal of %s with its pull request", latest, tt.identifier)
+		}
+	}
+
+	// Another refusal carries no review_requested.
+	if status, body := h.do(t, http.MethodPost, "/api/v1/ONS-8/review", testSupervisorToken, `{"evidence": "the review is stale"}`); status != http.StatusConflict ||
+		body["error"].(map[string]any)["code"] != "review_running" {
+		t.Errorf("review of ONS-8 = %d %v, want 409 review_running", status, body)
+	} else if _, ok := body["review_requested"]; ok {
+		t.Errorf("review_running = %v, want no review_requested", body)
+	}
+	if latest := h.supervisorActions(t)[0]; latest["action"] != "review_requested" || latest["result"] != persistence.SupervisorRejected {
+		t.Errorf("record = %v, want the refused review request", latest)
+	}
+	if status, body := h.do(t, http.MethodPost, "/api/v1/ONS-7/review", testSupervisorToken, `{"evidence": "the review is stale"}`); status != http.StatusOK ||
+		body["action"] != "review_requested" || body["pull_request"] != "o/r#12" {
+		t.Errorf("review of ONS-7 = %d %v, want 200 with the pull request", status, body)
 	}
 }

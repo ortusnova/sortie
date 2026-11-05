@@ -342,6 +342,16 @@ type PullRequestDrafter interface {
 	MarkPullRequestDraft(ctx context.Context, prNumber int, owner, repo string) error
 }
 
+// PullRequestReadier is an optional capability of an [SCMAdapter]: an
+// adapter that implements it can mark a draft pull request ready for
+// review. Implementations must be safe for concurrent use.
+type PullRequestReadier interface {
+	// MarkPullRequestReadyForReview marks the given draft PR ready for
+	// review. A PR that is not a draft succeeds and changes nothing.
+	// Returns a [*SCMError] on failure.
+	MarkPullRequestReadyForReview(ctx context.Context, prNumber int, owner, repo string) error
+}
+
 // PullRequestReverter is an optional capability of an [SCMAdapter]: an
 // adapter that implements it opens a pull request that reverts a merged
 // pull request's merge commit. Implementations must be safe for
