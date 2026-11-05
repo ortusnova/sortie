@@ -2282,23 +2282,24 @@ The section needs `server.supervisor_token`: Sortie exits at startup with a conf
 | `park` | A story parks, for any reason. |
 | `unclassified_failure` | A story stops on a repeated failure whose signature is in no fault class, which records a platform fault of class `unclassified`. A failure in a class does not trigger it. |
 | `stalled_reaction` | A pending pull request reaction made no progress for an hour: no new reaction, pull request head, or restarted watch since. Once per reaction and progress mark. |
-| `idle_slot` | A poll left a story slot free and dispatched nothing while stories are held (held for a reason other than a full slot or a live lease, by a platform fault, or by a budget). A story under a live lease is its holder's work and counts only once the lease expires. Every such poll triggers; the state digest decides whether a session starts. |
+| `idle_slot` | A poll left a story slot free and dispatched nothing while stories are held (held for a reason other than a full slot or a live lease, by a platform fault, or by a budget). A story under a live lease is its holder's work and counts only once the lease expires. A story held only by its blockers counts only while one of them has a pull request that conflicts or waited ready for 30 minutes: until then the supervisor has nothing to act on. Every such poll triggers; the state digest decides whether a session starts. |
 | `sweep` | Every `sweep_interval_ms`, the first one interval after startup. |
 
 A trigger that comes while a session runs waits, and the next session starts when that one ends, with every trigger that waited (at most 32; a second trigger of the same kind for the same story replaces the first). A trigger that comes while the day's budget is spent is dropped, and the state still shows it as `last_trigger`. No supervisor runs under `--once`.
 
-**The state digest.** A trigger of any kind, the sweep included, starts a session only when the state digest differs from the digest of the last session that ran; otherwise it is dropped, and `last_trigger` still shows it. The digest is a 16-hex-digit hash over what the supervisor could act on:
+**The state digest.** A trigger of any kind, the sweep included, starts a session only when the state digest differs from the digest of the last session that ran; otherwise it is dropped, and `last_trigger` still shows it. The digest is a 16-hex-digit hash over what a supervisor rule acts on, and leaves out what changes while no action becomes possible:
 
 | Part | What counts |
 | ---- | ----------- |
-| Held stories | Each story the dispatch pass held, with its reason (the four blocker reasons count as one, `blocked`), each story a platform fault holds, with the fault, and each budget-held story, with its reason. A story held for a full slot (`agent_slots_full`, `ssh_hosts_full`) does not count, so a slot that frees or fills changes nothing. |
+| Held stories | Each story the dispatch pass held, with its reason, each story a platform fault holds, with the fault, and each budget-held story, with its reason. A story held for a full slot (`agent_slots_full`, `ssh_hosts_full`) does not count, so a slot that frees or fills changes nothing; nor does a story held by its blockers (`blocked_by`, `blockers_unresolved`, `blockers_not_read`, `blockers_incomplete`), whose blockers' pull requests count instead. |
 | Leases | Each lease on a story that is not running, with its holder and whether it is past its expiry. A renewal changes nothing. |
-| Parked stories | Each parked story, with its reason and its question (the park's statement). |
-| Story pull requests | Each pull request a pending reaction watches that is ready to merge (every check the reactions made passed, as `pulls` reports `waits_on: none`) or conflicts with its base (`waits_on: conflict`), with its head commit. |
+| Parked stories | Each parked story, with its reason, its question (the park's statement), and how many of its live-proof jobs ended since this process started, so the end of a parked story's live proof changes the digest. |
+| Story pull requests | Each pull request a pending reaction watches that is ready to merge (every check the reactions made passed, as `pulls` reports `waits_on: none`) or conflicts with its base (`waits_on: conflict`), with its head commit. A pull request of a story that is parked or held by a platform fault, a question for a person among them, does not count while the hold stands, ready age included: the supervisor merges or fixes nothing of such a story, and the end of the hold changes the digest. Its ready wait goes on meanwhile, so it comes back old if it waited 30 minutes. |
 | Platform faults | Each open platform fault, with its class, whether a person marked its action done, and the stories it holds. |
-| Questions for a person | Each open platform fault whose person action is not marked done. |
-| Jobs | Each running live-proof or fix job: a run continued by a reaction, such as `live-proof`, `review` or `ci`. |
-| Time thresholds | A ready pull request that waited ready for 30 minutes at the same head, a lease past its expiry, and a parked story's question or a question for a person older than its alert age of 4 hours. Each threshold changes the digest once, when it is crossed. The 30 minutes count from when this process first saw the pull request ready, so a restart starts them again. |
+| Questions for a person | Each open platform fault whose person action is not marked done. How long it has waited does not count: only a person answers it. |
+| Time thresholds | A ready pull request that waited ready for 30 minutes at the same head, and a lease past its expiry. Each threshold changes the digest once, when it is crossed. The 30 minutes count from when this process first saw the pull request ready, so a restart starts them again. |
+
+A run or a fix job that starts or ends changes nothing by itself: a fix that lands moves its pull request, and one that fails stops on a failure, which triggers its own session.
 
 A **quiet sweep** is the exception: while the digest is unchanged, the first sweep once `supervisor.quiet_sweep_ms` has passed since the last session started runs a session, with the detail `the quiet sweep: the state digest is unchanged since the last session`. Each session's digest is stored with it in `supervisor_sessions`, so a restart compares against the last stored digest; `GET /api/v1/state` serves it as `supervisor.last_digest`.
 

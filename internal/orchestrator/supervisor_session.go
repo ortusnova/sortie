@@ -194,6 +194,7 @@ type supervisorState struct {
 	budgetLogged time.Time
 	stalledSeen  map[string]time.Time
 	readySince   map[string]time.Time // owner/repo#number@head of each ready pull request to when it was first seen ready
+	proofsEnded  map[string]int       // parked issue ID to the live-proof jobs of it that ended
 	noops        map[string]*noopStreak
 	suspended    map[string]*SupervisorSuspension
 	spend        []spendSample // the tokens spent in about the last hour
@@ -204,7 +205,7 @@ type supervisorState struct {
 
 func newSupervisorState() *supervisorState {
 	return &supervisorState{
-		stalledSeen: map[string]time.Time{}, readySince: map[string]time.Time{},
+		stalledSeen: map[string]time.Time{}, readySince: map[string]time.Time{}, proofsEnded: map[string]int{},
 		noops: map[string]*noopStreak{}, suspended: map[string]*SupervisorSuspension{},
 	}
 }
@@ -310,17 +311,17 @@ func noteStalledReactions(state *State, now time.Time) {
 }
 
 // noteIdleSlot asks for a supervisor session when a dispatch pass left a
-// story slot free and dispatched nothing while stories are held. Whether
-// one starts is the state digest's to decide, so a pass that finds the
-// same stories held for the same reasons starts none. It also keeps the
-// time each ready pull request was first seen ready.
+// story slot free and dispatched nothing while stories are held for a
+// reason the supervisor can act on. Whether one starts is the state
+// digest's to decide, so a pass that finds the same stories held for the
+// same reasons starts none. It also keeps the time each ready pull request
+// was first seen ready.
 func noteIdleSlot(state *State, dispatched int, now time.Time) {
 	s := state.supervisor
 	if s == nil || !s.enabled {
 		return
 	}
-	observeSupervisorWake(state, now)
-	held := heldStoryIDs(state)
+	held := heldStoryIDs(state, actionablePulls(observeSupervisorWake(state, now)))
 	idle := dispatched == 0 && state.dispatchPause == nil && len(held) > 0 &&
 		GlobalAvailableSlots(state.MaxConcurrentAgents, AgentsRunning(state.Running)) > 0
 	if !idle {
@@ -333,13 +334,38 @@ func noteIdleSlot(state *State, dispatched int, now time.Time) {
 	})
 }
 
+// actionablePulls returns the IDs of the stories whose pull request the
+// supervisor can act on: one that conflicts, or one that waited ready for
+// supervisorReadyAge.
+func actionablePulls(w supervisorWake) map[string]struct{} {
+	ids := map[string]struct{}{}
+	for _, p := range w.Pulls {
+		if p.State == wakePullConflicting || p.Old {
+			ids[p.IssueID] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // heldStoryIDs returns the sorted IDs of the stories held out of dispatch
-// for a reason other than a full slot or a live lease, whose holder is
-// already at work on the story.
-func heldStoryIDs(state *State) []string {
+// for a reason the supervisor can act on: not a full slot, not a live
+// lease, whose holder is already at work on the story, and not blockers
+// alone, unless a blocker is in actionable, the stories whose pull request
+// the supervisor can act on. A story held by blockers it could not read
+// names none, so it waits on the next read.
+func heldStoryIDs(state *State, actionable map[string]struct{}) []string {
 	set := map[string]struct{}{}
 	for id, h := range state.Held {
-		if h.Reason != SkipAgentSlotsFull && h.Reason != SkipSSHHostsFull && h.Reason != SkipStandingHold {
+		switch {
+		case h.Reason == SkipAgentSlotsFull || h.Reason == SkipSSHHostsFull || h.Reason == SkipStandingHold:
+		case blockerHold(h.Reason):
+			for _, b := range h.Blockers {
+				if _, ok := actionable[b.ID]; ok {
+					set[id] = struct{}{}
+					break
+				}
+			}
+		default:
 			set[id] = struct{}{}
 		}
 	}

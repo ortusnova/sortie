@@ -8458,8 +8458,12 @@ func TestHandleWorkerExit_LiveProofExitKeepsThePark(t *testing.T) {
 
 			result := tt.result
 			result.IssueID, result.Identifier, result.AgentAdapter, result.WorkspacePath = "LP-1", "LP-1-ident", "mock", wsPath
+			before := supervisorStateDigest(state, time.Now())
 			HandleWorkerExit(state, result, params)
 
+			if supervisorStateDigest(state, time.Now()) == before {
+				t.Error("the state digest is unchanged, want the job's end in it for the supervisor to decide the park")
+			}
 			if state.Parked["LP-1"] != park {
 				t.Errorf("park = %+v, want the park kept", state.Parked["LP-1"])
 			}
