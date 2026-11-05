@@ -534,7 +534,7 @@ func TestScenario_BlockedStoriesAndRunsThatComeAndGo(t *testing.T) {
 	// The replay spans seven hours of one UTC day: the sessions counted
 	// are the day's, which a new UTC day resets.
 	start := time.Now()
-	if day := utcDay(start); utcDay(start.Add(8*time.Hour)).After(day) {
+	if day := utcDay(start); utcDay(start.Add(8 * time.Hour)).After(day) {
 		start = day.Add(24*time.Hour + time.Minute)
 	}
 	blockers := []string{"id-b1", "id-b2", "id-b3", "id-b4"}
