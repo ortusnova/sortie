@@ -420,6 +420,7 @@ type Orchestrator struct {
 	prReverter                        domain.PullRequestReverter
 	commitComparer                    domain.CommitComparer
 	revertFinder                      domain.RevertFinder
+	revertScan                        revertScanSchedule
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
 	reviewReactionConfigured          bool
