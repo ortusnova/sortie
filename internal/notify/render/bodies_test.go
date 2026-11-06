@@ -619,3 +619,23 @@ func TestBuiltin_TitleWithoutAnIssue(t *testing.T) {
 		t.Errorf("title = %q, want the event type alone", got)
 	}
 }
+
+func TestQuestionBody(t *testing.T) {
+	t.Parallel()
+
+	f := domain.QuestionFacts{
+		QuestionID: "pf-1", Kind: "credential", Text: "Give the token the workflow scope", Where: "GitHub",
+		RaisedBy: "supervisor", Stories: []string{"ONS-77", "ONS-39"},
+	}
+	want := "A question needs a person (credential): Give the token the workflow scope\n" +
+		"Where: GitHub\nStories: ONS-77, ONS-39\nQuestion ID: pf-1\nRaised by: supervisor"
+	if got := questionBody(f); got != want {
+		t.Errorf("questionBody(open) = %q, want %q", got, want)
+	}
+	f.Closed = domain.QuestionClosedStateChanged
+	want = "The question (credential) closed: its story left the state that raised it. Nothing more is needed.\n" +
+		"Question: Give the token the workflow scope\nWhere: GitHub\nStories: ONS-77, ONS-39\nQuestion ID: pf-1\nRaised by: supervisor"
+	if got := questionBody(f); got != want {
+		t.Errorf("questionBody(closed) = %q, want %q", got, want)
+	}
+}

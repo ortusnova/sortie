@@ -46,6 +46,8 @@ const (
 	EventHoldExpired               EventType = "hold.expired"
 	EventStoryReverted             EventType = "story.reverted"
 	EventSupervisorLoopSuspected   EventType = "supervisor.loop_suspected"
+	EventQuestionForPerson         EventType = "question.for_person"
+	EventQuestionClosed            EventType = "question.closed"
 	EventPlatformLoopSlow          EventType = "platform.loop_slow"
 )
 
@@ -73,6 +75,8 @@ var eventTypes = []EventType{
 	EventHoldExpired,
 	EventStoryReverted,
 	EventSupervisorLoopSuspected,
+	EventQuestionForPerson,
+	EventQuestionClosed,
 	EventPlatformLoopSlow,
 }
 
@@ -93,11 +97,24 @@ func (t EventType) FromOrchestrator() bool {
 	return t.Valid() && t != EventAgentMessage
 }
 
+// ForPerson reports whether t is meant for a person: an event the
+// supervisor cannot handle, or the close of a question that was one.
+// Every other event is the supervisor's to act on, or a record of what
+// happened; a run that stops or fails is the supervisor's.
+func (t EventType) ForPerson() bool {
+	switch t {
+	case EventQuestionForPerson, EventQuestionClosed, EventSupervisorLoopSuspected, EventPlatformLoopSlow:
+		return true
+	default:
+		return false
+	}
+}
+
 // Severity returns the notification severity the orchestrator stamps on
 // t, or "" for [EventAgentMessage] and for a value outside the catalog.
 func (t EventType) Severity() string {
 	switch t {
-	case EventTypeSessionStarted, EventSessionCompleted, EventAutoMergeMerged, EventStageAdvanced:
+	case EventTypeSessionStarted, EventSessionCompleted, EventAutoMergeMerged, EventStageAdvanced, EventQuestionClosed:
 		return "info"
 	case EventSessionStopped,
 		EventSessionFailed,
@@ -113,6 +130,7 @@ func (t EventType) Severity() string {
 		EventHoldExpired,
 		EventStoryReverted,
 		EventSupervisorLoopSuspected,
+		EventQuestionForPerson,
 		EventPlatformLoopSlow:
 		return "warning"
 	default:

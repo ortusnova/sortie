@@ -385,6 +385,39 @@ func loopSuspectedBody(f domain.SupervisorLoopSuspectedFacts) string {
 	return strings.Join(lines, "\n")
 }
 
+// questionBody returns the text of question.for_person and
+// question.closed: what the question asks of a person, where, the stories
+// it holds, who raised it, and, once closed, how it closed.
+func questionBody(f domain.QuestionFacts) string {
+	var lines []string
+	switch f.Closed {
+	case "":
+		lines = append(lines, "A question needs a person ("+f.Kind+"): "+f.Text)
+	case domain.QuestionClosedAnswered:
+		lines = append(lines, "The question ("+f.Kind+") was answered: its action is done and its check passed. Nothing more is needed.")
+	case domain.QuestionClosedWithdrawn:
+		lines = append(lines, "The question ("+f.Kind+") was withdrawn. Nothing more is needed.")
+	case domain.QuestionClosedStateChanged:
+		lines = append(lines, "The question ("+f.Kind+") closed: its story left the state that raised it. Nothing more is needed.")
+	default:
+		lines = append(lines, "The question ("+f.Kind+") closed ("+f.Closed+").")
+	}
+	if f.Closed != "" && f.Text != "" {
+		lines = append(lines, "Question: "+f.Text)
+	}
+	if f.Where != "" {
+		lines = append(lines, "Where: "+f.Where)
+	}
+	if len(f.Stories) > 0 {
+		lines = append(lines, "Stories: "+strings.Join(f.Stories, ", "))
+	}
+	lines = append(lines, "Question ID: "+f.QuestionID)
+	if f.RaisedBy != "" {
+		lines = append(lines, "Raised by: "+f.RaisedBy)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // loopSlowBody returns the text of a platform.loop_slow event: what held
 // Sortie's event loop, for how long, and how often in the window.
 func loopSlowBody(f domain.PlatformLoopSlowFacts) string {

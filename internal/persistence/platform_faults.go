@@ -57,6 +57,10 @@ type PlatformFaultHold struct {
 	Identifier string
 	DisplayID  string // empty when the tracker needs no qualified form
 	HeldAt     string // RFC 3339 UTC
+
+	// State is the tracker state a question's story was in when the
+	// question took it; empty until observed and for any other fault.
+	State string
 }
 
 // SavePlatformFault writes the fault and replaces its holds with
@@ -102,8 +106,8 @@ func (s *Store) SavePlatformFault(ctx context.Context, fault PlatformFault) erro
 	if fault.ResolvedAt == "" {
 		for _, h := range fault.Holds {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO platform_fault_holds (fault_id, issue_id, identifier, display_id, held_at) VALUES (?, ?, ?, ?, ?)`,
-				fault.ID, h.IssueID, h.Identifier, h.DisplayID, h.HeldAt,
+				`INSERT INTO platform_fault_holds (fault_id, issue_id, identifier, display_id, held_at, state) VALUES (?, ?, ?, ?, ?, ?)`,
+				fault.ID, h.IssueID, h.Identifier, h.DisplayID, h.HeldAt, h.State,
 			); err != nil {
 				return fmt.Errorf("hold %q under platform fault %q: %w", h.IssueID, fault.ID, err)
 			}
@@ -149,7 +153,7 @@ func (s *Store) LoadOpenPlatformFaults(ctx context.Context) ([]PlatformFault, er
 	}
 
 	holds, err := s.db.QueryContext(ctx,
-		`SELECT fault_id, issue_id, identifier, display_id, held_at FROM platform_fault_holds ORDER BY held_at, issue_id`)
+		`SELECT fault_id, issue_id, identifier, display_id, held_at, state FROM platform_fault_holds ORDER BY held_at, issue_id`)
 	if err != nil {
 		return nil, fmt.Errorf("load platform fault holds: %w", err)
 	}
@@ -157,7 +161,7 @@ func (s *Store) LoadOpenPlatformFaults(ctx context.Context) ([]PlatformFault, er
 	for holds.Next() {
 		var faultID string
 		var h PlatformFaultHold
-		if err := holds.Scan(&faultID, &h.IssueID, &h.Identifier, &h.DisplayID, &h.HeldAt); err != nil {
+		if err := holds.Scan(&faultID, &h.IssueID, &h.Identifier, &h.DisplayID, &h.HeldAt, &h.State); err != nil {
 			return nil, fmt.Errorf("scan platform fault hold: %w", err)
 		}
 		if i, ok := index[faultID]; ok {

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"slices"
 	"testing"
 )
 
@@ -127,6 +128,7 @@ func TestEventTypes_Catalog(t *testing.T) {
 		"escalation.merge_conflicts", "escalation.auto_merge", "escalation.merge_completion",
 		"auto_merge.merged", "budget.held", "stage.advanced", "stage.not_advanced", "agent.message",
 		"session.escalated", "hold.expired", "story.reverted", "supervisor.loop_suspected",
+		"question.for_person", "question.closed",
 		"platform.loop_slow",
 	}
 
@@ -174,6 +176,8 @@ func TestEventType_Classification(t *testing.T) {
 		{"hold.expired", true, true, "warning"},
 		{"story.reverted", true, true, "warning"},
 		{"supervisor.loop_suspected", true, true, "warning"},
+		{"question.for_person", true, true, "warning"},
+		{"question.closed", true, true, "info"},
 		{"platform.loop_slow", true, true, "warning"},
 		{"session.begun", false, false, ""},
 		{"", false, false, ""},
@@ -193,5 +197,23 @@ func TestEventType_Classification(t *testing.T) {
 				t.Errorf("EventType(%q).Severity() = %q, want %q", tt.eventType, got, tt.wantSeverity)
 			}
 		})
+	}
+}
+
+func TestEventType_ForPerson(t *testing.T) {
+	t.Parallel()
+
+	want := []EventType{EventSupervisorLoopSuspected, EventQuestionForPerson, EventQuestionClosed, EventPlatformLoopSlow}
+	var got []EventType
+	for _, e := range EventTypes() {
+		if e.ForPerson() {
+			got = append(got, e)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("events for a person = %v, want %v: a run that stops or fails is the supervisor's", got, want)
+	}
+	if EventSessionStopped.ForPerson() || EventSessionFailed.ForPerson() {
+		t.Error("session.stopped or session.failed is classed for a person")
 	}
 }

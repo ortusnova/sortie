@@ -72,6 +72,8 @@ func bodyOf(n domain.Notification) string {
 		return holdExpiredBody(f)
 	case domain.SupervisorLoopSuspectedFacts:
 		return loopSuspectedBody(f)
+	case domain.QuestionFacts:
+		return questionBody(f)
 	case domain.PlatformLoopSlowFacts:
 		return loopSlowBody(f)
 	case domain.StageFacts:
