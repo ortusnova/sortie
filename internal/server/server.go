@@ -735,7 +735,7 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/dispatch/resume", s.controlRoute(scopeOperator, s.handleDispatchResume))
 	mux.HandleFunc("/api/v1/supervisor/pause", s.controlRoute(scopeOperator, s.handleSupervisorPause))
 	mux.HandleFunc("/api/v1/supervisor/resume", s.controlRoute(scopeOperator, s.handleSupervisorResume))
-	mux.HandleFunc("/api/v1/platform-faults/{id}/action-done", s.controlRoute(scopeOperator, s.handlePlatformFaultDone))
+	mux.HandleFunc("/api/v1/platform-faults/{id}/action-done", s.supervisorRoute(supervisorActionFaultDone, s.handlePlatformFaultDone))
 	mux.HandleFunc("/api/v1/retries/{identifier}/run", s.controlRoute(scopeOperator, s.handleRetryNow))
 	mux.HandleFunc("/api/v1/attention/{id}/acknowledge", s.controlRoute(scopeOperator, s.handleAcknowledge))
 	mux.HandleFunc("/api/v1/reactions/{identifier}/{kind}/check", s.controlRoute(scopeOperator, s.handleCheckNow))

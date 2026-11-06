@@ -140,16 +140,18 @@ func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string
 type PlatformFaultDoneStatus int
 
 const (
-	PlatformFaultDoneChecked   PlatformFaultDoneStatus = iota + 1 // the action was marked done and the fault checked
-	PlatformFaultDoneBusy                                         // the action was marked done; a check already ran and decides
-	PlatformFaultDoneNotFound                                     // no open fault has the ID
-	PlatformFaultDoneDraining                                     // shutdown began before the loop took the request
-	PlatformFaultDoneWithdrawn                                    // the caller's context ended before the loop took the request
+	PlatformFaultDoneChecked     PlatformFaultDoneStatus = iota + 1 // the action was marked done and the fault checked
+	PlatformFaultDoneBusy                                           // the action was marked done; a check already ran and decides
+	PlatformFaultDoneNotFound                                       // no open fault has the ID
+	PlatformFaultDoneDraining                                       // shutdown began before the loop took the request
+	PlatformFaultDoneWithdrawn                                      // the caller's context ended before the loop took the request
+	PlatformFaultDoneNotRaisedBy                                    // the fault was not raised by the one the request requires; nothing changed
 )
 
 // PlatformFaultDoneResult is the answer to a request to mark a person
-// action done. Fault is the fault after the check; Resolved reports that
-// the check passed and released its stories.
+// action done. Fault is the fault after the check, or as it stands for
+// [PlatformFaultDoneNotRaisedBy]; Resolved reports that the check passed
+// and released its stories.
 type PlatformFaultDoneResult struct {
 	Status   PlatformFaultDoneStatus
 	Resolved bool
@@ -157,17 +159,25 @@ type PlatformFaultDoneResult struct {
 }
 
 // PlatformFaultDoneFunc returns a function that marks the person action of
-// the open fault faultID done by by and checks the fault again at once. It
-// returns once the check result is applied, ctx ended before the loop took
-// the request, or shutdown began. Safe for concurrent use.
-func (o *Orchestrator) PlatformFaultDoneFunc() func(ctx context.Context, faultID, by string) PlatformFaultDoneResult {
-	return func(ctx context.Context, faultID, by string) PlatformFaultDoneResult {
+// the open fault faultID done by by and checks the fault again at once.
+// When raisedBy is not empty, only a fault whose RaisedBy is raisedBy is
+// marked; any other is left as it is and answered
+// [PlatformFaultDoneNotRaisedBy]. It returns once the check result is
+// applied, ctx ended before the loop took the request, or shutdown began.
+// Safe for concurrent use.
+func (o *Orchestrator) PlatformFaultDoneFunc() func(ctx context.Context, faultID, by, raisedBy string) PlatformFaultDoneResult {
+	return func(ctx context.Context, faultID, by, raisedBy string) PlatformFaultDoneResult {
 		var (
-			check  PlatformFaultCheck
-			fault  *PlatformFault
-			starts bool
+			check     PlatformFaultCheck
+			fault     *PlatformFault
+			starts    bool
+			notRaised *SnapshotPlatformFault
 		)
 		switch o.runOnLoop(ctx, func(loopCtx context.Context) {
+			if f := o.state.PlatformFaults[faultID]; f != nil && raisedBy != "" && f.RaisedBy != raisedBy {
+				notRaised = new(snapshotPlatformFault(f))
+				return
+			}
 			check, fault, starts = markPlatformFaultActionDone(loopCtx, o.state, o.store, faultID, by, time.Now(), o.logger)
 			if fault != nil {
 				o.logger.Info("platform fault action marked done",
@@ -181,6 +191,9 @@ func (o *Orchestrator) PlatformFaultDoneFunc() func(ctx context.Context, faultID
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneDraining}
 		case loopWithdrawn:
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneWithdrawn}
+		}
+		if notRaised != nil {
+			return PlatformFaultDoneResult{Status: PlatformFaultDoneNotRaisedBy, Fault: *notRaised}
 		}
 		if fault == nil {
 			return PlatformFaultDoneResult{Status: PlatformFaultDoneNotFound}

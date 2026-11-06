@@ -596,7 +596,7 @@ func TestHandoffPerson_MarkedDoneClosesThePart(t *testing.T) {
 		t.Fatalf("part %+v, action %q; want the person action", p, action)
 	}
 
-	got := h.o.PlatformFaultDoneFunc()(h.ctx, p.FaultID, "ops")
+	got := h.o.PlatformFaultDoneFunc()(h.ctx, p.FaultID, "ops", "")
 	if !got.Resolved {
 		t.Fatalf("action done = %+v, want the fault resolved", got)
 	}

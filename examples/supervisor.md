@@ -46,6 +46,12 @@ overtook it, withdraw it with
 stories it held are then free. Withdraw only your own questions: their
 `raised_by` is `supervisor`.
 
+When you raised a question and then did its action yourself through your
+own routes, such as a live proof you requested and saw proven, close it with
+`POST /api/v1/platform-faults/<platform fault id>/action-done` and the
+`evidence` that the action is done; Sortie checks it at once. Mark done only
+your own questions: any other fault waits for a person.
+
 File an issue with `POST /api/v1/issues` for a platform defect
 (`kind: platform_defect`) or a story's follow-up work (`kind: follow_up`),
 naming the `stories` or the fault `signature` it concerns. Filing the same

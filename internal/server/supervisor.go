@@ -79,6 +79,7 @@ const (
 	supervisorActionReleaseHold = "release_hold"
 	supervisorActionAsk         = "ask_person"
 	supervisorActionWithdraw    = "withdraw_question"
+	supervisorActionFaultDone   = "fault_action_done"
 )
 
 // supervisorCtxKey marks the context of a request the supervisor token
@@ -162,7 +163,7 @@ func (s *Server) recordSupervised(action string, next http.HandlerFunc) http.Han
 func (s *Server) refuseSupervisor(w http.ResponseWriter, r *http.Request) {
 	evidence, _ := readEvidence(r)
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, merge and prove, request a fresh review, ask a person, or withdraw its own question")
+	s.rejectControl(rec, r, http.StatusForbidden, "forbidden", "the supervisor token may only answer, release, grant sessions, hold or release a hold, record a merge, start a fix run, mark a draft, merge, file an issue, request a live proof, merge and prove, request a fresh review, ask a person, withdraw its own question, or mark done the action of a fault it raised")
 	action := r.Method + " " + r.URL.Path
 	if r.Pattern != "" {
 		action = r.Pattern

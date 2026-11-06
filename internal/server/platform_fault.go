@@ -10,13 +10,19 @@ import (
 )
 
 // PlatformFaultDoneFunc marks the person action of the open platform
-// fault faultID done by by and checks the fault again at once. ctx is the
+// fault faultID done by by and checks the fault again at once. When
+// raisedBy is not empty, a fault raised by anyone else is left as it is
+// and answered [orchestrator.PlatformFaultDoneNotRaisedBy]. ctx is the
 // request's context.
-type PlatformFaultDoneFunc func(ctx context.Context, faultID, by string) orchestrator.PlatformFaultDoneResult
+type PlatformFaultDoneFunc func(ctx context.Context, faultID, by, raisedBy string) orchestrator.PlatformFaultDoneResult
 
 // defaultActionDoneBy names who marked a person action done when the
 // request does not.
 const defaultActionDoneBy = "operator"
+
+// supervisorActionDoneBy names the supervisor as who marked a person
+// action done; its request cannot name anyone else.
+const supervisorActionDoneBy = "supervisor"
 
 type platformFaultDoneRequest struct {
 	By string `json:"by"`
@@ -139,11 +145,20 @@ func (s *Server) servePlatformFaultDone(w http.ResponseWriter, r *http.Request) 
 	if req.By == "" {
 		req.By = defaultActionDoneBy
 	}
+	// The supervisor marks done only the action of a fault it raised, and
+	// always as itself.
+	var raisedBy string
+	if supervisorCaller(r) {
+		req.By, raisedBy = supervisorActionDoneBy, orchestrator.QuestionRaisedBySupervisor
+	}
 	if s.platformFaultDoneFn == nil {
 		writeErrorJSON(w, s.logger, http.StatusServiceUnavailable, "orchestrator_unavailable", "platform faults are not available")
 		return http.StatusServiceUnavailable
 	}
-	result := s.platformFaultDoneFn(r.Context(), r.PathValue("id"), req.By)
+	result := s.platformFaultDoneFn(r.Context(), r.PathValue("id"), req.By, raisedBy)
+	if len(result.Fault.Holds) > 0 {
+		noteSupervised(r, result.Fault.Holds[0].Identifier, "", "")
+	}
 
 	// The check runs before the answer, so the server's own deadline may
 	// have lapsed by now.
@@ -159,6 +174,14 @@ func (s *Server) servePlatformFaultDone(w http.ResponseWriter, r *http.Request) 
 	case orchestrator.PlatformFaultDoneNotFound:
 		writeErrorJSON(w, s.logger, http.StatusNotFound, "platform_fault_not_found", "no open platform fault has this id")
 		return http.StatusNotFound
+	case orchestrator.PlatformFaultDoneNotRaisedBy:
+		raiser := result.Fault.RaisedBy
+		if raiser == "" {
+			raiser = "Sortie, a check or a story's run"
+		}
+		writeErrorJSON(w, s.logger, http.StatusForbidden, "not_raised_by_supervisor",
+			"platform fault "+result.Fault.ID+" was raised by "+raiser+", not the supervisor; its action waits for a person")
+		return http.StatusForbidden
 	default:
 		writeErrorJSON(w, s.logger, http.StatusServiceUnavailable, "orchestrator_unavailable", "the orchestrator did not take the request")
 		return http.StatusServiceUnavailable

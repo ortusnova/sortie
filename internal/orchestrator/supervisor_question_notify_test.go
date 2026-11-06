@@ -176,7 +176,7 @@ func TestQuestionClosed_Answered(t *testing.T) {
 	h, person := questionHarness(t, stateWithParked("id-77", "ONS-77"))
 	asked := h.o.Supervisor().AskPerson(t.Context(), credentialQuestion())
 
-	done := h.o.PlatformFaultDoneFunc()(t.Context(), asked.Fault.ID, "taichi")
+	done := h.o.PlatformFaultDoneFunc()(t.Context(), asked.Fault.ID, "taichi", "")
 	if done.Status != PlatformFaultDoneChecked || !done.Resolved {
 		t.Fatalf("action done = %+v, want the question resolved", done)
 	}
