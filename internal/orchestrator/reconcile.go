@@ -252,6 +252,10 @@ type ReconcileParams struct {
 	// SkipReactions stops reconciliation after the stall, overdue-retry,
 	// and tracker-state passes, so no reaction or label-command pass runs.
 	SkipReactions bool
+
+	// Phase, when set, is told the name of each pass as it starts, so the
+	// event loop can say which pass holds it.
+	Phase func(name string)
 }
 
 // ReconcileRunningIssues detects stalled workers and refreshes tracker
@@ -287,16 +291,24 @@ func ReconcileRunningIssues(state *State, params ReconcileParams) {
 		now = params.NowFunc().UTC()
 	}
 
+	phase := params.Phase
+	if phase == nil {
+		phase = func(string) {}
+	}
+
 	// Re-arm retry entries whose timer event was dropped by the retry
 	// timer channel's non-blocking send, so an undeliverable incumbent
 	// cannot hold the retry slot for the process lifetime.
+	phase("reconcile.overdue_retries")
 	reconcileOverdueRetries(state, params, log, now)
 
 	// Cancel stalled workers and schedule exponential-backoff retries.
+	phase("reconcile.stalled")
 	reconcileStalled(state, params, log, ctx, now, metrics)
 
 	// Refresh issue states from the tracker and stop workers for
 	// terminal or non-active issues.
+	phase("reconcile.tracker_state")
 	reconcileTrackerState(state, params, log, ctx, now, metrics)
 
 	if params.SkipReactions {
@@ -304,41 +316,49 @@ func ReconcileRunningIssues(state *State, params ReconcileParams) {
 	}
 
 	// Poll CI status for issues with pending CI checks.
+	phase("reconcile.ci_status")
 	reconcileCIStatus(state, params, log, ctx, metrics)
 
 	// Poll review comments for issues with pending review reactions.
+	phase("reconcile.review_comments")
 	reconcileReviewComments(state, params, log, ctx, metrics)
 
 	// Poll bot-authored review comments for issues with pending
 	// bot-review reactions. Runs after the human review pass and before
 	// auto-merge.
+	phase("reconcile.bot_review")
 	reconcileBotReviewComments(state, params, log, ctx, metrics)
 
 	// Detect merge conflicts on managed open PRs. Runs before auto-merge
 	// so a freshly observed conflict is acted on (a rebase continuation
 	// scheduled) before auto-merge re-confirms its existing dirty
 	// deferral on the same tick.
+	phase("reconcile.merge_conflicts")
 	reconcileMergeConflicts(state, params, log, ctx, metrics)
 
 	// Poll auto-merge preconditions for issues with pending merge
 	// reactions. Runs LAST so the CI and review reconcile passes have
 	// already updated their state before the merge call inspects it.
+	phase("reconcile.auto_merge")
 	reconcileAutoMerge(state, params, log, ctx, metrics)
 
 	// Detect review-label commands on managed PRs and dispatch read-only
 	// review sessions. Ordering does not affect correctness: the pass is
 	// fully cross-kind isolated. Placed last as the newest reaction added.
+	phase("reconcile.label_review")
 	reconcileLabelReviewCommands(state, params, log, ctx, metrics)
 
 	// Detect fix-label commands on managed PRs and dispatch full read-write
 	// fix sessions. Ordering does not affect correctness: the pass is fully
 	// cross-kind isolated, mutating only label-fix state.
+	phase("reconcile.label_fix")
 	reconcileLabelFixCommands(state, params, log, ctx, metrics)
 
 	// Observe the merge state of managed pull requests and transition
 	// the linked issue to the configured terminal state exactly once.
 	// Placed last so a merge the orchestrator performed earlier in the
 	// same tick can be observed on this pass.
+	phase("reconcile.merge_completion")
 	reconcileMergeCompletion(state, params, log, ctx, metrics)
 }
 

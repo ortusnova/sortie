@@ -55,6 +55,7 @@ type PromMetrics struct {
 	selfReviewCapReachedTotal      prometheus.Counter
 
 	pollDuration   prometheus.Histogram
+	loopHold       *prometheus.HistogramVec
 	workerDuration *prometheus.HistogramVec
 
 	sshHostUsage          *prometheus.GaugeVec
@@ -183,6 +184,13 @@ func NewPromMetrics(version, goVersion string) *PromMetrics {
 		Help:      "Time per complete poll cycle.",
 		Buckets:   prometheus.ExponentialBuckets(0.1, 2, 10),
 	})
+
+	loopHold := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "sortie",
+		Name:      "event_loop_hold_seconds",
+		Help:      "Time one event loop iteration held the loop, by the handler and phase that held it longest.",
+		Buckets:   []float64{0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30},
+	}, []string{"handler"})
 
 	workerDuration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "sortie",
@@ -344,6 +352,7 @@ func NewPromMetrics(version, goVersion string) *PromMetrics {
 		trackerCommentsTotal,
 		toolCallsTotal,
 		pollDuration,
+		loopHold,
 		workerDuration,
 		buildInfo,
 		sshHostUsage,
@@ -389,6 +398,7 @@ func NewPromMetrics(version, goVersion string) *PromMetrics {
 		trackerCommentsTotal:           trackerCommentsTotal,
 		toolCallsTotal:                 toolCallsTotal,
 		pollDuration:                   pollDuration,
+		loopHold:                       loopHold,
 		workerDuration:                 workerDuration,
 		sshHostUsage:                   sshHostUsage,
 		budgetExhaustedIssues:          budgetExhaustedIssues,
@@ -549,6 +559,11 @@ func (p *PromMetrics) IncToolCalls(tool, outcome string) {
 // ObservePollDuration records the duration of a complete poll cycle in seconds.
 func (p *PromMetrics) ObservePollDuration(seconds float64) {
 	p.pollDuration.Observe(seconds)
+}
+
+// ObserveLoopHold records how long one event loop iteration held the loop.
+func (p *PromMetrics) ObserveLoopHold(handler string, seconds float64) {
+	p.loopHold.WithLabelValues(handler).Observe(seconds)
 }
 
 // ObserveWorkerDuration records the wall-clock time of a worker session in seconds.

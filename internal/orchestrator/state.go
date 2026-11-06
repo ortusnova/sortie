@@ -2389,6 +2389,14 @@ type RuntimeSnapshotResult struct {
 	// Supervisor is the supervisor's state; nil while the workflow
 	// configures no supervisor.
 	Supervisor *SupervisorSnapshot `json:"-"`
+
+	// Stale reports that the event loop did not answer in time and this is
+	// the last snapshot it built; GeneratedAt says when.
+	Stale bool `json:"-"`
+
+	// Loop is how long the event loop holds its work, read when the
+	// snapshot was served, not when it was built.
+	Loop LoopStatus `json:"-"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running

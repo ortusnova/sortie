@@ -48,6 +48,7 @@ const (
 	EventSupervisorLoopSuspected   EventType = "supervisor.loop_suspected"
 	EventQuestionForPerson         EventType = "question.for_person"
 	EventQuestionClosed            EventType = "question.closed"
+	EventPlatformLoopSlow          EventType = "platform.loop_slow"
 )
 
 // TrackerCommentKind is the reserved notifications kind of the built-in
@@ -76,6 +77,7 @@ var eventTypes = []EventType{
 	EventSupervisorLoopSuspected,
 	EventQuestionForPerson,
 	EventQuestionClosed,
+	EventPlatformLoopSlow,
 }
 
 // EventTypes returns the catalog in declaration order. The caller may
@@ -101,7 +103,7 @@ func (t EventType) FromOrchestrator() bool {
 // happened; a run that stops or fails is the supervisor's.
 func (t EventType) ForPerson() bool {
 	switch t {
-	case EventQuestionForPerson, EventQuestionClosed, EventSupervisorLoopSuspected:
+	case EventQuestionForPerson, EventQuestionClosed, EventSupervisorLoopSuspected, EventPlatformLoopSlow:
 		return true
 	default:
 		return false
@@ -128,7 +130,8 @@ func (t EventType) Severity() string {
 		EventHoldExpired,
 		EventStoryReverted,
 		EventSupervisorLoopSuspected,
-		EventQuestionForPerson:
+		EventQuestionForPerson,
+		EventPlatformLoopSlow:
 		return "warning"
 	default:
 		return ""

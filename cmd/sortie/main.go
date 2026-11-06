@@ -1082,7 +1082,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			stages:       func() runstats.Stages { return dispatchStages(br.mgr.Config().Dispatch) },
 		}
 		srv = server.New(server.Params{
-			SnapshotFn:             o.SnapshotFunc(),
+			SnapshotFn:             o.ServedSnapshotFunc(),
 			WorkersFn:              o.Workers,
 			WorkerIdentityHeaderFn: o.WorkerIdentityHeader,
 			JobTokensFn:            o.JobTokens,

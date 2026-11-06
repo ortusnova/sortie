@@ -129,6 +129,7 @@ func TestEventTypes_Catalog(t *testing.T) {
 		"auto_merge.merged", "budget.held", "stage.advanced", "stage.not_advanced", "agent.message",
 		"session.escalated", "hold.expired", "story.reverted", "supervisor.loop_suspected",
 		"question.for_person", "question.closed",
+		"platform.loop_slow",
 	}
 
 	got := EventTypes()
@@ -177,6 +178,7 @@ func TestEventType_Classification(t *testing.T) {
 		{"supervisor.loop_suspected", true, true, "warning"},
 		{"question.for_person", true, true, "warning"},
 		{"question.closed", true, true, "info"},
+		{"platform.loop_slow", true, true, "warning"},
 		{"session.begun", false, false, ""},
 		{"", false, false, ""},
 	}
@@ -201,7 +203,7 @@ func TestEventType_Classification(t *testing.T) {
 func TestEventType_ForPerson(t *testing.T) {
 	t.Parallel()
 
-	want := []EventType{EventSupervisorLoopSuspected, EventQuestionForPerson, EventQuestionClosed}
+	want := []EventType{EventSupervisorLoopSuspected, EventQuestionForPerson, EventQuestionClosed, EventPlatformLoopSlow}
 	var got []EventType
 	for _, e := range EventTypes() {
 		if e.ForPerson() {

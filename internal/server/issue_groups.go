@@ -26,6 +26,7 @@ const (
 type issueGroupsResponse struct {
 	Groups     []issueGroupResponse `json:"groups"`
 	NextCursor *string              `json:"next_cursor"`
+	snapshotFreshness
 }
 
 // issueGroupResponse is one issue of run history by issue. Runs holds the
@@ -164,7 +165,7 @@ func (s *Server) handleIssueGroups(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, s.logger, http.StatusOK, issueGroupsResponse{Groups: groups, NextCursor: next})
+	writeJSON(w, s.logger, http.StatusOK, issueGroupsResponse{Groups: groups, NextCursor: next, snapshotFreshness: freshnessOf(snap, time.Now())})
 
 	s.logger.Debug("request served",
 		slog.String("method", r.Method),

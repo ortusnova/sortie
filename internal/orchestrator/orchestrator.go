@@ -385,6 +385,14 @@ type Orchestrator struct {
 	refreshCh      chan struct{}
 	controlCh      chan controlRequest
 
+	// lastSnapshot is the last snapshot the event loop built, served when
+	// the loop does not answer within snapshotReplyBound; nil before the
+	// first. Its contents are read-only.
+	lastSnapshot atomic.Pointer[RuntimeSnapshotResult]
+
+	// loop measures how long each event loop iteration holds the loop.
+	loop *loopMonitor
+
 	// actionCh carries work for the event loop; only Run reads it. stopping
 	// closes once, when shutdown begins and before workers drain.
 	actionCh chan *loopAction
@@ -611,6 +619,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		unaccountedTurnsCh:                make(chan unaccountedTurnsMsg, eventBuf),
 		streamBrokenCh:                    make(chan string, eventBuf),
 		snapshotCh:                        make(chan snapshotRequest, 4),
+		loop:                              newLoopMonitor(time.Now),
 		refreshCh:                         make(chan struct{}, 1),
 		controlCh:                         make(chan controlRequest, 4),
 		actionCh:                          make(chan *loopAction, 4),
@@ -937,8 +946,10 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	for {
 		select {
 		case <-leaseSweep.C:
+			o.loop.begin(loopHandlerLeaseSweep)
 			o.expireLeases()
 		case issueID := <-o.streamBrokenCh:
+			o.loop.begin(loopHandlerStreamBroken)
 			o.stallBrokenStream(ctx, issueID)
 		case <-ctx.Done():
 			if o.once != nil {
@@ -948,15 +959,18 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			return
 
 		case <-tickTimer.C:
+			o.loop.begin(loopHandlerTick)
 			o.handleTick(ctx)
 			interval := time.Duration(o.state.PollIntervalMS) * time.Millisecond
 			tickTimer.Reset(interval)
 			o.pollHealth.schedule(time.Now().Add(interval))
 
 		case workerExit := <-o.workerExitCh:
+			o.loop.begin(loopHandlerWorkerExit)
 			o.handleWorkerExit(ctx, workerExit)
 
 		case issueID := <-o.retryTimerCh:
+			o.loop.begin(loopHandlerRetryTimer)
 			cfg := o.workflowManager.Config()
 			templateHeld := func(id string) bool { return o.workflowManager.PromptTemplateByID(id) != nil }
 			resolveSelection := func(frozen DispatchResolution, issue domain.Issue) DispatchResolution {
@@ -1035,44 +1049,53 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			o.notifyObservers()
 
 		case msg := <-o.agentEventCh:
+			o.loop.begin(loopHandlerAgentEvent)
 			o.applyAgentEvent(ctx, msg, true)
 			o.notifyObservers()
 
 		case msg := <-o.selfReviewCh:
+			o.loop.begin(loopHandlerSelfReview)
 			o.applySelfReviewProgress(msg)
 			o.notifyObservers()
 
 		case msg := <-o.turnStartedCh:
+			o.loop.begin(loopHandlerTurnStarted)
 			o.applyTurnStarted(msg)
 			o.notifyObservers()
 
 		case msg := <-o.issueReadCh:
+			o.loop.begin(loopHandlerIssueRead)
 			o.applyIssueRead(msg)
 			o.notifyObservers()
 
 		case msg := <-o.unaccountedTurnsCh:
+			o.loop.begin(loopHandlerUnaccountedTurns)
 			o.applyUnaccountedTurns(ctx, msg)
 			o.notifyObservers()
 
 		case req := <-o.snapshotCh:
-			refreshActiveOrder(o.state)
-			snap := RuntimeSnapshot(o.state, time.Now())
-			req.ReplyCh <- snap
+			o.loop.begin(loopHandlerSnapshot)
+			req.ReplyCh <- o.buildSnapshot()
 
 		case action := <-o.actionCh:
+			o.loop.begin(loopHandlerAction)
 			if action.state.CompareAndSwap(loopActionPending, loopActionTaken) {
 				action.apply(ctx)
 				close(action.done)
 			}
 
 		case <-o.refreshCh:
+			o.loop.begin(loopHandlerTick)
 			o.handleTick(ctx)
 
 		case req := <-o.controlCh:
+			o.loop.begin(loopHandlerControl)
 			req.ReplyCh <- o.handleControl(ctx, req)
 		}
 
+		o.loop.enter("supervise")
 		o.superviseOnLoop(ctx, time.Now())
+		o.endLoopHold(ctx)
 
 		if o.once != nil && ctx.Err() == nil && o.once.settled(o.state) {
 			o.shutdown(tickTimer)
@@ -1271,15 +1294,22 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	LogAdvisories(ctx, o.logger, newAdvisories(current, o.reportedAdvisories))
 	o.reportedAdvisories = current
 
+	o.loop.enter("database_ping")
 	if err := o.store.Ping(ctx); !canceled(ctx, err) {
 		o.databaseHealth.record(time.Now(), err)
 	}
 
+	o.loop.enter("handoff_parts")
 	o.advanceHandoffParts(ctx, time.Now().UTC())
+	o.loop.enter("fault_checks")
 	o.startDueFaultChecks(ctx, time.Now())
+	o.loop.enter("health_checks")
 	o.runDueHealthChecks(ctx, cfg)
+	o.loop.enter("park_records")
 	o.releaseParksByRecord(ctx, cfg, time.Now().UTC())
+	o.loop.enter("merge_and_prove")
 	o.advanceMergeAndProve(ctx, cfg, time.Now().UTC())
+	o.loop.enter("reverts")
 	o.detectReverts(ctx, cfg, time.Now().UTC())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
@@ -1326,10 +1356,12 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		Environment:                       o.environmentOrUnavailable(cfg.Environment),
 		CITriage:                          o.ciTriage,
 		SkipReactions:                     o.once != nil,
+		Phase:                             o.loop.enter,
 	})
 
 	// Sweep workspaces periodically to catch issues that transitioned after
 	// their worker exited, or aged past the retention window.
+	o.loop.enter("sweep")
 	o.state.SweepTickCounter++
 	if o.state.SweepTickCounter >= sweepEveryNTicks {
 		o.state.SweepTickCounter = 0
@@ -1385,6 +1417,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		return
 	}
 
+	o.loop.enter("fetch_candidates")
 	issues, err := o.trackerAdapter.FetchCandidateIssues(ctx)
 	if err != nil {
 		pollResult = outcomeError
@@ -1402,6 +1435,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.pollHealth.record(time.Now(), pollOutcomeSucceeded, nil)
 
 	var dispatchable []domain.Issue
+	o.loop.enter("dispatch")
 	dispatchable, o.leftAlone = dispatchableIssues(cfg.Environment, cfg.Workspace.Root, issues, o.leftAlone, o.logger)
 	sorted := SortForDispatch(dispatchable)
 	sorted = o.completeMerged(ctx, cfg, sorted)
@@ -2860,9 +2894,7 @@ func (o *Orchestrator) drainRunningWorkers() {
 			o.notifyObservers()
 
 		case req := <-o.snapshotCh:
-			refreshActiveOrder(o.state)
-			snap := RuntimeSnapshot(o.state, time.Now())
-			req.ReplyCh <- snap
+			req.ReplyCh <- o.buildSnapshot()
 
 		case <-o.refreshCh:
 			// Discard refresh signals during drain; the event loop is no
@@ -2961,6 +2993,16 @@ func (o *Orchestrator) PreflightOK() bool {
 	return o.preflightOK.Load()
 }
 
+// buildSnapshot captures the runtime snapshot and keeps it as the last
+// one built. Called from the event loop goroutine only.
+func (o *Orchestrator) buildSnapshot() RuntimeSnapshotResult {
+	refreshActiveOrder(o.state)
+	snap := RuntimeSnapshot(o.state, time.Now())
+	kept := snap
+	o.lastSnapshot.Store(&kept)
+	return snap
+}
+
 // SnapshotFunc returns a function that retrieves a point-in-time runtime
 // snapshot via the event loop channel. Safe to call from any goroutine; it
 // blocks until the snapshot arrives or a 5-second timeout expires.
@@ -2977,11 +3019,52 @@ func (o *Orchestrator) SnapshotFunc() func() (RuntimeSnapshotResult, error) {
 
 		select {
 		case snap := <-replyCh:
+			snap.Loop = o.loop.status()
 			return snap, nil
 		case <-time.After(5 * time.Second):
 			return RuntimeSnapshotResult{}, fmt.Errorf("timed out waiting for snapshot reply")
 		}
 	}
+}
+
+// ServedSnapshotFunc returns the snapshot function the HTTP server serves
+// from. It asks the event loop for a snapshot as [Orchestrator.SnapshotFunc]
+// does, but when the loop does not answer within snapshotReplyBound it
+// returns the last snapshot the loop built, marked Stale. It fails only
+// when the loop has built none yet. Safe to call from any goroutine.
+func (o *Orchestrator) ServedSnapshotFunc() func() (RuntimeSnapshotResult, error) {
+	return func() (RuntimeSnapshotResult, error) {
+		bound := time.NewTimer(snapshotReplyBound)
+		defer bound.Stop()
+		replyCh := make(chan RuntimeSnapshotResult, 1)
+
+		select {
+		case o.snapshotCh <- snapshotRequest{ReplyCh: replyCh}:
+		case <-bound.C:
+			return o.staleSnapshot()
+		}
+
+		select {
+		case snap := <-replyCh:
+			snap.Loop = o.loop.status()
+			return snap, nil
+		case <-bound.C:
+			return o.staleSnapshot()
+		}
+	}
+}
+
+// staleSnapshot returns the last snapshot the event loop built, marked
+// Stale, or an error when it has built none.
+func (o *Orchestrator) staleSnapshot() (RuntimeSnapshotResult, error) {
+	last := o.lastSnapshot.Load()
+	if last == nil {
+		return RuntimeSnapshotResult{}, fmt.Errorf("timed out waiting for snapshot reply, and the event loop has built no snapshot yet")
+	}
+	snap := *last
+	snap.Stale = true
+	snap.Loop = o.loop.status()
+	return snap, nil
 }
 
 // RefreshFunc returns a function that signals an immediate

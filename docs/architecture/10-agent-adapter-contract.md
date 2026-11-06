@@ -405,6 +405,7 @@ The backend packages obey the adapter-family boundary rules: no cross-adapter im
 | `supervisor.loop_suspected` | `supervisor.noop_limit` consecutive supervisor sessions of one trigger kind took no action on the same state digest (Section 5.3.12); the body names the trigger kind, the digest, the sessions, and when the first started; the event names no issue and no `tracker_comment` destination receives it | `warning` |
 | `question.for_person` | a question of kind `credential`, `key`, `approval` or `decision` opens through the supervisor's question route (Section 5.3.12), once per question; the facts name the question ID, kind, action (`text`), place, stories and `raised_by` | `warning` |
 | `question.closed` | such a question is answered (its action marked done and its check passed), withdrawn, or every story it held left the tracker state that raised it; the facts add `closed` (`answered`, `withdrawn`, `state_changed`) | `info` |
+| `platform.loop_slow` | a second hold of Sortie's event loop over 5 seconds within 10 minutes (Section 13); the body names the number of such holds, the latest hold's length, and the handler and phase that held it; it routes again only once 10 minutes have passed, names no issue, and no `tracker_comment` destination receives it | `warning` |
 | `agent.message` | the agent calls `notify_operator` | set by the agent |
 
 A cancelled run publishes no session event.

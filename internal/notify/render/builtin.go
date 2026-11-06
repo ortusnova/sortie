@@ -74,6 +74,8 @@ func bodyOf(n domain.Notification) string {
 		return loopSuspectedBody(f)
 	case domain.QuestionFacts:
 		return questionBody(f)
+	case domain.PlatformLoopSlowFacts:
+		return loopSlowBody(f)
 	case domain.StageFacts:
 		return stageBody(n.Envelope.EventType, n.Envelope.Stage)
 	default:
