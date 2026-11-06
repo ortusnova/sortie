@@ -58,9 +58,8 @@ const (
 )
 
 // CriterionReasonAfterDeploy is the reason of a live-proof criterion that
-// only a run against the deployed main settles, after the merge: Sortie
-// merges such a story through merge-and-prove, proves it after the deploy,
-// or reverts it.
+// only a run against the deployed main settles, after the merge. Sortie
+// does not merge such a story: no route proves it before the merge.
 const CriterionReasonAfterDeploy = "after-deploy"
 
 // CriterionVerdict is one criterion's entry in the criteria file. Reason
@@ -157,29 +156,25 @@ func evaluateCriteria(data []byte) CriteriaVerdict {
 // onlyAfterDeploy reports whether every criterion the verdict does not
 // find met is a live-proof one only a deploy settles, and at least one is.
 func (v CriteriaVerdict) onlyAfterDeploy() bool {
-	_, _, ok := v.afterDeployCriteria()
+	_, ok := v.afterDeployCriteria()
 	return ok
 }
 
-// afterDeployCriteria returns, when every criterion is met with evidence
-// or left to a proof after deploy and at least one is, the criteria left
-// to that proof, one per line. Otherwise it returns the first criterion
-// that keeps the story from merge-and-prove, numbered from 1, and false.
-func (v CriteriaVerdict) afterDeployCriteria() (left string, blocking int, ok bool) {
-	var b strings.Builder
+// afterDeployCriteria reports whether every criterion is met with evidence
+// or left to a proof after deploy, and at least one is. Otherwise it
+// returns the first criterion that is neither, numbered from 1, and false.
+func (v CriteriaVerdict) afterDeployCriteria() (blocking int, ok bool) {
+	left := 0
 	for i, c := range v.Criteria {
 		switch {
 		case strings.EqualFold(strings.TrimSpace(c.Verdict), CriterionMet) && strings.TrimSpace(c.Evidence) != "":
 		case c.afterDeploy():
-			fmt.Fprintf(&b, "- %s\n", verdictLine(c.Criterion))
+			left++
 		default:
-			return "", i + 1, false
+			return i + 1, false
 		}
 	}
-	if b.Len() == 0 {
-		return "", 0, false
-	}
-	return b.String(), 0, true
+	return 0, left > 0
 }
 
 // notMet lists the criteria whose verdict is not met, one per line.
@@ -265,7 +260,7 @@ func applyCriteriaVerdict(ctx context.Context, params HandleWorkerExitParams, en
 				v.notMet() + "\nRequest the live proof (POST /api/v1/" + entry.Identifier + "/live-proof); once a comment on the pull request records it proven at its head (`" + LiveProofMarker + " <head sha>`), Sortie merges it once its CI passes and it does not conflict."
 			if v.onlyAfterDeploy() {
 				comment = "Sortie does not merge this story's pull request yet: its review settles these criteria only after a deploy:\n\n" +
-					v.notMet() + "\nMerge it through merge-and-prove (POST /api/v1/" + entry.Identifier + "/merge-and-prove) once its CI passes: Sortie merges it, waits for every host to deploy it, runs the live proof against the deployed main, and reverts the merge when no proven record lands by the deadline."
+					v.notMet() + "\nNo route proves a change after deploy before it merges, so the pull request stays open: do not merge it, and do not ask a person to prove it by hand."
 			}
 			if err := params.TrackerAdapter.CommentIssue(ctx, result.IssueID, comment); err != nil {
 				log.Warn("live-proof hold comment failed", slog.Any("error", err))

@@ -207,11 +207,6 @@ export interface Declaration {
   capabilities?: string[];
 }
 
-export interface DeployedHostResponse {
-  host: string;
-  commit: string;
-}
-
 export interface DispatchPausedResponse {
   since: string;
   by: string;
@@ -523,28 +518,6 @@ export interface Machine {
   name: string;
   since: string;
   state?: string;
-}
-
-export interface MergeAndProveEntryResponse {
-  issue_id: string;
-  issue_identifier: string;
-  position: number;
-  phase: "queued" | "merging" | "deploying" | "proving" | "reverting";
-  pull_request: string;
-  head: string;
-  merge_commit: string | null;
-  deployed: DeployedHostResponse[];
-  queued_at: string;
-  phase_at: string;
-  deadline: string | null;
-  revert_pull_request: string | null;
-  reason: string | null;
-  waiting: string | null;
-}
-
-export interface MergeAndProveResponse {
-  in_flight: MergeAndProveEntryResponse | null;
-  queue: MergeAndProveEntryResponse[];
 }
 
 export interface ModelPriceResponse {
@@ -1336,7 +1309,6 @@ export interface StateResponse {
   dispatch_paused: DispatchPausedResponse | null;
   platform_faults: PlatformFaultResponse[] | null;
   handoff_parts: HandoffPartResponse[];
-  merge_and_prove: MergeAndProveResponse;
   supervisor: SupervisorResponse | null;
   config?: ConfigResponse;
   health?: StateHealthResponse;

@@ -2,12 +2,15 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"slices"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/notify/route"
+	"github.com/sortie-ai/sortie/internal/persistence"
 )
 
 // staleCriteria is a review recorded before the after-deploy reason
@@ -15,33 +18,145 @@ import (
 const staleCriteria = `[{"criterion":"the dashboard shows the queue","verdict":"met","evidence":"web test"},` +
 	`{"criterion":"p1 serves the new route","verdict":"live-proof","evidence":"needs the deployed host"}]`
 
-// MarkPullRequestReadyForReview marks pull request n ready, as GitHub's
-// markPullRequestReadyForReview does.
-func (f *proveForge) MarkPullRequestReadyForReview(_ context.Context, n int, _, _ string) error {
+// proveForge is a fake forge of the repository o/kit: pull requests by
+// number with their status.
+type proveForge struct {
+	controlledSCMAdapter
+	mu    sync.Mutex
+	pulls map[int]*domain.PRMergeStatus
+}
+
+func headSHA(n int) string { return fmt.Sprintf("b%039x", n) }
+
+func newProveForge() *proveForge {
+	f := &proveForge{pulls: map[int]*domain.PRMergeStatus{}}
+	f.getMergeabilityFn = func(_ context.Context, n int, _, _ string) (domain.PRMergeStatus, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		p, ok := f.pulls[n]
+		if !ok {
+			return domain.PRMergeStatus{}, &domain.SCMError{Kind: domain.ErrSCMNotFound, Message: "no such pull request"}
+		}
+		return *p, nil
+	}
+	return f
+}
+
+func (f *proveForge) open(n int, head string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := f.pulls[n]
-	p.Draft, p.Mergeability = false, domain.MergeabilityClean
-	f.readied = append(f.readied, n)
+	f.pulls[n] = &domain.PRMergeStatus{Mergeability: domain.MergeabilityClean, HeadSHA: head, BranchName: fmt.Sprintf("sortie/ONS-%d", n)}
+}
+
+// storyTracker is a fake tracker of the stories ONS-<n>: their state and
+// labels, and the comments Sortie writes.
+type storyTracker struct {
+	domain.TrackerAdapter
+	mu       sync.Mutex
+	issues   map[string]*domain.Issue
+	comments map[string][]string
+}
+
+func newStoryTracker() *storyTracker {
+	return &storyTracker{issues: map[string]*domain.Issue{}, comments: map[string][]string{}}
+}
+
+func (s *storyTracker) add(id, identifier, state string, labels ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[id] = &domain.Issue{ID: id, Identifier: identifier, Title: identifier, State: state, Labels: labels}
+}
+
+func (s *storyTracker) FetchIssueByID(_ context.Context, id string) (domain.Issue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if is, ok := s.issues[id]; ok {
+		return *is, nil
+	}
+	return domain.Issue{}, fmt.Errorf("issue %s not found", id)
+}
+
+func (s *storyTracker) TransitionIssue(_ context.Context, id, target string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[id].State = target
 	return nil
 }
 
-func (f *proveForge) readiedPulls() []int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.readied)
+func (s *storyTracker) AddLabel(_ context.Context, id, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !slices.Contains(s.issues[id].Labels, label) {
+		s.issues[id].Labels = append(s.issues[id].Labels, label)
+	}
+	return nil
 }
 
-func (f *proveForge) setHead(n int, head string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.pulls[n].HeadSHA = head
+func (s *storyTracker) issue(id string) domain.Issue {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	is := *s.issues[id]
+	is.Labels = slices.Clone(is.Labels)
+	return is
 }
 
-func (f *proveForge) draft(n int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.pulls[n].Draft, f.pulls[n].Mergeability = true, domain.MergeabilityBlocked
+func (s *storyTracker) setState(id, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[id].State = state
+}
+
+func (s *storyTracker) CommentIssue(_ context.Context, id, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.comments[id] = append(s.comments[id], body)
+	return nil
+}
+
+// proveFixture is an orchestrator whose supervisor reviews the stories of
+// a fake tracker with their pull requests on a fake forge.
+type proveFixture struct {
+	*supervisorHarness
+	forge   *proveForge
+	stories *storyTracker
+	spy     *notifierSpy
+	t0      time.Time
+}
+
+func newProveFixture(t *testing.T) *proveFixture {
+	t.Helper()
+	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	h := newSupervisorHarness(t, state)
+	f := &proveFixture{supervisorHarness: h, forge: newProveForge(), stories: newStoryTracker(), spy: &notifierSpy{},
+		t0: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
+	cfg := gateConfig()
+	cfg.Tracker.HandoffState = "In Review"
+	cfg.Tracker.ActiveStates = []string{"Todo"}
+	cfg.Tracker.TerminalStates = []string{"Done", "Canceled"}
+	h.o.workflowManager = &stubWorkflowManager{config: cfg}
+	h.o.scmAdapter = f.forge
+	h.o.trackerAdapter = f.stories
+	h.o.router = mustRouter(t, nil, spyLookup(f.spy), route.Inputs{})
+	return f
+}
+
+// addStory adds ONS-<n> in review with its watched pull request o/kit#<n>
+// and its criteria verdict.
+func (f *proveFixture) addStory(t *testing.T, n int, criteria, outcome string, labels ...string) {
+	t.Helper()
+	id, identifier := fmt.Sprintf("id-%d", n), fmt.Sprintf("ONS-%d", n)
+	f.stories.add(id, identifier, "In Review", labels...)
+	f.forge.open(n, headSHA(n))
+	f.o.state.PendingReactions[ReactionKey(id, ReactionKindAutoMerge)] = &PendingReaction{
+		IssueID: id, Identifier: identifier, Kind: ReactionKindAutoMerge, Attempt: 1,
+		KindData:  &AutoMergeReactionData{PRNumber: n, Owner: "o", Repo: "kit", Branch: "sortie/" + identifier, SHA: headSHA(n)},
+		AgentKind: "claude-code", RuleName: "check",
+	}
+	if err := f.store.UpsertCriteriaVerdict(t.Context(), persistence.CriteriaVerdict{
+		IssueID: id, Outcome: outcome, Criteria: criteria, RecordedAt: f.t0,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *proveFixture) requestedHead(t *testing.T, id string) string {
@@ -79,58 +194,6 @@ func (f *proveFixture) assertNoPersonAsked(t *testing.T) {
 	}
 	if sent := f.spy.notifications(); len(sent) != 0 {
 		t.Errorf("notifications = %+v, want none", sent)
-	}
-}
-
-// Scenario "A review from before after-deploy existed": merge-and-prove of
-// a story whose review left a live criterion with no reason answers
-// live_proof_not_after_deploy with a review requested, and the story goes
-// back for a fresh review of its head with no person asked. A second
-// request on the same head requests none; a new head requests one.
-func TestMergeAndProve_StaleReviewRequestsAFreshOne(t *testing.T) {
-	t.Parallel()
-	f := newProveFixture(t)
-	f.addStory(t, 4, staleCriteria, CriteriaOutcomeLiveProof)
-	sup := f.o.Supervisor()
-
-	got := sup.MergeAndProve(t.Context(), "ONS-4")
-	if got.Status != SupervisorPrecondition || got.Code != "live_proof_not_after_deploy" || got.ReviewRequested == nil || !*got.ReviewRequested {
-		t.Fatalf("merge-and-prove of ONS-4 = %+v, want live_proof_not_after_deploy with a review requested", got)
-	}
-	if !strings.Contains(got.Message, "requested a fresh criteria review of its head "+headSHA(4)) || got.PullRequest != "o/kit#4" {
-		t.Errorf("refusal = %+v, want it to name the review of the head and the pull request", got)
-	}
-	f.assertReviewDispatches(t)
-	if head := f.requestedHead(t, "id-4"); head != headSHA(4) {
-		t.Errorf("requested head = %q, want %q", head, headSHA(4))
-	}
-	if c := f.stories.lastComment("id-4"); !strings.Contains(c, "fresh criteria review of o/kit#4 at its head "+headSHA(4)) {
-		t.Errorf("story comment = %q, want the review request", c)
-	}
-
-	again := sup.MergeAndProve(t.Context(), "ONS-4")
-	if again.Code != "live_proof_not_after_deploy" || again.ReviewRequested == nil || *again.ReviewRequested ||
-		!strings.Contains(again.Message, "already requested") {
-		t.Errorf("second merge-and-prove on the same head = %+v, want the refusal with no review requested", again)
-	}
-	if moves := len(f.stories.moves); moves != 1 {
-		t.Errorf("moves = %d, want the one move of the first request", moves)
-	}
-
-	// The review ran at that head, and a fix then pushed a new head.
-	f.stories.setState("id-4", "In Review")
-	f.forge.setHead(4, headSHA(44))
-	fresh := sup.MergeAndProve(t.Context(), "ONS-4")
-	if fresh.ReviewRequested == nil || !*fresh.ReviewRequested {
-		t.Errorf("merge-and-prove on a new head = %+v, want a review requested", fresh)
-	}
-	f.assertReviewDispatches(t)
-	if head := f.requestedHead(t, "id-4"); head != headSHA(44) {
-		t.Errorf("requested head = %q, want the new head", head)
-	}
-	f.assertNoPersonAsked(t)
-	if snap := f.snapshot(t); len(snap.Queue) != 0 || snap.InFlight != nil {
-		t.Errorf("merge-and-prove = %+v, want nothing queued", snap)
 	}
 }
 
@@ -188,49 +251,4 @@ func TestRequestReview(t *testing.T) {
 		t.Errorf("review of an unknown story = %+v, want unknown", got)
 	}
 	f.assertNoPersonAsked(t)
-}
-
-// Scenario "A draft": a story merge-and-prove accepted with a draft pull
-// request is marked ready for review, then merged.
-func TestMergeAndProve_MarksADraftReadyAndMergesIt(t *testing.T) {
-	t.Parallel()
-	f := newProveFixture(t)
-	f.o.prReadier = f.forge
-	f.forge.draft(1)
-	f.accept(t, "ONS-1")
-
-	f.tick(t, f.t0)
-	if got := f.forge.readiedPulls(); !slices.Equal(got, []int{1}) {
-		t.Fatalf("readied = %v, want o/kit#1 marked ready for review", got)
-	}
-	if got := f.snapshot(t).InFlight; got == nil || got.Phase != MergeAndProveMerging || !strings.Contains(got.Waiting, "ready for review") {
-		t.Fatalf("in flight after the first tick = %+v, want merging, the draft marked ready", got)
-	}
-
-	f.tick(t, f.t0.Add(30*time.Second))
-	if got := f.forge.mergedPulls(); !slices.Equal(got, []int{1}) {
-		t.Fatalf("merged = %v, want o/kit#1 merged once ready", got)
-	}
-	if got := f.snapshot(t).InFlight; got == nil || got.Phase != MergeAndProveDeploying || got.MergeCommit != mergeSHA(1) {
-		t.Errorf("in flight after the merge = %+v, want deploying", got)
-	}
-	if got := f.forge.readiedPulls(); len(got) != 1 {
-		t.Errorf("readied = %v, want once", got)
-	}
-}
-
-// A forge that cannot mark a draft ready for review is capability_missing
-// for a draft, and accepts a pull request that is not one.
-func TestMergeAndProve_DraftNeedsTheReadyCapability(t *testing.T) {
-	t.Parallel()
-	f := newProveFixture(t)
-	f.forge.draft(1)
-	got := f.o.Supervisor().MergeAndProve(t.Context(), "ONS-1")
-	if got.Status != SupervisorUnsupported || !strings.Contains(got.Message, "ready for review") {
-		t.Errorf("merge-and-prove of a draft with no ready capability = %+v, want unsupported", got)
-	}
-	if rows, _ := f.store.LoadMergeAndProve(t.Context()); len(rows) != 0 {
-		t.Errorf("stored = %+v, want nothing queued", rows)
-	}
-	f.accept(t, "ONS-2")
 }

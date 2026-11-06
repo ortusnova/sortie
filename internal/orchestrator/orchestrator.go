@@ -424,12 +424,7 @@ type Orchestrator struct {
 	scmAdapter                        domain.SCMAdapter
 	prCommentReader                   domain.PullRequestCommentReader
 	prDrafter                         domain.PullRequestDrafter
-	prReadier                         domain.PullRequestReadier
 	prFinder                          domain.PullRequestFinder
-	prReverter                        domain.PullRequestReverter
-	commitComparer                    domain.CommitComparer
-	revertFinder                      domain.RevertFinder
-	revertScan                        revertScanSchedule
 	parkRecordReads                   map[string]bool // issue IDs whose park record read is in flight; loop-only
 	pullRequestOpenerFunc             PullRequestOpenerFunc
 	reviewConfig                      ReviewReactionConfig
@@ -688,11 +683,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		o.scmAdapter = observeSCM(params.SCMAdapter, o.scmHealth)
 		o.prCommentReader = observeCommentReader(params.SCMAdapter, o.scmHealth)
 		o.prDrafter, _ = params.SCMAdapter.(domain.PullRequestDrafter)
-		o.prReadier, _ = params.SCMAdapter.(domain.PullRequestReadier)
 		o.prFinder, _ = params.SCMAdapter.(domain.PullRequestFinder)
-		o.prReverter, _ = params.SCMAdapter.(domain.PullRequestReverter)
-		o.commitComparer, _ = params.SCMAdapter.(domain.CommitComparer)
-		o.revertFinder, _ = params.SCMAdapter.(domain.RevertFinder)
 		if o.tokenInspector == nil {
 			o.tokenInspector, _ = params.SCMAdapter.(domain.SCMTokenInspector)
 		}
@@ -1307,10 +1298,6 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.runDueHealthChecks(ctx, cfg)
 	o.loop.enter("park_records")
 	o.releaseParksByRecord(ctx, cfg, time.Now().UTC())
-	o.loop.enter("merge_and_prove")
-	o.advanceMergeAndProve(ctx, cfg, time.Now().UTC())
-	o.loop.enter("reverts")
-	o.detectReverts(ctx, cfg, time.Now().UTC())
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
