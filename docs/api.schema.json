@@ -917,21 +917,6 @@
       ],
       "type": "object"
     },
-    "DeployedHostResponse": {
-      "properties": {
-        "commit": {
-          "type": "string"
-        },
-        "host": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "host",
-        "commit"
-      ],
-      "type": "object"
-    },
     "DispatchPausedResponse": {
       "properties": {
         "by": {
@@ -2382,142 +2367,6 @@
       "required": [
         "name",
         "since"
-      ],
-      "type": "object"
-    },
-    "MergeAndProveEntryResponse": {
-      "properties": {
-        "deadline": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "deployed": {
-          "items": {
-            "$ref": "#/$defs/DeployedHostResponse"
-          },
-          "type": "array"
-        },
-        "head": {
-          "type": "string"
-        },
-        "issue_id": {
-          "type": "string"
-        },
-        "issue_identifier": {
-          "type": "string"
-        },
-        "merge_commit": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "phase": {
-          "enum": [
-            "queued",
-            "merging",
-            "deploying",
-            "proving",
-            "reverting"
-          ],
-          "type": "string"
-        },
-        "phase_at": {
-          "format": "date-time",
-          "type": "string"
-        },
-        "position": {
-          "type": "integer"
-        },
-        "pull_request": {
-          "type": "string"
-        },
-        "queued_at": {
-          "format": "date-time",
-          "type": "string"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "revert_pull_request": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "waiting": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "issue_id",
-        "issue_identifier",
-        "position",
-        "phase",
-        "pull_request",
-        "head",
-        "merge_commit",
-        "deployed",
-        "queued_at",
-        "phase_at",
-        "deadline",
-        "revert_pull_request",
-        "reason",
-        "waiting"
-      ],
-      "type": "object"
-    },
-    "MergeAndProveResponse": {
-      "properties": {
-        "in_flight": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MergeAndProveEntryResponse"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "queue": {
-          "items": {
-            "$ref": "#/$defs/MergeAndProveEntryResponse"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "in_flight",
-        "queue"
       ],
       "type": "object"
     },
@@ -6401,9 +6250,6 @@
         "loop": {
           "$ref": "#/$defs/LoopResponse"
         },
-        "merge_and_prove": {
-          "$ref": "#/$defs/MergeAndProveResponse"
-        },
         "park_releases": {
           "anyOf": [
             {
@@ -6571,7 +6417,6 @@
         "dispatch_paused",
         "platform_faults",
         "handoff_parts",
-        "merge_and_prove",
         "supervisor",
         "loop",
         "snapshot_age_ms",

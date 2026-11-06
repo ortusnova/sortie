@@ -102,10 +102,6 @@ type ServiceConfig struct {
 	// rest of the configuration. The zero value reads nothing more.
 	Health HealthConfig
 
-	// MergeAndProve configures how a story that only a deploy can prove
-	// is merged, deployed and proven, or reverted.
-	MergeAndProve MergeAndProveConfig
-
 	// Environment selects where the workspace code of every issue runs.
 	// Its Kind is [EnvironmentKindLocal] when the workflow has no
 	// environment block.
@@ -644,8 +640,6 @@ var knownTopLevelKeys = map[string]bool{
 	"environment":   true,
 	"supervisor":    true,
 	"health":        true,
-
-	"merge_and_prove": true,
 }
 
 // NewServiceConfig converts a raw front matter map into a validated
@@ -852,11 +846,6 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		return ServiceConfig{}, err
 	}
 
-	mergeAndProve, err := buildMergeAndProveConfig(raw)
-	if err != nil {
-		return ServiceConfig{}, err
-	}
-
 	registerConfigSecrets(tracker, reactions, notifications, extensions, raw)
 
 	cfg := ServiceConfig{
@@ -876,7 +865,6 @@ func NewServiceConfig(raw map[string]any, opts ...ServiceConfigOption) (ServiceC
 		Environment:             environment,
 		Supervisor:              supervisor,
 		Health:                  health,
-		MergeAndProve:           mergeAndProve,
 		conversions:             conversions,
 		envSet:                  envKeys,
 	}

@@ -27,7 +27,6 @@ type SupervisorActions interface {
 	Merge(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	FileIssue(ctx context.Context, issue orchestrator.SupervisorIssue) orchestrator.SupervisorIssueResult
 	RequestLiveProof(ctx context.Context, identifier, criterion, profile string) orchestrator.SupervisorResult
-	MergeAndProve(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	RequestReview(ctx context.Context, identifier string) orchestrator.SupervisorResult
 	AskPerson(ctx context.Context, q orchestrator.SupervisorQuestion) orchestrator.SupervisorQuestionResult
 	WithdrawQuestion(ctx context.Context, w orchestrator.SupervisorWithdrawal) orchestrator.SupervisorWithdrawResult
@@ -73,7 +72,6 @@ const (
 	supervisorActionMerge       = "merge"
 	supervisorActionFileIssue   = "file_issue"
 	supervisorActionLiveProof   = "live_proof"
-	supervisorActionMergeProve  = "merge_and_prove"
 	supervisorActionReview      = "review_requested"
 	supervisorActionHold        = "hold"
 	supervisorActionReleaseHold = "release_hold"
@@ -355,13 +353,6 @@ type supervisorResultResponse struct {
 	MergeCommit     *string `json:"merge_commit"`
 }
 
-// reviewRefusalResponse is a refusal that may request a fresh criteria
-// review, and says whether it did.
-type reviewRefusalResponse struct {
-	Error           errorDetail `json:"error"`
-	ReviewRequested bool        `json:"review_requested"`
-}
-
 // writeSupervisorResult writes result with the status its outcome maps
 // to, and notes it on the record of a supervisor request.
 func (s *Server) writeSupervisorResult(w http.ResponseWriter, r *http.Request, start time.Time, action string, result orchestrator.SupervisorResult) {
@@ -387,13 +378,6 @@ func (s *Server) writeSupervisorResult(w http.ResponseWriter, r *http.Request, s
 		status = http.StatusConflict
 		if result.Code == "invalid_request" {
 			status = http.StatusBadRequest
-		}
-		if result.ReviewRequested != nil {
-			writeJSON(w, s.logger, status, reviewRefusalResponse{
-				Error:           errorDetail{Code: result.Code, Message: result.Message},
-				ReviewRequested: *result.ReviewRequested,
-			})
-			break
 		}
 		writeErrorJSON(w, s.logger, status, result.Code, result.Message)
 	case orchestrator.SupervisorUnsupported:
@@ -474,10 +458,6 @@ func (s *Server) registerSupervisorRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/{identifier}/live-proof", s.supervisorRoute(supervisorActionLiveProof, s.supervisorHandler(supervisorActionLiveProof,
 		func(ctx context.Context, sup SupervisorActions, id string, req supervisorRequest) orchestrator.SupervisorResult {
 			return sup.RequestLiveProof(ctx, id, req.Evidence, req.Profile)
-		})))
-	mux.HandleFunc("/api/v1/{identifier}/merge-and-prove", s.supervisorRoute(supervisorActionMergeProve, s.supervisorHandler(supervisorActionMergeProve,
-		func(ctx context.Context, sup SupervisorActions, id string, _ supervisorRequest) orchestrator.SupervisorResult {
-			return sup.MergeAndProve(ctx, id)
 		})))
 	mux.HandleFunc("/api/v1/{identifier}/review", s.supervisorRoute(supervisorActionReview, s.supervisorHandler(supervisorActionReview,
 		func(ctx context.Context, sup SupervisorActions, id string, _ supervisorRequest) orchestrator.SupervisorResult {

@@ -320,9 +320,9 @@ func TestClearCriteriaFile(t *testing.T) {
 }
 
 // A criterion only a deploy settles keeps its reason in the recorded
-// verdict, and the story's comment points at merge-and-prove instead of
-// the live-proof request.
-func TestCriteriaReview_AfterDeployPointsAtMergeAndProve(t *testing.T) {
+// verdict, and the story's comment says the pull request stays open
+// instead of pointing at the live-proof request.
+func TestCriteriaReview_AfterDeployKeepsThePullRequestOpen(t *testing.T) {
 	t.Parallel()
 	f, store := reviewExitFixture(t, `{"criteria": [
 		{"criterion": "`+criterionChain+`", "verdict": "live-proof", "evidence": "only the deployed host serves it", "reason": "after-deploy"},
@@ -331,12 +331,12 @@ func TestCriteriaReview_AfterDeployPointsAtMergeAndProve(t *testing.T) {
 
 	commented := false
 	for _, c := range f.tracker.commentCalls {
-		if strings.Contains(c.Text, "merge-and-prove") && strings.Contains(c.Text, "live-proof, after-deploy") {
+		if strings.Contains(c.Text, "stays open: do not merge it") && strings.Contains(c.Text, "live-proof, after-deploy") && !strings.Contains(c.Text, "merge-and-prove") {
 			commented = true
 		}
 	}
 	if !commented {
-		t.Errorf("comments = %+v, want the hold pointing at merge-and-prove", f.tracker.commentCalls)
+		t.Errorf("comments = %+v, want the hold that keeps the pull request open", f.tracker.commentCalls)
 	}
 	v, ok, _ := store.LoadCriteriaVerdict(context.Background(), hopExitIssueID)
 	if !ok || v.Outcome != CriteriaOutcomeLiveProof || !strings.Contains(v.Criteria, `"reason":"after-deploy"`) {
@@ -359,7 +359,7 @@ func TestAfterDeployCriteria(t *testing.T) {
 		{"met without evidence", `{"criteria":[{"criterion":"a","verdict":"met"}]}`, false, 1},
 		{"all met", `{"criteria":[{"criterion":"a","verdict":"met","evidence":"x"}]}`, false, 0},
 	} {
-		_, blocking, ok := evaluateCriteria([]byte(tt.file)).afterDeployCriteria()
+		blocking, ok := evaluateCriteria([]byte(tt.file)).afterDeployCriteria()
 		if ok != tt.ok || blocking != tt.blocking {
 			t.Errorf("%s: afterDeployCriteria = %d, %v, want %d, %v", tt.name, blocking, ok, tt.blocking, tt.ok)
 		}

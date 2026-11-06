@@ -144,12 +144,6 @@ var knownFieldsRegistry = map[string]SectionSchema{
 			{Name: "credentials", Type: FieldSequence},
 		},
 	},
-	"merge_and_prove": {
-		Fields: []FieldDef{
-			{Name: "deadline", Type: FieldString},
-			{Name: "hosts", Type: FieldMap},
-		},
-	},
 	"supervisor": {
 		Fields: []FieldDef{
 			{Name: "agent", Type: FieldString},
