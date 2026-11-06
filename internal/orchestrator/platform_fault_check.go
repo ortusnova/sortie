@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/failcause"
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/workspace"
@@ -122,6 +123,7 @@ func (o *Orchestrator) applyFaultCheckOnLoop(ctx context.Context, faultID string
 	o.noteHealthFaultChecked(f, resolved)
 	if resolved {
 		o.handoffFaultResolved(ctx, f, now.UTC())
+		o.publishQuestionEvent(ctx, domain.EventQuestionClosed, f, f.Holds, domain.QuestionClosedAnswered)
 	}
 	switch {
 	case resolved:

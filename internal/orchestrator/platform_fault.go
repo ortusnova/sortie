@@ -74,6 +74,10 @@ type PlatformFaultHold struct {
 	Identifier string
 	DisplayID  string
 	HeldAt     time.Time
+
+	// State is the tracker state a question's story was in when the
+	// question took it; empty until observed and for any other fault.
+	State string
 }
 
 // PlatformFaultCheck is what a check of an open platform fault is given.
@@ -230,6 +234,7 @@ func platformFaultRow(f *PlatformFault, resolvedAt time.Time) persistence.Platfo
 	for _, h := range f.Holds {
 		row.Holds = append(row.Holds, persistence.PlatformFaultHold{
 			IssueID: h.IssueID, Identifier: h.Identifier, DisplayID: h.DisplayID, HeldAt: formatFaultTime(h.HeldAt),
+			State: h.State,
 		})
 	}
 	return row
@@ -267,6 +272,7 @@ func PopulatePlatformFaults(state *State, rows []persistence.PlatformFault, log 
 		for _, h := range row.Holds {
 			f.Holds = append(f.Holds, PlatformFaultHold{
 				IssueID: h.IssueID, Identifier: h.Identifier, DisplayID: h.DisplayID, HeldAt: parseFaultTime(h.HeldAt),
+				State: h.State,
 			})
 			state.FaultHolds[h.IssueID] = f.ID
 		}

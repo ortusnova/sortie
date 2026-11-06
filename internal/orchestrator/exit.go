@@ -1802,6 +1802,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		}
 	}
 
+	noteRunEndTrigger(state, workerResult.IssueID, workerResult.Identifier, facts, now)
+
 	exitEvent := identity
 	exitEvent.AgentText = agentText
 	delivery := params.Router.Route(exitEvent.notification(eventType, severity, facts))
