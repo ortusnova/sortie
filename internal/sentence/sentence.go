@@ -667,6 +667,7 @@ var holdTemplates = map[orchestrator.SkipReason]string{
 	orchestrator.SkipSSHHostsFull:        "hold_ssh_hosts",
 	orchestrator.SkipNoWorker:            "hold_no_worker",
 	orchestrator.SkipEgressInvalid:       "hold_egress_invalid",
+	orchestrator.SkipForgeRefused:        "hold_forge_refused",
 	orchestrator.SkipDailySpendCeiling:   "hold_spend_daily",
 	orchestrator.SkipWeeklySpendCeiling:  "hold_spend_weekly",
 	orchestrator.SkipMonthlySpendCeiling: "hold_spend_monthly",
@@ -708,6 +709,7 @@ func selectHold(h *orchestrator.SnapshotHold, c Context) (string, map[string]any
 		"Holder":    strings.TrimSpace(h.Holder),
 		"Note":      strings.TrimSpace(h.Note),
 		"Egress":    egressWords(h.Egress),
+		"Forge":     forgeWords(h.Forge),
 	}
 
 	switch {
@@ -790,6 +792,19 @@ func selectFinished(f *Finished) (string, map[string]any) {
 // repository, its base branch, the commit read, the file, the entry and
 // the error.
 func egressWords(h *orchestrator.EgressHold) map[string]string {
+	if h == nil {
+		return map[string]string{"Repository": "", "Branch": "", "Commit": "", "File": "", "Entry": "", "Error": ""}
+	}
+	return map[string]string{
+		"Repository": h.Repository, "Branch": h.Branch, "Commit": h.Commit,
+		"File": h.File, "Entry": h.Entry, "Error": h.Error,
+	}
+}
+
+// forgeWords is what the template of a forge_refused hold names: the
+// repository, its base branch, the commit read, the file, the entry and
+// the error.
+func forgeWords(h *orchestrator.ForgeHold) map[string]string {
 	if h == nil {
 		return map[string]string{"Repository": "", "Branch": "", "Commit": "", "File": "", "Entry": "", "Error": ""}
 	}

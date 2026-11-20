@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sortie-ai/sortie/internal/egress"
+	"github.com/sortie-ai/sortie/internal/forge"
 )
 
 const (
@@ -52,6 +53,7 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "repositories", Type: FieldSequence},
 	{Name: "default_repository", Type: FieldString},
 	{Name: "egress", Type: FieldMap},
+	{Name: "forge_ceiling", Type: FieldMap},
 	{Name: "profiles", Type: FieldMap},
 }
 
@@ -115,6 +117,14 @@ type RemoteConfig struct {
 	// its agent harness, whatever its repository. Empty, with its lists
 	// not nil, when the workflow declares none.
 	Egress egress.Policy
+
+	// ForgeCeiling is environment.remote.forge_ceiling: for each
+	// repository, by its name, the GitHub repositories its jobs may be
+	// granted and the highest permission on each. A repository's
+	// .sortie/forge.yaml above it holds the repository's jobs. Nil when
+	// the workflow declares none: then no repository may declare any
+	// access.
+	ForgeCeiling forge.Ceiling
 
 	// Profiles is environment.remote.profiles: the job profiles a
 	// supervisor fix run or live-proof request may name, by name. Nil
@@ -254,6 +264,9 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		return RemoteConfig{}, err
 	}
 	cfg.Repository, cfg.Repositories, cfg.DefaultRepository = set.Repository, set.Repositories, set.DefaultRepository
+	if cfg.ForgeCeiling, err = parseRemoteForgeCeiling(m["forge_ceiling"], cfg.Repositories); err != nil {
+		return RemoteConfig{}, err
+	}
 	if cfg.Image == "" {
 		if err := requireRemoteImage(cfg); err != nil {
 			return RemoteConfig{}, err
@@ -597,6 +610,38 @@ func parseRemoteEgress(value any) (egress.Policy, error) {
 		return egress.Policy{}, &ConfigError{Field: field, Message: err.Error()}
 	}
 	return p, nil
+}
+
+// ForgeCeilingField is the path of the forge ceiling in the workflow.
+const ForgeCeilingField = remoteField + ".forge_ceiling"
+
+// parseRemoteForgeCeiling reads environment.remote.forge_ceiling. Each
+// key must name a repository of repos, by its name or, for a block with
+// no name, its project. Absent, it is nil.
+func parseRemoteForgeCeiling(value any, repos []Repository) (forge.Ceiling, error) {
+	if value == nil {
+		return nil, nil
+	}
+	c, err := forge.CeilingFromValue(value, ForgeCeilingField)
+	if err != nil {
+		if perr, ok := errors.AsType[*forge.Error](err); ok {
+			return nil, &ConfigError{Field: perr.Entry, Message: perr.Message}
+		}
+		return nil, &ConfigError{Field: ForgeCeilingField, Message: err.Error()}
+	}
+	var names []string
+	for _, r := range repos {
+		if label := r.Label(); label != "" {
+			names = append(names, label)
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(c)) {
+		if !slices.Contains(names, key) {
+			return nil, &ConfigError{Field: ForgeCeilingField + "." + key,
+				Message: fmt.Sprintf("names no repository of %s; valid: %s", remoteField, strings.Join(names, ", "))}
+		}
+	}
+	return c, nil
 }
 
 // parseRemoteFlows reads environment.remote.flows: a URL for each of

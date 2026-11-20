@@ -530,6 +530,12 @@ type RetryEntry struct {
 	// policy is invalid. Nil otherwise. Runtime-only.
 	EgressHold *EgressHold
 
+	// ForgeHold is why the retry's remote job was not offered when
+	// HandleRetryTimer last re-armed it for that: its repository's
+	// GitHub access declaration is invalid or above the forge ceiling.
+	// Nil otherwise. Runtime-only.
+	ForgeHold *ForgeHold
+
 	// holdRearmed is true when HandleRetryTimer re-armed this entry because a
 	// spend ceiling or a usage-limit hold held it, so a later slot or host
 	// shortage keeps Attempt. Runtime-only.
@@ -1763,6 +1769,12 @@ type State struct {
 	// event loop mutates this map.
 	EgressHoldNoticed map[string]string
 
+	// ForgeHoldNoticed maps the ID of each issue its repository's GitHub
+	// access declaration holds, and whose hold was commented on the
+	// issue, to the commit read. A read within the ceiling removes the
+	// entry. Only the event loop mutates this map.
+	ForgeHoldNoticed map[string]string
+
 	// sessionGrants is what the store holds of the sessions operators
 	// granted beyond agent.max_sessions. Owned by the event loop.
 	sessionGrants sessionGrantCache
@@ -1863,6 +1875,7 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		FaultHolds:                make(map[string]string),
 		HandoffParts:              make(map[string]*HandoffPart),
 		EgressHoldNoticed:         make(map[string]string),
+		ForgeHoldNoticed:          make(map[string]string),
 		supervisor:                newSupervisorState(),
 	}
 }
@@ -1938,7 +1951,7 @@ type SnapshotSlotHold struct {
 // SnapshotHold is a read-only view of the hold the latest dispatch pass gave
 // one candidate. Blockers is nil unless Reason is [SkipBlockedBy], Slot is nil
 // unless it is [SkipAgentSlotsFull], Worker is nil unless it is
-// [SkipNoWorker], Egress is nil unless it is [SkipEgressInvalid], ResetsAt is zero unless it is a spend reason or
+// [SkipNoWorker], Egress is nil unless it is [SkipEgressInvalid], Forge is nil unless it is [SkipForgeRefused], ResetsAt is zero unless it is a spend reason or
 // [SkipUsageLimit], AgentKind, ModelOnly, and Model are set for
 // [SkipUsageLimit] only, and Holder and Note for [SkipStandingHold] only.
 type SnapshotHold struct {
@@ -1948,6 +1961,7 @@ type SnapshotHold struct {
 	Slot      *SnapshotSlotHold `json:"slot"`
 	Worker    *WorkerHold       `json:"worker,omitempty"`
 	Egress    *EgressHold       `json:"egress,omitempty"`
+	Forge     *ForgeHold        `json:"forge,omitempty"`
 	ResetsAt  time.Time         `json:"resets_at"`
 	AgentKind string            `json:"agent_kind,omitempty"`
 	ModelOnly bool              `json:"model_only,omitempty"`
@@ -2135,6 +2149,10 @@ type SnapshotRetryEntry struct {
 	// EgressHold is why the retry's remote job was not offered when it
 	// was last re-armed for that; nil otherwise.
 	EgressHold *EgressHold `json:"egress_hold,omitempty"`
+
+	// ForgeHold is why the retry's remote job was not offered when it
+	// was last re-armed for that; nil otherwise.
+	ForgeHold *ForgeHold `json:"forge_hold,omitempty"`
 }
 
 // SnapshotParkedEntry is a read-only view of one parked issue, produced by
@@ -2681,6 +2699,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			WorkerWait:        cloneWorkerHold(entry.WorkerWait),
 			WorkerWaitSince:   entry.WorkerWaitSince,
 			EgressHold:        cloneEgressHold(entry.EgressHold),
+			ForgeHold:         cloneForgeHold(entry.ForgeHold),
 		})
 	}
 

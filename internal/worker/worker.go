@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/egress"
+	"github.com/sortie-ai/sortie/internal/forge"
 )
 
 // Protocol is the worker API protocol version this package serves.
@@ -170,6 +171,30 @@ type Run struct {
 	// Egress is what the job's machine may reach. A worker runs no job
 	// whose offer lacks it.
 	Egress Egress `json:"egress"`
+	// Forge is the job's GitHub access. It holds no token.
+	Forge Forge `json:"forge"`
+}
+
+// Forge is the GitHub access of a job: what its repository's
+// declaration grants, read at the tip of the repository's base branch
+// and within the workflow's forge ceiling, grouped by owner, since a
+// token reaches one owner only. It names repositories and permissions,
+// never a token.
+type Forge struct {
+	Source ForgeSource        `json:"source"`
+	Owners []forge.OwnerGrant `json:"owners"`
+}
+
+// ForgeSource names where the declaration was read: the repository's
+// name, its base branch, the commit read and the file. Declared is false
+// when the commit holds no file, and the job has the default access, a
+// read of its own repository. Empty for a job with no repository.
+type ForgeSource struct {
+	Repository string `json:"repository"`
+	Branch     string `json:"branch"`
+	Commit     string `json:"commit"`
+	File       string `json:"file"`
+	Declared   bool   `json:"declared"`
 }
 
 // Egress is the egress policy of a job: the policy of its agent harness,

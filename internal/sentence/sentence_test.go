@@ -253,6 +253,13 @@ func TestFor(t *testing.T) {
 				Entry: "hosts[0].host", Error: `"ghcr.io:443" has a port: write the DNS name alone`}}),
 			short: `Egress policy invalid: homelab at 4b825dc, .sortie/egress.yaml hosts[0].host: "ghcr.io:443" has a port: write the DNS name alone`,
 		},
+		{
+			name: "held by a GitHub access declaration above the ceiling",
+			entry: holding(orchestrator.SnapshotHold{Reason: orchestrator.SkipForgeRefused, Forge: &orchestrator.ForgeHold{
+				Repository: "homelab", Branch: "master", Commit: "4b825dc", File: ".sortie/forge.yaml",
+				Entry: "access[1].repository", Error: "ortusnova/fleet is outside the ceiling: environment.remote.forge_ceiling.homelab does not list it"}}),
+			short: "GitHub access refused: homelab at 4b825dc, .sortie/forge.yaml access[1].repository: ortusnova/fleet is outside the ceiling: environment.remote.forge_ceiling.homelab does not list it",
+		},
 		{name: "held by the daily spend ceiling", entry: spend(orchestrator.SkipDailySpendCeiling, now.Add(5*time.Minute)), short: "Daily spend ceiling reached, resets in 5m"},
 		{name: "held by the weekly spend ceiling", entry: spend(orchestrator.SkipWeeklySpendCeiling, now.Add(5*time.Minute)), short: "Weekly spend ceiling reached, resets in 5m"},
 		{name: "held by the monthly spend ceiling", entry: spend(orchestrator.SkipMonthlySpendCeiling, now.Add(5*time.Minute)), short: "Monthly spend ceiling reached, resets in 5m"},

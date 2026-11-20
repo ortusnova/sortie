@@ -142,3 +142,39 @@ func TestManager_RemoteRefusesAMalformedHarnessList(t *testing.T) {
 		t.Errorf("after the refused reload: interval %d, harness hosts %v; want the previous workflow", cfg.Polling.IntervalMS, hosts)
 	}
 }
+
+// forge-access: The platform caps each repository's access. A workflow
+// whose environment.remote.forge_ceiling grants a level above write is
+// refused at start and at reload, naming that entry, and a reload keeps
+// the previous workflow's ceiling.
+func TestManager_RemoteRefusesAMalformedForgeCeiling(t *testing.T) {
+	t.Parallel()
+
+	const entry = "environment.remote.forge_ceiling.homelab[1].permissions.contents"
+	valid := "    forge_ceiling:\n      homelab:\n        - { repository: ortusnova/fleet-vm, permissions: { contents: write } }\n"
+	malformed := valid + "        - { repository: ortusnova/homelab, permissions: { contents: admin } }\n"
+
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	mustWriteFile(t, path, remoteWorkflow(5000, malformed, ""))
+	if _, err := NewManager(path, testLogger()); err == nil || !strings.Contains(err.Error(), entry) {
+		t.Fatalf("NewManager() error = %v, want one naming %s", err, entry)
+	}
+
+	mustWriteFile(t, path, remoteWorkflow(5000, valid, ""))
+	mgr, err := NewManager(path, testLogger())
+	if err != nil {
+		t.Fatalf("NewManager(valid ceiling) error = %v", err)
+	}
+	if c := mgr.Config().Environment.Remote.ForgeCeiling; len(c["homelab"]) != 1 || c["homelab"][0].Repository != "ortusnova/fleet-vm" {
+		t.Fatalf("ceiling = %+v, want homelab to list ortusnova/fleet-vm", mgr.Config().Environment.Remote.ForgeCeiling)
+	}
+
+	mustWriteFile(t, path, remoteWorkflow(9000, malformed, ""))
+	if err := mgr.Reload(); err == nil || !strings.Contains(err.Error(), entry) {
+		t.Fatalf("Reload() error = %v, want one naming %s", err, entry)
+	}
+	cfg := mgr.Config()
+	if c := cfg.Environment.Remote.ForgeCeiling; cfg.Polling.IntervalMS != 5000 || len(c["homelab"]) != 1 {
+		t.Errorf("after the refused reload: interval %d, ceiling %+v; want the previous workflow", cfg.Polling.IntervalMS, cfg.Environment.Remote.ForgeCeiling)
+	}
+}

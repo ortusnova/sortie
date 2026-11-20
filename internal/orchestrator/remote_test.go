@@ -13,6 +13,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/dataplane"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/egress"
+	"github.com/sortie-ai/sortie/internal/forge"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/waittest"
@@ -140,6 +141,7 @@ func TestARunUnderTheRemoteKind(t *testing.T) {
 		Credentials: []worker.RunCredential{{Name: "anthropic", Env: "ANTHROPIC_API_KEY",
 			Placeholder: "sortie-credential-anthropic", Hosts: []string{"api.anthropic.com"}}},
 		Egress: worker.Egress{Harness: egress.Empty(), Repository: egress.Empty(), CredentialHosts: []string{"api.anthropic.com"}},
+		Forge:  worker.Forge{Owners: []forge.OwnerGrant{}},
 	}
 	if !ok || !reflect.DeepEqual(offer.Run, wantRun) {
 		t.Fatalf("run %+v\nwant %+v", offer.Run, wantRun)

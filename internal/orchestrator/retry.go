@@ -177,6 +177,12 @@ type HandleRetryTimerParams struct {
 	// and takes no slot. Nil holds none.
 	EgressHold func(domain.Issue) *EgressHold
 
+	// ForgeHold returns the hold the GitHub access declaration of the
+	// re-fetched issue's repository gives its remote job, and nil when
+	// the declaration is valid and within the ceiling, or not read. A
+	// retry it holds keeps its attempt and takes no slot. Nil holds none.
+	ForgeHold func(domain.Issue) *ForgeHold
+
 	// WorkflowFile is the base filename of the active WORKFLOW.md file.
 	WorkflowFile string
 
@@ -915,6 +921,25 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 				entry.EgressHold = hold
 			}
 			log.Debug("the retry's remote job is held by its repository's egress policy, rechecking",
+				slog.Int("attempt", popped.Attempt),
+				slog.String("reason", hold.Text()),
+				slog.Int64("delay_ms", int64(params.PollIntervalMS)),
+			)
+			return
+		}
+	}
+
+	if params.ForgeHold != nil {
+		if hold := params.ForgeHold(issue); hold != nil {
+			if params.HostPool != nil && host != "" {
+				params.HostPool.ReleaseHost(issueID)
+			}
+			rearmHeld(time.Now().Add(time.Duration(params.PollIntervalMS) * time.Millisecond))
+			if entry, ok := state.RetryAttempts[issueID]; ok {
+				entry.noStateObserved = popped.noStateObserved
+				entry.ForgeHold = hold
+			}
+			log.Debug("the retry's remote job is held by its repository's GitHub access declaration, rechecking",
 				slog.Int("attempt", popped.Attempt),
 				slog.String("reason", hold.Text()),
 				slog.Int64("delay_ms", int64(params.PollIntervalMS)),

@@ -290,6 +290,7 @@ const (
 	SkipSSHHostsFull        SkipReason = "ssh_hosts_full"
 	SkipNoWorker            SkipReason = "no_worker"
 	SkipEgressInvalid       SkipReason = "egress_invalid"
+	SkipForgeRefused        SkipReason = "forge_refused"
 	SkipStageHopUnconfirmed SkipReason = "stage_hop_unconfirmed"
 	SkipUsageLimit          SkipReason = "usage_limit"
 	SkipParkCommentsUnread  SkipReason = "park_comments_unread"
@@ -304,6 +305,7 @@ func HoldReasons() []SkipReason {
 		SkipAgentSlotsFull,
 		SkipSSHHostsFull,
 		SkipEgressInvalid,
+		SkipForgeRefused,
 		SkipNoWorker,
 		SkipBlockersNotRead,
 		SkipBlockersUnresolved,
