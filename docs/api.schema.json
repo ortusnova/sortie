@@ -1062,6 +1062,40 @@
       ],
       "type": "object"
     },
+    "ForgeHoldResponse": {
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "commit",
+        "file",
+        "error",
+        "text"
+      ],
+      "type": "object"
+    },
     "Free": {
       "properties": {
         "cpu": {
@@ -1591,6 +1625,9 @@
         "egress": {
           "$ref": "#/$defs/EgressHoldResponse"
         },
+        "forge": {
+          "$ref": "#/$defs/ForgeHoldResponse"
+        },
         "held_since": {
           "format": "date-time",
           "type": "string"
@@ -1606,6 +1643,7 @@
             "agent_slots_full",
             "ssh_hosts_full",
             "egress_invalid",
+            "forge_refused",
             "no_worker",
             "blockers_not_read",
             "blockers_unresolved",
@@ -3699,6 +3737,9 @@
         },
         "error": {
           "type": "string"
+        },
+        "forge_hold": {
+          "$ref": "#/$defs/ForgeHoldResponse"
         },
         "issue_id": {
           "type": "string"

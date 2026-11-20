@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ortusnova/sortie/blob/main/docs/forge.schema.json",
+  "title": "Sortie forge access declaration",
+  "description": "The GitHub access of a repository's jobs, in .sortie/forge.yaml at the repository root: each repository a job may reach and the GitHub App repository permissions it may hold there. Sortie reads it at the tip of the repository's base branch and caps it by the workflow's environment.remote.forge_ceiling. Sortie also refuses a repository listed twice, compared without case, which this schema cannot state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "access"
+  ],
+  "properties": {
+    "version": {
+      "description": "The format version.",
+      "const": 1
+    },
+    "access": {
+      "description": "The repositories the jobs reach on GitHub. An empty list grants nothing, not even the repository itself.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/access"
+      }
+    }
+  },
+  "$defs": {
+    "reason": {
+      "description": "Why the jobs reach the repository. Must say something.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "level": {
+      "description": "read, or write, which includes read.",
+      "type": "string",
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "writeOnly": {
+      "description": "write: GitHub grants this permission at write only.",
+      "type": "string",
+      "enum": [
+        "write"
+      ]
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "permissions",
+        "reason"
+      ],
+      "properties": {
+        "repository": {
+          "description": "owner/name on GitHub.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9._-]{1,100}$",
+          "not": {
+            "pattern": "(/\\.{1,2}|\\.git)$"
+          }
+        },
+        "permissions": {
+          "description": "GitHub App repository permissions, each mapped to its level. At least one.",
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "actions": {
+              "$ref": "#/$defs/level"
+            },
+            "administration": {
+              "$ref": "#/$defs/level"
+            },
+            "artifact_metadata": {
+              "$ref": "#/$defs/level"
+            },
+            "attestations": {
+              "$ref": "#/$defs/level"
+            },
+            "checks": {
+              "$ref": "#/$defs/level"
+            },
+            "code_quality": {
+              "$ref": "#/$defs/level"
+            },
+            "codespaces": {
+              "$ref": "#/$defs/level"
+            },
+            "contents": {
+              "$ref": "#/$defs/level"
+            },
+            "dependabot_secrets": {
+              "$ref": "#/$defs/level"
+            },
+            "deployments": {
+              "$ref": "#/$defs/level"
+            },
+            "discussions": {
+              "$ref": "#/$defs/level"
+            },
+            "environments": {
+              "$ref": "#/$defs/level"
+            },
+            "issues": {
+              "$ref": "#/$defs/level"
+            },
+            "merge_queues": {
+              "$ref": "#/$defs/level"
+            },
+            "metadata": {
+              "$ref": "#/$defs/level"
+            },
+            "packages": {
+              "$ref": "#/$defs/level"
+            },
+            "pages": {
+              "$ref": "#/$defs/level"
+            },
+            "pull_requests": {
+              "$ref": "#/$defs/level"
+            },
+            "repository_custom_properties": {
+              "$ref": "#/$defs/level"
+            },
+            "repository_hooks": {
+              "$ref": "#/$defs/level"
+            },
+            "repository_projects": {
+              "$ref": "#/$defs/level"
+            },
+            "secret_scanning_alerts": {
+              "$ref": "#/$defs/level"
+            },
+            "secrets": {
+              "$ref": "#/$defs/level"
+            },
+            "security_events": {
+              "$ref": "#/$defs/level"
+            },
+            "single_file": {
+              "$ref": "#/$defs/level"
+            },
+            "statuses": {
+              "$ref": "#/$defs/level"
+            },
+            "vulnerability_alerts": {
+              "$ref": "#/$defs/level"
+            },
+            "workflows": {
+              "$ref": "#/$defs/writeOnly"
+            }
+          }
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        }
+      }
+    }
+  }
+}

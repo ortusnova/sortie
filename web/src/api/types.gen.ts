@@ -245,6 +245,16 @@ export interface ErrorResponse {
   error: ErrorDetail;
 }
 
+export interface ForgeHoldResponse {
+  repository: string;
+  branch: string;
+  commit: string;
+  file: string;
+  entry?: string;
+  error: string;
+  text: string;
+}
+
 export interface Free {
   cpu: number;
   mem_gib: number;
@@ -363,12 +373,13 @@ export interface HoldBlockerResponse {
 }
 
 export interface HoldResponse {
-  reason: "agent_slots_full" | "ssh_hosts_full" | "egress_invalid" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
+  reason: "agent_slots_full" | "ssh_hosts_full" | "egress_invalid" | "forge_refused" | "no_worker" | "blockers_not_read" | "blockers_unresolved" | "blockers_incomplete" | "blocked_by" | "daily_spend_ceiling" | "weekly_spend_ceiling" | "monthly_spend_ceiling" | "stage_hop_unconfirmed" | "usage_limit" | "park_comments_unread" | "standing_hold" | "standing_hold_expired";
   held_since: string;
   blockers: HoldBlockerResponse[] | null;
   slot: HoldSlotResponse | null;
   worker?: WorkerWaitResponse;
   egress?: EgressHoldResponse;
+  forge?: ForgeHoldResponse;
   resets_at: string | null;
   agent_kind?: string;
   model_only?: boolean;
@@ -796,6 +807,7 @@ export interface RetryEntryResponse {
   worker_wait?: WorkerWaitResponse;
   worker_wait_since?: string;
   egress_hold?: EgressHoldResponse;
+  forge_hold?: ForgeHoldResponse;
   status_text: string;
   status_text_full: string;
 }

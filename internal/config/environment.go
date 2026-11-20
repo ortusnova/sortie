@@ -135,6 +135,16 @@ type Repository struct {
 	Requires *RemoteRequirements
 }
 
+// Label names the repository in an offer, a hold and the forge ceiling:
+// its name, else its project. It is never the URL, which may hold a
+// credential.
+func (r Repository) Label() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.Project
+}
+
 // buildEnvironmentConfig parses the top-level environment block. The
 // worker extension section is consulted for the rule that the remote
 // kind excludes SSH workers. Returns the first [*ConfigError] found.

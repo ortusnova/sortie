@@ -23,7 +23,14 @@ import (
 // fixture's origin, branching from main when branch is new, and returns
 // the commit.
 func (f *gitFixture) commitOn(branch, content string) string {
-	path := egress.File
+	f.t.Helper()
+	return f.commitFileOn(branch, egress.File, content)
+}
+
+// commitFileOn commits content as the file at path on branch of the
+// fixture's origin, branching from main when branch is new, and returns
+// the commit.
+func (f *gitFixture) commitFileOn(branch, path, content string) string {
 	f.t.Helper()
 	work := filepath.Join(f.t.TempDir(), "work")
 	f.git(filepath.Dir(work), "clone", "--quiet", f.origin, work)

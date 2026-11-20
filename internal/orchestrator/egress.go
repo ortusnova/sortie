@@ -73,7 +73,7 @@ type EgressReader func(ctx context.Context, repo config.Repository) (egressRead,
 // project. It is never the URL, which may hold a credential and never
 // reaches a worker.
 func repositoryLabel(repo config.Repository) string {
-	return coalesce(repo.Name, repo.Project)
+	return repo.Label()
 }
 
 // egressFromFile checks the egress file f read from repo. A file too

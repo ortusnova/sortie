@@ -1962,6 +1962,15 @@ environment:
       hosts:
         - host: models.opencode.ai
           reason: the agent harness reaches its models
+    forge_ceiling:                           # optional, the most each repository's jobs get on GitHub
+      homelab:
+        - repository: org/homelab
+          permissions: {contents: write, pull_requests: write}
+        - repository: org/fleet-vm
+          permissions: {contents: write}
+      app:
+        - repository: org/app
+          permissions: {contents: read}
     flows:                                   # required, one URL per data-plane flow
       stdio:   { url: wss://edge.example/stdio }
       egress:  { url: https://egress.example:3128 }
@@ -2026,6 +2035,7 @@ A running machine uses a run slot. A stopped machine uses only disk, which the w
 | `requires.disk_gib` | number      | No       | `0`      | Free disk a job needs, in GiB. Must not be negative. |
 | `credentials`  | list of maps     | No       | `[]`     | Credentials the agent needs, each `{name, env, hosts, header}`: `name` matches `[A-Za-z0-9_-]+` and is unique in the list, `env` is an environment variable name, `hosts` lists at least one exact host name or `*.domain` pattern, with no scheme, port or path, and `header`, optional, names the request header the proxy sets to the value. The machine sets `env` to the placeholder `sortie-credential-<name>`, which the egress proxy replaces on requests to `hosts`. Sortie never reads the value. |
 | `egress`       | map              | No       | the empty policy | The hosts every job needs for its agent harness, whatever its repository, in the format of a repository's `.sortie/egress.yaml` (see [Job egress policy](#job-egress-policy)): `version: 1`, a `hosts` list, and optional `udp` and `private` lists. Sortie checks it with the same rules at start and at reload and refuses a workflow whose list is invalid, naming the entry, such as `config: environment.remote.egress.hosts[0].reason: is required: say why the jobs reach models.opencode.ai`; a reload keeps the previous workflow. Every offer carries it as `run.egress.harness`. |
+| `forge_ceiling` | map             | No       | _(none)_ | The most each repository's jobs may be granted on GitHub (see [Job GitHub access](#job-github-access)): by the `name` of a repository in `repositories` (or the `project` of a `repository` block with no name), a list of `{repository, permissions}`, `repository` an `owner/name` on GitHub and `permissions` the highest level, `read` or `write`, of each GitHub App repository permission its jobs may hold there. A key that names no repository, a malformed entry and a repository listed twice refuse the workflow at start and at reload, naming the entry, such as `config: environment.remote.forge_ceiling.homelab[0].permissions.contents: must be read or write, got admin`; a reload keeps the previous workflow. A repository it does not name may declare no access in its `.sortie/forge.yaml`. |
 | `flows.<flow>.url` | string       | Yes      | _(none)_ | The URL a worker reaches each data-plane flow at: `stdio`, `egress`, `mcp`, `bundles` and `usage`. All five are required, and no other flow is accepted. Each URL is absolute, uses `http`, `https`, `ws` or `wss`, and holds no user information. |
 | `lease_ttl_ms` | integer          | No       | `60000`  | How long a lease lasts after its grant or last heartbeat. Must be positive. |
 | `repositories` | list of maps     | No       | _(none)_ | The repositories Sortie may open, as described under [Several repositories](#several-repositories), each entry with the fields below. Without it or `repository`, Sortie serves no seed and pushes nothing. |
@@ -2073,7 +2083,7 @@ An offer is `{"job", "lease", "run", "flows"}`:
 - `run`: the run descriptor (see below).
 - `flows`: `{"stdio", "egress", "mcp", "bundles", "usage"}`, each `{"url", "token"}`. The URL comes from `environment.remote.flows`, and the token is that flow's job token.
 
-The run descriptor is `{"backend", "image", "command", "args", "env", "stall_timeout_ms", "seed_path", "credentials", "egress"}`:
+The run descriptor is `{"backend", "image", "command", "args", "env", "stall_timeout_ms", "seed_path", "credentials", "egress", "forge"}`:
 
 - `command` and `args` are the agent command of the run's agent kind: `agent.command` when it applies to that kind, otherwise the kind's default command. A list is passed as written. A string is split on whitespace. Sortie adds no adapter flags.
 - `env` holds the agent process variables `SORTIE_ISSUE_ID`, `SORTIE_ISSUE_IDENTIFIER`, `SORTIE_DISPATCH_ID`, `SORTIE_ATTEMPT`, `SORTIE_RULE`, `SORTIE_CHAIN_ID`, `SORTIE_SESSION_PURPOSE` (`work`), and `SORTIE_WORKSPACE` (`/workspace`). It also holds each credential's placeholder. It holds no `SORTIE_API_URL` and no `SORTIE_SESSION_TOKEN`.
@@ -2081,6 +2091,7 @@ The run descriptor is `{"backend", "image", "command", "args", "env", "stall_tim
 - `seed_path` is where the worker fetches the workspace seed on the `bundles` flow: `/jobs/{job}/attempts/{attempt}/seed`.
 - `credentials` lists each credential's `name`, `env`, `placeholder`, `hosts` and `header`, never its value.
 - `egress` is what the job's machine may reach, `{"source", "harness", "repository", "credential_hosts"}`; see [Job egress policy](#job-egress-policy). A worker runs no job whose offer lacks it.
+- `forge` is the job's GitHub access, `{"source", "owners"}`, repositories and permissions and never a token; see [Job GitHub access](#job-github-access).
 
 The run descriptor holds no model key, forge or tracker token, deploy key, or session token. A flow's token is the only secret an offer carries.
 
@@ -2142,6 +2153,57 @@ Sortie checks leases every second. An expired lease ends its attempt as failed. 
 Each flow token is a job token. Sortie mints one per flow when it grants the lease. Each token is bound to that job, that attempt and that flow, holds 256 random bits, and Sortie keeps only its SHA-256 digest. The tokens become void as soon as the attempt ends, by report, lease expiry or cancel, and a new attempt gets new ones. A restart ends no attempt a worker holds: the restarted Sortie admits that attempt's tokens again; see [A restart keeps the remote runs](#a-restart-keeps-the-remote-runs). No token appears in the log or in `GET /api/v1/state`. That state lists each worker with its `declaration`, `last_check_in`, the `available` capacity Sortie counts, and `gone`, `true` once it has not checked in for 3 heartbeat intervals. It lists each live lease as `{"job", "attempt", "worker", "expires"}`, and each queued job with `queued_at` and why it waits.
 
 A check-in's `used` and `unmanaged` and a heartbeat's step are for the operator's view and play no part in matching. The state serves them as the worker sent them: `used` and `unmanaged` in the worker's `declaration`, omitted when the check-in has none, and the step on the lease as `step`, `phase` and `step_at` and on the running row. A malformed or negative `used`, or a malformed `unmanaged`, is dropped, never refused, and an `unmanaged` entry without a name is skipped; at most 64 entries are kept. A heartbeat body that is absent, empty, malformed or names neither `step` nor `phase` keeps the step the lease holds. Control characters in a step, a phase, a name or a state become spaces, and each is cut to 200 characters. A new attempt starts with no step. A proxy asks what a token grants with `POST /api/v1/tokens/introspect` and body `{"token": "..."}`, using Sortie's control token. The answer is `200 {"job", "attempt", "flow"}` for a live token and `404` for any other. Without the control token, the answer is `401`, so a worker cannot ask.
+
+##### Job GitHub access
+
+A repository declares what its jobs may do on GitHub in `.sortie/forge.yaml` at its root: each repository a job may reach and the GitHub App repository permissions it may hold there, each with a reason. The format is published as a JSON Schema in [`docs/forge.schema.json`](forge.schema.json):
+
+```yaml
+version: 1
+access:
+  - repository: ortusnova/fleet-vm
+    permissions: {contents: write}
+    reason: "fleet mirror: push this seed's branch seed/<worktree>"
+  - repository: ortusnova/homelab
+    permissions: {contents: read, pull_requests: write}
+    reason: "read the base branch and comment on the story's pull request"
+```
+
+| Key       | Required | Each entry | Rules |
+| --------- | -------- | ---------- | ----- |
+| `version` | Yes      |            | `1`. |
+| `access`  | Yes      | `{repository, permissions, reason}` | The repositories the jobs reach on GitHub. `repository` is `owner/name`, with no scheme, host or `.git`. `permissions` maps at least one GitHub App repository permission (`contents`, `pull_requests`, `issues`, `metadata`, `workflows`, `checks`, `statuses` and the others of GitHub's App permissions for a repository; the schema lists every one) to `read` or `write`, which includes `read`; `workflows` takes only `write`. `access: []` grants nothing, not even the repository itself. |
+
+Every `reason` says why the jobs reach the repository and must not be empty. An unknown key at any depth (`branches`), an unknown permission (`members`), a level other than `read` or `write` (`admin`), a repository listed twice, compared without case, and a file over 64 KiB make the file invalid. Sortie names the entry and the reason, such as `access[0].repository: "fleet-vm" has no owner: write owner/name` or `access[0].permissions.workflows: must be write, got read`. No entry names a branch: no GitHub token can be limited to one, and the rules of each repository's default branch bound what a token may do there.
+
+**Sortie reads the declaration from the base branch.** It reads `.sortie/forge.yaml` as it reads `.sortie/egress.yaml` (see [Job egress policy](#job-egress-policy)): at each poll at the tip of the repository's `base` branch, from the same fetch and the same commit, and again at the `base` commit the job's seed carries, which is the read the offer carries. It never reads the file from the issue branch or the job's workspace, so an agent that widens the file on its issue branch widens no offer, its own job's included. A repository with no file gets `{contents: read, metadata: read}` on its own `owner/name`, the `project` of a `github` repository or the path of its `github.com` URL, and nothing else; a repository with neither gets no access.
+
+**The workflow caps it.** `environment.remote.forge_ceiling` lists, for each repository, the repositories its jobs may be granted and the highest level of each permission there. Each entry of the repository's file must name a repository its ceiling lists, with no permission the ceiling leaves out and no level above the ceiling's: `write` is above `read`. The access of a repository with no file is never checked against it. The ceiling is reviewed with the workflow, so a repository cannot raise its own.
+
+**The offer carries the access, grouped by owner.** A GitHub token reaches one owner, a user or an organization, so the run descriptor's `forge` groups the grant by owner:
+
+- `source`: `{"repository", "branch", "commit", "file", "declared"}`, as `egress.source`, the file `.sortie/forge.yaml`, and `declared`, `false` when the commit holds no file and the job has the default access.
+- `owners`: per owner, sorted, `{"owner", "repositories", "permissions"}`: `repositories` lists each granted `{"repository", "permissions"}`, sorted, and `permissions` is the highest level of each permission over those repositories, what the owner's one token carries. Empty, never `null`, when the job is granted nothing.
+
+For a homelab job with the file above, on a workflow whose ceiling allows it:
+
+```json
+{
+  "source": {"repository": "homelab", "branch": "master", "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "file": ".sortie/forge.yaml", "declared": true},
+  "owners": [
+    {"owner": "ortusnova",
+     "repositories": [
+       {"repository": "ortusnova/fleet-vm", "permissions": {"contents": "write"}},
+       {"repository": "ortusnova/homelab", "permissions": {"contents": "read", "pull_requests": "write"}}
+     ],
+     "permissions": {"contents": "write", "pull_requests": "write"}}
+  ]
+}
+```
+
+`forge` holds no token: it names what the job may reach, never a credential for it.
+
+**An invalid or refused declaration holds the job.** When the file at the base branch's tip is invalid, or an entry is above the ceiling, Sortie offers none of the repository's jobs. Each of its issues is held with the reason `forge_refused`, which names the repository, the commit, the file, the entry and the error, in `GET /api/v1/state` as the hold's `forge` and `reason_text` (`GitHub access refused: homelab at 4b825dc642cb6eb9a060e54bf8d69288fbee4904, .sortie/forge.yaml access[1].repository: ortusnova/fleet is outside the ceiling: environment.remote.forge_ceiling.homelab does not list it`), and in one comment on the issue, posted when the hold begins. The hold starts no session, takes no agent slot and uses no attempt, and a retry it holds is re-armed at its attempt every poll interval with the hold as its `forge_hold`. An invalid `.sortie/egress.yaml` at the same commit holds the job as `egress_invalid` first. Sortie reads the file again at each poll and offers the held jobs at the first poll after it fetches a base branch whose file is valid and within the ceiling. A fetch that fails holds nothing and releases nothing. A file that turns invalid or above the ceiling between the poll and the seed fails that attempt, naming the hold, and is never offered.
 
 ##### The remote run
 
@@ -3492,6 +3554,7 @@ Each row of `retrying`, and the `retry` object of the per-issue response, carrie
 | `worker_wait`         | object or absent  | Under `environment.kind: remote`, present when the retry was last put back because no checked-in worker can take its job, `{"capabilities", "waiting"}` as a `no_worker` hold's `worker`. Such a retry keeps its attempt and takes no agent slot; it is checked again every poll interval. |
 | `worker_wait_since`   | string or absent  | When the retry began to wait for a worker, in UTC; present with `worker_wait`. |
 | `egress_hold`         | object or absent  | Under `environment.kind: remote`, present when the retry was last put back because its repository's egress policy is invalid, as an `egress_invalid` hold's `egress`. Such a retry keeps its attempt and takes no agent slot; it is checked again every poll interval. |
+| `forge_hold`          | object or absent  | Under `environment.kind: remote`, present when the retry was last put back because its repository's GitHub access declaration is invalid or above the forge ceiling, as a `forge_refused` hold's `forge`. Such a retry keeps its attempt and takes no agent slot; it is checked again every poll interval. |
 | `paused`              | boolean           | Always present. `true` when the retry was last put back because its issue's state does not permit dispatching it, which is when `error` is `reaction retry paused by an open blocking issue` or `reaction retry paused by issue state`. |
 
 When a retry comes due and cannot start, Sortie puts it back with the trigger `timer` and sets `error` to the reason. The error of the run before it stays in the logs and in that run's run history, and the per-issue `last_error` carries the reason too. A retry serves `error`, and `last_error`, as the same plain sentence a run row's `error` carries for a withheld handoff, an agent error or a stall, not the stored text.
@@ -3701,6 +3764,7 @@ The `hold` object of a held row and of a between-stages row has these members.
 | `slot`         | object or `null` | Non-null exactly for `agent_slots_full`. `scope` is `global` or `state`; `state` is the issue's tracker state as the pass read it, present exactly for `state` and masked; `used` is the sessions running against the limit; `limit` is the limit. |
 | `worker`       | object or absent  | Present exactly for `no_worker`: `capabilities`, what the issue's remote job requires of a worker, its backend included, and `waiting`, per checked-in worker what it lacks, as `workers.queue[].waiting` words it (`["no worker has checked in"]` before any check-in). |
 | `egress`       | object or absent  | Present exactly for `egress_invalid`: `repository`, `branch` and `commit`, where Sortie read the policy, `file` (`.sortie/egress.yaml`), `entry`, the invalid key or entry such as `hosts[0].host` (omitted when the file as a whole is invalid), `error`, why, and `text`, all of it in one line starting `egress policy invalid:`. |
+| `forge`        | object or absent  | Present exactly for `forge_refused`: `repository`, `branch` and `commit`, where Sortie read the declaration, `file` (`.sortie/forge.yaml`), `entry`, the invalid or refused key or entry such as `access[1].repository` (omitted when the file as a whole is invalid), `error`, why, and `text`, all of it in one line starting `GitHub access refused:`. |
 | `resets_at`    | string or `null`  | Non-null exactly for the spend reasons and `usage_limit`: when the holding window or usage limit resets, as an RFC 3339 timestamp in UTC. |
 | `agent_kind`   | string or absent  | Present exactly for `usage_limit`: the agent kind whose new sessions the hold stops. |
 | `model_only`   | boolean or absent | Present and `true` for a `usage_limit` hold that stops the agent kind on one configured model alone. Absent when the hold stops every model of the kind. |
@@ -3718,6 +3782,7 @@ The `hold` object of a held row and of a between-stages row has these members.
 | `ssh_hosts_full`                                              | Every SSH host runs as many sessions as its per-host limit allows. |
 | `no_worker`                                                   | Under `environment.kind: remote`, no checked-in worker can take the issue's job now, after the jobs already queued take what they fit: none declares what the job requires, or none has the run slot, CPUs, memory or disk free. The issue takes no agent slot and does not count as running; a later pass dispatches it once a worker can take the job. |
 | `egress_invalid`                                              | Under `environment.kind: remote`, the `.sortie/egress.yaml` at the tip of the issue's repository's base branch is invalid ([Job egress policy](#job-egress-policy)). The issue takes no agent slot, starts no session and uses no attempt; a later pass dispatches it once the base branch holds a valid file. |
+| `forge_refused`                                               | Under `environment.kind: remote`, the `.sortie/forge.yaml` at the tip of the issue's repository's base branch is invalid or above `environment.remote.forge_ceiling` ([Job GitHub access](#job-github-access)). The issue takes no agent slot, starts no session, uses no attempt and is granted no token; a later pass dispatches it once the base branch holds a valid file within the ceiling. |
 | `daily_spend_ceiling`, `weekly_spend_ceiling`, `monthly_spend_ceiling` | A spend window holds dispatch. |
 | `stage_hop_unconfirmed`                                       | The read that should confirm the issue's stage move failed or did not show the hop's label. |
 | `usage_limit`                                                 | The agent provider refused a session because the account's usage limit is reached, and Sortie starts no session of the issue's agent kind (on that model alone, for a hold with `model_only`) until it resets. |
@@ -7208,6 +7273,7 @@ These errors are raised during typed config construction from the parsed front m
 | `config: environment.remote.credentials[<i>].file: is not accepted under the remote kind, where Sortie reads no credential value: the worker's egress proxy holds it` | `file` or `command` under `remote`. | Remove the key; give the value to the worker's egress proxy. |
 | `config: environment.remote.<key>: unknown key: the remote kind does not support it; valid: <keys>` | `environment.remote`, one of its repositories, credentials, flows or `requires` blocks sets a key the remote kind does not know, such as `pass_env` or `allow_hosts`. The error names the first such key in full. | Remove the key. |
 | `config: environment.remote.egress.<entry>: <reason>` | `environment.remote.egress` breaks a rule of [Job egress policy](#job-egress-policy), such as `config: environment.remote.egress.hosts[0].reason: is required: say why the jobs reach models.opencode.ai`. Startup and reload; a reload keeps the previous configuration. | Fix the entry the error names. |
+| `config: environment.remote.forge_ceiling.<entry>: <reason>` | `environment.remote.forge_ceiling` names a repository the workflow does not list, or an entry breaks a rule of [Job GitHub access](#job-github-access), such as `config: environment.remote.forge_ceiling.homelab[0].repository: "fleet-vm" has no owner: write owner/name`. Startup and reload; a reload keeps the previous configuration. | Fix the entry the error names. |
 | `config: environment.remote.image: is required: <name> (<path>) sets no image of its own` | No `environment.remote.image`, and a repository sets no `image`. | Set `image` on the block or on that repository. |
 | `config: hooks.<hook>: is not run under environment.kind remote, where only the agent runs in the job's workspace; remove the hook` | A workspace hook under `remote`. | Remove the hook, or bake its work into the repository's image. |
 | `config: environment.remote.repository: expected mapping, got <type>` | `repository` is not a map. | Write the block as keys. |

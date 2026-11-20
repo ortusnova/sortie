@@ -440,6 +440,11 @@ var table = map[string]parts{
 		long:   "The egress policy of {{.Egress.Repository}}, {{.Egress.File}} at commit {{.Egress.Commit}} of its {{.Egress.Branch}} branch, is invalid{{if .Egress.Entry}} at {{.Egress.Entry}}{{end}}: {{.Egress.Error}}. Sortie offers none of the repository's jobs, starts no session and uses no attempt, and reads the file again at each poll.",
 		clears: "Released at the next poll once a valid {{.Egress.File}} lands on the {{.Egress.Branch}} branch.",
 	},
+	"hold_forge_refused": {
+		short:  "GitHub access refused: {{.Forge.Repository}} at {{.Forge.Commit}}, {{.Forge.File}}{{if .Forge.Entry}} {{.Forge.Entry}}{{end}}: {{.Forge.Error}}",
+		long:   "The GitHub access declaration of {{.Forge.Repository}}, {{.Forge.File}} at commit {{.Forge.Commit}} of its {{.Forge.Branch}} branch, is refused{{if .Forge.Entry}} at {{.Forge.Entry}}{{end}}: {{.Forge.Error}}. Sortie offers none of the repository's jobs, starts no session, uses no attempt and mints no token, and reads the file again at each poll.",
+		clears: "Released at the next poll once the {{.Forge.Branch}} branch holds a valid {{.Forge.File}} within the workflow's forge ceiling.",
+	},
 	"hold_spend_daily": {
 		short:  "Daily spend ceiling reached" + resetsIn,
 		long:   "The daily spend ceiling is reached, so Sortie starts no agent session for any issue until the UTC day ends.",

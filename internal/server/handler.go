@@ -258,6 +258,11 @@ type retryEntryResponse struct {
 	// repository's egress policy is invalid. Omitted otherwise.
 	EgressHold *egressHoldResponse `json:"egress_hold,omitempty"`
 
+	// ForgeHold is why the retry's remote job is not offered: its
+	// repository's GitHub access declaration is invalid or above the
+	// forge ceiling. Omitted otherwise.
+	ForgeHold *forgeHoldResponse `json:"forge_hold,omitempty"`
+
 	StatusText     string `json:"status_text"`
 	StatusTextFull string `json:"status_text_full"`
 }
@@ -362,6 +367,28 @@ func toEgressHoldResponse(h *orchestrator.EgressHold) *egressHoldResponse {
 		Entry: h.Entry, Error: h.Error, Text: h.Text()}
 }
 
+// forgeHoldResponse is the JSON wire format for why a remote job is not
+// offered: its repository's GitHub access declaration, at the named
+// commit of its base branch, is invalid or above the forge ceiling.
+// Entry is empty when the file as a whole is invalid.
+type forgeHoldResponse struct {
+	Repository string `json:"repository"`
+	Branch     string `json:"branch"`
+	Commit     string `json:"commit"`
+	File       string `json:"file"`
+	Entry      string `json:"entry,omitempty"`
+	Error      string `json:"error"`
+	Text       string `json:"text"`
+}
+
+func toForgeHoldResponse(h *orchestrator.ForgeHold) *forgeHoldResponse {
+	if h == nil {
+		return nil
+	}
+	return &forgeHoldResponse{Repository: h.Repository, Branch: h.Branch, Commit: h.Commit, File: h.File,
+		Entry: h.Entry, Error: h.Error, Text: h.Text()}
+}
+
 func nonNil(s []string) []string {
 	if s == nil {
 		return []string{}
@@ -373,7 +400,8 @@ func nonNil(s []string) []string {
 // Reason is one of the values of [orchestrator.HoldReasons]. Blockers is
 // non-null exactly for a blocked_by hold, Slot exactly for an agent_slots_full
 // hold, Worker exactly for a no_worker hold, Egress exactly for an
-// egress_invalid hold, and ResetsAt exactly for a
+// egress_invalid hold, Forge exactly for a forge_refused hold, and
+// ResetsAt exactly for a
 // spend ceiling hold or a usage_limit hold.
 // AgentKind, ModelOnly, and Model are served for a usage_limit hold only. A
 // standing_hold or standing_hold_expired row has its lease in the state's
@@ -387,6 +415,7 @@ type holdResponse struct {
 	Slot        *holdSlotResponse     `json:"slot"`
 	Worker      *workerWaitResponse   `json:"worker,omitempty"`
 	Egress      *egressHoldResponse   `json:"egress,omitempty"`
+	Forge       *forgeHoldResponse    `json:"forge,omitempty"`
 	ResetsAt    *time.Time            `json:"resets_at"`
 	AgentKind   string                `json:"agent_kind,omitempty"`
 	ModelOnly   bool                  `json:"model_only,omitempty"`
@@ -1064,6 +1093,7 @@ func toHoldResponse(h *orchestrator.SnapshotHold, words sentence.Context) *holdR
 	}
 	resp.Worker = toWorkerWaitResponse(h.Worker)
 	resp.Egress = toEgressHoldResponse(h.Egress)
+	resp.Forge = toForgeHoldResponse(h.Forge)
 	text := sentence.Hold(h, words)
 	resp.ReasonText, resp.ReleaseText = text.Reason, text.Release
 	return resp
@@ -1114,6 +1144,7 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		WorkerWait:        toWorkerWaitResponse(e.WorkerWait),
 		WorkerWaitSince:   utcOrNil(e.WorkerWaitSince),
 		EgressHold:        toEgressHoldResponse(e.EgressHold),
+		ForgeHold:         toForgeHoldResponse(e.ForgeHold),
 	}
 }
 

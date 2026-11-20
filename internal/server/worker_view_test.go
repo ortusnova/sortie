@@ -469,3 +469,41 @@ func TestStateServesAnEgressHold(t *testing.T) {
 		t.Errorf("waits = %v, want none: the hold waits on no worker", waits)
 	}
 }
+
+// forge-access: Above the ceiling. An issue held because its repository's
+// GitHub access declaration names a repository outside the ceiling shows
+// GitHub access refused in GET /api/v1/state, with the repository, the
+// commit, the file and the entry, and it waits on no worker.
+func TestStateServesAForgeHold(t *testing.T) {
+	t.Parallel()
+
+	hold := &orchestrator.ForgeHold{Repository: "homelab", Branch: "master", Commit: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+		File: ".sortie/forge.yaml", Entry: "access[1].repository",
+		Error: "ortusnova/fleet is outside the ceiling: environment.remote.forge_ceiling.homelab does not list it"}
+	snap := orchestrator.RuntimeSnapshotResult{
+		GeneratedAt: viewNow,
+		Held: []orchestrator.SnapshotHeldEntry{{IssueID: "id-40", Identifier: "ONS-40",
+			Hold: orchestrator.SnapshotHold{Reason: orchestrator.SkipForgeRefused, Since: viewNow.Add(-time.Minute), Forge: hold}}},
+		Retrying: []orchestrator.SnapshotRetryEntry{{IssueID: "id-41", Identifier: "ONS-41", Attempt: 2, DueAtMS: viewNow.UnixMilli(),
+			ForgeHold: hold}},
+	}
+	ts := viewServer(t, Params{SnapshotFn: fixedSnapshot(snap)})
+
+	body := getJSONMap(t, ts.URL+"/api/v1/state")
+	want := map[string]any{"repository": "homelab", "branch": "master", "commit": hold.Commit, "file": ".sortie/forge.yaml",
+		"entry": "access[1].repository", "error": hold.Error, "text": hold.Text()}
+	got := rows(t, body, "held")[0]["hold"].(map[string]any)
+	if got["reason"] != "forge_refused" || !reflect.DeepEqual(got["forge"], want) ||
+		!strings.HasPrefix(got["reason_text"].(string), "GitHub access refused: homelab at "+hold.Commit+", .sortie/forge.yaml access[1].repository: ortusnova/fleet is outside the ceiling") {
+		t.Errorf("hold = %v", got)
+	}
+	if !strings.HasPrefix(hold.Text(), "GitHub access refused: repository homelab at master commit "+hold.Commit) {
+		t.Errorf("Text() = %q", hold.Text())
+	}
+	if retry := rows(t, body, "retrying")[0]; !reflect.DeepEqual(retry["forge_hold"], want) {
+		t.Errorf("retrying[0].forge_hold = %v, want %v", retry["forge_hold"], want)
+	}
+	if waits := rows(t, body, "waits"); len(waits) != 0 {
+		t.Errorf("waits = %v, want none: the hold waits on no worker", waits)
+	}
+}

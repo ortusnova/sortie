@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sortie-ai/sortie/internal/egress"
+	"github.com/sortie-ai/sortie/internal/forge"
 )
 
 func remoteFlowsRaw() map[string]any {
@@ -389,6 +390,60 @@ func TestEnvironmentConfig_RemoteProfiles(t *testing.T) {
 			var ce *ConfigError
 			if !errors.As(err, &ce) || ce.Field != tc.field {
 				t.Fatalf("error = %v, want a ConfigError on %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// forge-access: The platform caps each repository's access. The ceiling
+// is read by repository name, and an entry naming no repository, or a
+// malformed one, is refused naming it.
+func TestEnvironmentConfig_RemoteForgeCeiling(t *testing.T) {
+	t.Parallel()
+
+	repos := []any{
+		map[string]any{"name": "homelab", "url": "https://github.com/ortusnova/homelab.git", "base": "master"},
+		map[string]any{"url": "https://github.com/ortusnova/sortie.git", "base": "plan-bench", "provider": "github", "project": "ortusnova/sortie", "name": "sortie"},
+	}
+	ceiling := map[string]any{"homelab": []any{
+		map[string]any{"repository": "ortusnova/fleet-vm", "permissions": map[string]any{"contents": "write"}},
+	}}
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{"repositories": repos, "default_repository": "homelab", "forge_ceiling": ceiling}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	want := forge.Ceiling{"homelab": {{Repository: "ortusnova/fleet-vm", Permissions: map[string]string{"contents": "write"}}}}
+	if !reflect.DeepEqual(cfg.Environment.Remote.ForgeCeiling, want) {
+		t.Errorf("ForgeCeiling = %+v, want %+v", cfg.Environment.Remote.ForgeCeiling, want)
+	}
+
+	none, err := NewServiceConfig(remoteRaw(map[string]any{"repositories": repos, "default_repository": "homelab"}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	if none.Environment.Remote.ForgeCeiling != nil {
+		t.Errorf("ForgeCeiling with none declared = %+v, want nil", none.Environment.Remote.ForgeCeiling)
+	}
+
+	for name, tc := range map[string]struct {
+		value any
+		field string
+		msg   string
+	}{
+		"a repository Sortie does not run": {map[string]any{"fleet": []any{}},
+			"environment.remote.forge_ceiling.fleet", "names no repository"},
+		"a level above write": {map[string]any{"homelab": []any{map[string]any{"repository": "ortusnova/fleet-vm", "permissions": map[string]any{"contents": "admin"}}}},
+			"environment.remote.forge_ceiling.homelab[0].permissions.contents", "must be read or write"},
+		"a repository with no owner": {map[string]any{"homelab": []any{map[string]any{"repository": "fleet-vm", "permissions": map[string]any{"contents": "read"}}}},
+			"environment.remote.forge_ceiling.homelab[0].repository", "has no owner"},
+		"not a mapping": {[]any{"homelab"}, "environment.remote.forge_ceiling", "must be a mapping"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewServiceConfig(remoteRaw(map[string]any{"repositories": repos, "default_repository": "homelab", "forge_ceiling": tc.value}))
+			var cerr *ConfigError
+			if !errors.As(err, &cerr) || cerr.Field != tc.field || !strings.Contains(cerr.Message, tc.msg) {
+				t.Errorf("NewServiceConfig() error = %v, want %s: %s", err, tc.field, tc.msg)
 			}
 		})
 	}

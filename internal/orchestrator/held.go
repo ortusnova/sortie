@@ -29,7 +29,7 @@ type SlotHold struct {
 
 // HeldEntry is the hold the latest dispatch pass gave one candidate. Blockers
 // is set for [SkipBlockedBy] only, Slot for [SkipAgentSlotsFull] only,
-// Worker for [SkipNoWorker] only, Egress for [SkipEgressInvalid] only, ResetsAt for the spend reasons and
+// Worker for [SkipNoWorker] only, Egress for [SkipEgressInvalid] only, Forge for [SkipForgeRefused] only, ResetsAt for the spend reasons and
 // [SkipUsageLimit] only, AgentKind, ModelOnly, and Model for
 // [SkipUsageLimit] only, and Holder and Note for [SkipStandingHold] only.
 type HeldEntry struct {
@@ -42,6 +42,7 @@ type HeldEntry struct {
 	Slot       *SlotHold
 	Worker     *WorkerHold
 	Egress     *EgressHold
+	Forge      *ForgeHold
 	ResetsAt   time.Time
 	AgentKind  string
 	ModelOnly  bool
@@ -230,8 +231,8 @@ func snapshotHeld(state *State) []SnapshotHeldEntry {
 
 // snapshotHold returns the view of one hold record. Blockers is non-nil
 // exactly for [SkipBlockedBy], Slot exactly for [SkipAgentSlotsFull],
-// Worker exactly for [SkipNoWorker], and Egress exactly for
-// [SkipEgressInvalid].
+// Worker exactly for [SkipNoWorker], Egress exactly for
+// [SkipEgressInvalid], and Forge exactly for [SkipForgeRefused].
 func snapshotHold(e *HeldEntry) SnapshotHold {
 	hold := SnapshotHold{
 		Reason:    e.Reason,
@@ -268,6 +269,9 @@ func snapshotHold(e *HeldEntry) SnapshotHold {
 	}
 	if e.Reason == SkipEgressInvalid {
 		hold.Egress = cloneEgressHold(e.Egress)
+	}
+	if e.Reason == SkipForgeRefused {
+		hold.Forge = cloneForgeHold(e.Forge)
 	}
 	return hold
 }

@@ -503,6 +503,11 @@ type Orchestrator struct {
 	// base branch; nil reads it from the repository's mirror.
 	readEgress EgressReader
 
+	// readForge reads a repository's GitHub access declaration at a
+	// commit of its base branch; nil reads it from the repository's
+	// mirror.
+	readForge ForgeReader
+
 	// supervisorToken and supervisorWorkDir are what a supervisor session
 	// runs with; supervisorWg tracks the session's goroutine.
 	supervisorToken   string
@@ -978,6 +983,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			if entry, ok := o.state.RetryAttempts[issueID]; ok {
 				retryIdentifier = entry.Identifier
 			}
+			retryEgressReads := newEgressPass(o.egressReader())
 			heldReleased := HandleRetryTimer(o.state, issueID, HandleRetryTimerParams{
 				Store:                  o.store,
 				TrackerAdapter:         o.trackerAdapter,
@@ -1028,8 +1034,13 @@ func (o *Orchestrator) Run(ctx context.Context) {
 					return o.healthHold(ctx, cfg, issue, hold) != nil
 				},
 				EgressHold: func(issue domain.Issue) *EgressHold {
-					hold, read := o.egressHold(ctx, cfg, issue, newEgressPass(o.egressReader()))
+					hold, read := o.egressHold(ctx, cfg, issue, retryEgressReads)
 					o.holdForEgress(ctx, issue, hold, read)
+					return hold
+				},
+				ForgeHold: func(issue domain.Issue) *ForgeHold {
+					hold, read := o.forgeHold(ctx, cfg, issue, retryEgressReads, newForgePass(o.forgeReader()))
+					o.holdForForge(ctx, issue, hold, read)
 					return hold
 				},
 			})
@@ -1454,6 +1465,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	}
 	held := newHeldPass(o.state.Held, passStart, spendHoldEntry(spendHold, o.state.SpendCeilings), usageHold)
 	egressReads := newEgressPass(o.egressReader())
+	forgeReads := newForgePass(o.forgeReader())
 
 	var dispatched, dispatchedByRule, dispatchedByDefault, dispatchedByFallback int
 	var heldByBlockers, blockersUnresolvedHeld, blockersNotReadHeld, blockersIncompleteHeld int
@@ -1536,6 +1548,13 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		o.holdForEgress(ctx, issue, egressHold, egressRead)
 		if egressHold != nil {
 			held.hold(issue, HeldEntry{Reason: SkipEgressInvalid, Egress: egressHold})
+			o.once.deferFor(issue.ID, deferTick)
+			continue
+		}
+		forgeHold, forgeRead := o.forgeHold(ctx, cfg, issue, egressReads, forgeReads)
+		o.holdForForge(ctx, issue, forgeHold, forgeRead)
+		if forgeHold != nil {
+			held.hold(issue, HeldEntry{Reason: SkipForgeRefused, Forge: forgeHold})
 			o.once.deferFor(issue.ID, deferTick)
 			continue
 		}
