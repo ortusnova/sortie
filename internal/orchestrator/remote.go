@@ -333,6 +333,54 @@ func (o *Orchestrator) refreshWorkerQueue(now time.Time) {
 // hosts.
 func credentialPlaceholder(name string) string { return "sortie-credential-" + name }
 
+// forgeCredentialHosts are the hosts on which the egress gate gives an
+// attempt's requests its GitHub tokens.
+var forgeCredentialHosts = []string{"api.github.com", "github.com"}
+
+// forgeCredentialName is the credential that stands for the GitHub token
+// of owner in a job's machine; its placeholder is
+// sortie-credential-github-<owner>.
+func forgeCredentialName(owner string) string { return "github-" + strings.ToLower(owner) }
+
+// forgeCredentialEnv is the variable that holds the placeholder of
+// owner's GitHub token for API clients: SORTIE_GITHUB_TOKEN_ and the
+// owner upper-cased, each other character than a letter or a digit
+// written as '_'.
+func forgeCredentialEnv(owner string) string {
+	var b strings.Builder
+	b.WriteString("SORTIE_GITHUB_TOKEN_")
+	for _, r := range strings.ToUpper(owner) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// bindForgeCredentials makes run bind one credential per owner of next,
+// the GitHub token Sortie minted for that owner, in place of those it
+// bound for the owners of prev.
+func bindForgeCredentials(run *worker.Run, prev, next forge.Grant) {
+	drop := map[string]bool{}
+	for _, o := range prev.Owners {
+		drop[forgeCredentialName(o.Owner)] = true
+		delete(run.Env, forgeCredentialEnv(o.Owner))
+	}
+	run.Credentials = slices.DeleteFunc(run.Credentials, func(c worker.RunCredential) bool { return drop[c.Name] })
+	for _, o := range next.Owners {
+		name := forgeCredentialName(o.Owner)
+		env := forgeCredentialEnv(o.Owner)
+		if run.Env == nil {
+			run.Env = map[string]string{}
+		}
+		run.Env[env] = credentialPlaceholder(name)
+		run.Credentials = append(run.Credentials, worker.RunCredential{Name: name, Env: env, Placeholder: credentialPlaceholder(name),
+			Hosts: slices.Clone(forgeCredentialHosts)})
+	}
+}
+
 // remoteJob builds the matcher job of one dispatched attempt of issue.
 // Its ID is the issue identifier and its attempt the run history's,
 // counting from 1. Its image and requirements are those of the
@@ -1279,7 +1327,11 @@ func (r *remoteRepository) Seed(ctx context.Context, _ environment.Environment, 
 	a.mu.Lock()
 	a.seed, a.seedPath = &seed, path
 	a.job.Run.Egress.Source, a.job.Run.Egress.Repository = read.source, read.policy
-	a.job.Run.Forge = access.grant()
+	grant := access.grant()
+	if a.workers.forgeTokens != nil {
+		bindForgeCredentials(&a.job.Run, forge.Grant{Owners: a.job.Run.Forge.Owners}, forge.Grant{Owners: grant.Owners})
+	}
+	a.job.Run.Forge = grant
 	a.mu.Unlock()
 	return nil
 }

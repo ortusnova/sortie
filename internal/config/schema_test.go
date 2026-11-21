@@ -501,6 +501,26 @@ func TestValidateFrontMatter(t *testing.T) {
 			wantFields: []string{"agent.command"},
 		},
 		{
+			name: "environment.remote.forge_app.app_id as a number, as the reference writes it, draws no type_mismatch",
+			raw: map[string]any{"environment": map[string]any{"kind": "remote", "remote": map[string]any{
+				"forge_app": map[string]any{"app_id": 424242, "private_key_file": "/srv/sortie/github-app.pem"}}}},
+			wantCount: 0,
+		},
+		{
+			name: "environment.remote.forge_app.app_id as a numeric string draws no type_mismatch",
+			raw: map[string]any{"environment": map[string]any{"kind": "remote", "remote": map[string]any{
+				"forge_app": map[string]any{"app_id": "424242", "private_key_file": "/srv/sortie/github-app.pem"}}}},
+			wantCount: 0,
+		},
+		{
+			name: "environment.remote.forge_app.app_id as a list draws type_mismatch",
+			raw: map[string]any{"environment": map[string]any{"kind": "remote", "remote": map[string]any{
+				"forge_app": map[string]any{"app_id": []any{1}, "private_key_file": "/srv/sortie/github-app.pem"}}}},
+			wantCount:  1,
+			wantChecks: []string{"type_mismatch"},
+			wantFields: []string{"environment.remote.forge_app.app_id"},
+		},
+		{
 			name:       "agent.command as a number still draws type_mismatch",
 			raw:        map[string]any{"agent": map[string]any{"command": 7}},
 			wantCount:  1,

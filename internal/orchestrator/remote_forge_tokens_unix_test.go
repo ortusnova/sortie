@@ -22,6 +22,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/waittest"
+	"github.com/sortie-ai/sortie/internal/worker"
 )
 
 // forgeGate is the egress gate's registration endpoint, recording each
@@ -341,5 +342,65 @@ func TestLeaseExpiryRevokesTheAttemptsTokens(t *testing.T) {
 	}
 	if _, _, removed := gate.snapshot(); !slices.Equal(removed, []string{"ONS-30"}) {
 		t.Errorf("the gate forgot %v, want ONS-30", removed)
+	}
+}
+
+// forge-tokens: The machine's environment. A job granted two owners
+// binds one credential per owner: github-<owner>, whose placeholder
+// sortie-credential-github-<owner> stands on GitHub's hosts and in
+// SORTIE_GITHUB_TOKEN_<OWNER>. The offer holds the placeholders and no
+// token. Without a broker, no owner's credential is bound.
+func TestRemoteOfferBindsAPlaceholderPerOwner(t *testing.T) {
+	f := newGitFixture(t)
+	f.commitFileOn("main", forge.File, fleetVMForge+"  - {repository: brian-cappello/site, permissions: {contents: read}, reason: docs}\n")
+	fake := forgeapptest.New(t, forgeAppPermissions,
+		forgeapptest.Installation{ID: 11, Owner: "ortusnova", Repositories: []string{"fleet-vm"}},
+		forgeapptest.Installation{ID: 12, Owner: "brian-cappello", Repositories: []string{"site"}})
+	ceiling := func(cfg *config.ServiceConfig) {
+		cfg.Environment.Remote.ForgeCeiling = forge.Ceiling{"org/app": {
+			{Repository: "ortusnova/fleet-vm", Permissions: map[string]string{"contents": "write"}},
+			{Repository: "brian-cappello/site", Permissions: map[string]string{"contents": "read"}},
+		}}
+	}
+	var logs bytes.Buffer
+	run := runRemoteONS30Opts(t, f, remoteRunOpts{adjust: ceiling, forgeTokens: func(*remoteWorkers) *forgetoken.Broker {
+		return newForgeBroker(t, fake, &forgeGate{}, nil, &logs)
+	}})
+	if run.result.Error != nil {
+		t.Fatalf("result %v", run.result.Error)
+	}
+	got := map[string]worker.RunCredential{}
+	for _, c := range run.worker.offer.Run.Credentials {
+		got[c.Name] = c
+	}
+	for owner, env := range map[string]string{"ortusnova": "SORTIE_GITHUB_TOKEN_ORTUSNOVA", "brian-cappello": "SORTIE_GITHUB_TOKEN_BRIAN_CAPPELLO"} {
+		c, ok := got["github-"+owner]
+		placeholder := "sortie-credential-github-" + owner
+		if !ok || c.Env != env || c.Placeholder != placeholder || !slices.Equal(c.Hosts, []string{"api.github.com", "github.com"}) {
+			t.Errorf("credential of %s = %+v, want %s in %s on api.github.com and github.com", owner, c, placeholder, env)
+		}
+		if v := run.worker.offer.Run.Env[env]; v != placeholder {
+			t.Errorf("%s = %q, want %q", env, v, placeholder)
+		}
+	}
+	if len(fake.Tokens()) != 2 {
+		t.Fatalf("minted %d tokens, want one per owner", len(fake.Tokens()))
+	}
+	for _, tok := range fake.Tokens() {
+		if strings.Contains(string(run.offerRaw), tok) {
+			t.Error("the offer holds a token")
+		}
+	}
+
+	g := newGitFixture(t)
+	g.commitFileOn("main", forge.File, fleetVMForge)
+	plain := runRemoteONS30Opts(t, g, remoteRunOpts{adjust: withFleetVMCeiling})
+	for _, c := range plain.worker.offer.Run.Credentials {
+		if strings.HasPrefix(c.Name, "github-") {
+			t.Errorf("without a broker the offer binds %s", c.Name)
+		}
+	}
+	if len(plain.worker.offer.Run.Forge.Owners) != 1 {
+		t.Errorf("without a broker the offer's run.forge = %+v, want its grant all the same", plain.worker.offer.Run.Forge)
 	}
 }

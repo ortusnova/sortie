@@ -57,7 +57,7 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "egress", Type: FieldMap},
 	{Name: "forge_ceiling", Type: FieldMap},
 	{Name: "forge_app", Type: FieldMap, Nested: []FieldDef{
-		{Name: "app_id", Type: FieldString},
+		{Name: "app_id", Type: FieldInt},
 		{Name: "private_key_file", Type: FieldString},
 		{Name: "api_url", Type: FieldString},
 	}},
@@ -310,6 +310,11 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 	}
 	if cfg.ForgeGate, err = parseRemoteForgeGate(m["forge_gate"]); err != nil {
 		return RemoteConfig{}, err
+	}
+	if cfg.ForgeApp != nil {
+		if err := refuseForgeCredentialNames(cfg.Credentials); err != nil {
+			return RemoteConfig{}, err
+		}
 	}
 	if cfg.Image == "" {
 		if err := requireRemoteImage(cfg); err != nil {
@@ -592,6 +597,22 @@ func parseRemoteCredentials(value any) ([]RemoteCredential, error) {
 		creds = append(creds, RemoteCredential{Name: name, Env: env, Hosts: hosts, Header: header})
 	}
 	return creds, nil
+}
+
+// refuseForgeCredentialNames refuses a credential that takes a name or a
+// variable Sortie binds for each owner's GitHub token when it mints
+// them: github-<owner> and SORTIE_GITHUB_TOKEN_<OWNER>.
+func refuseForgeCredentialNames(creds []RemoteCredential) error {
+	for i, c := range creds {
+		field := fmt.Sprintf("%s.credentials[%d]", remoteField, i)
+		if strings.HasPrefix(strings.ToLower(c.Name), "github-") {
+			return &ConfigError{Field: field + ".name", Message: fmt.Sprintf("%q is taken: with forge_app, Sortie binds github-<owner> to each owner's GitHub token", c.Name)}
+		}
+		if strings.HasPrefix(c.Env, "SORTIE_GITHUB_TOKEN_") {
+			return &ConfigError{Field: field + ".env", Message: fmt.Sprintf("%q is taken: with forge_app, Sortie sets SORTIE_GITHUB_TOKEN_<OWNER> to each owner's placeholder", c.Env)}
+		}
+	}
+	return nil
 }
 
 // parseRemoteProfiles reads environment.remote.profiles: a mapping of
