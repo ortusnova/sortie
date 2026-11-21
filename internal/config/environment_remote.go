@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +56,14 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "default_repository", Type: FieldString},
 	{Name: "egress", Type: FieldMap},
 	{Name: "forge_ceiling", Type: FieldMap},
+	{Name: "forge_app", Type: FieldMap, Nested: []FieldDef{
+		{Name: "app_id", Type: FieldString},
+		{Name: "private_key_file", Type: FieldString},
+		{Name: "api_url", Type: FieldString},
+	}},
+	{Name: "forge_gate", Type: FieldMap, Nested: []FieldDef{
+		{Name: "url", Type: FieldString},
+	}},
 	{Name: "profiles", Type: FieldMap},
 }
 
@@ -126,6 +136,16 @@ type RemoteConfig struct {
 	// access.
 	ForgeCeiling forge.Ceiling
 
+	// ForgeApp is environment.remote.forge_app: the GitHub App Sortie
+	// mints each attempt's GitHub tokens from. Nil when the workflow
+	// names none: then Sortie mints no token.
+	ForgeApp *ForgeApp
+
+	// ForgeGate is environment.remote.forge_gate: the egress gate Sortie
+	// hands each attempt's GitHub tokens to. Nil when the workflow names
+	// none.
+	ForgeGate *ForgeGate
+
 	// Profiles is environment.remote.profiles: the job profiles a
 	// supervisor fix run or live-proof request may name, by name. Nil
 	// when the workflow declares none.
@@ -166,6 +186,24 @@ func (c RemoteConfig) JobRequires(repo *Repository) RemoteRequirements {
 		return *repo.Requires
 	}
 	return c.Requires
+}
+
+// ForgeApp is the GitHub App Sortie mints installation tokens from. Its
+// private key is read once, at start.
+type ForgeApp struct {
+	// AppID is the App's ID, digits.
+	AppID string
+	// PrivateKeyFile is the absolute path of the App's PEM private key,
+	// a file only its owner may read.
+	PrivateKeyFile string
+	// APIURL is GitHub's REST API; empty is https://api.github.com.
+	APIURL string
+}
+
+// ForgeGate is the egress gate that takes each attempt's GitHub tokens.
+type ForgeGate struct {
+	// URL is the gate's base URL, as Sortie reaches it.
+	URL string
 }
 
 // RemoteRequirements is what each remote job needs of a worker: every
@@ -265,6 +303,12 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 	}
 	cfg.Repository, cfg.Repositories, cfg.DefaultRepository = set.Repository, set.Repositories, set.DefaultRepository
 	if cfg.ForgeCeiling, err = parseRemoteForgeCeiling(m["forge_ceiling"], cfg.Repositories); err != nil {
+		return RemoteConfig{}, err
+	}
+	if cfg.ForgeApp, err = parseRemoteForgeApp(m["forge_app"]); err != nil {
+		return RemoteConfig{}, err
+	}
+	if cfg.ForgeGate, err = parseRemoteForgeGate(m["forge_gate"]); err != nil {
 		return RemoteConfig{}, err
 	}
 	if cfg.Image == "" {
@@ -642,6 +686,92 @@ func parseRemoteForgeCeiling(value any, repos []Repository) (forge.Ceiling, erro
 		}
 	}
 	return c, nil
+}
+
+// appIDPattern is a GitHub App's ID.
+var appIDPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
+
+// parseRemoteForgeApp reads environment.remote.forge_app. Absent, it is
+// nil.
+func parseRemoteForgeApp(value any) (*ForgeApp, error) {
+	const field = remoteField + ".forge_app"
+	if value == nil {
+		return nil, nil
+	}
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil, typeError(field, "mapping", value)
+	}
+	if err := refuseUnknownKeys(m, field, []string{"app_id", "private_key_file", "api_url"}); err != nil {
+		return nil, err
+	}
+	app := &ForgeApp{}
+	switch id := m["app_id"].(type) {
+	case nil:
+		return nil, &ConfigError{Field: field + ".app_id", Message: "is required: the GitHub App's ID"}
+	case string:
+		app.AppID = strings.TrimSpace(id)
+	case int:
+		app.AppID = strconv.Itoa(id)
+	default:
+		return nil, typeError(field+".app_id", "string or integer", id)
+	}
+	if !appIDPattern.MatchString(app.AppID) {
+		return nil, &ConfigError{Field: field + ".app_id", Message: fmt.Sprintf("must be the App's numeric ID, got %q", app.AppID)}
+	}
+	key, err := requiredString(m, "private_key_file", field+".private_key_file")
+	if err != nil {
+		return nil, err
+	}
+	if !filepath.IsAbs(key) {
+		return nil, &ConfigError{Field: field + ".private_key_file", Message: fmt.Sprintf("must be an absolute path, got %q", key)}
+	}
+	app.PrivateKeyFile = key
+	api, present, err := requireStringField(m, "api_url", field+".api_url")
+	if err != nil {
+		return nil, err
+	}
+	if present {
+		if err := checkServiceURL(api, field+".api_url"); err != nil {
+			return nil, err
+		}
+		app.APIURL = api
+	}
+	return app, nil
+}
+
+// parseRemoteForgeGate reads environment.remote.forge_gate. Absent, it
+// is nil.
+func parseRemoteForgeGate(value any) (*ForgeGate, error) {
+	const field = remoteField + ".forge_gate"
+	if value == nil {
+		return nil, nil
+	}
+	m, ok := value.(map[string]any)
+	if !ok {
+		return nil, typeError(field, "mapping", value)
+	}
+	if err := refuseUnknownKeys(m, field, []string{"url"}); err != nil {
+		return nil, err
+	}
+	u, err := requiredString(m, "url", field+".url")
+	if err != nil {
+		return nil, err
+	}
+	if err := checkServiceURL(u, field+".url"); err != nil {
+		return nil, err
+	}
+	return &ForgeGate{URL: u}, nil
+}
+
+// checkServiceURL refuses a URL that is not absolute http or https, or
+// that holds user information.
+func checkServiceURL(raw, field string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return &ConfigError{Field: field, Message: fmt.Sprintf("must be an absolute http or https URL without user information, got %q", raw)}
+	}
+	return nil
 }
 
 // parseRemoteFlows reads environment.remote.flows: a URL for each of

@@ -495,6 +495,13 @@ type Params struct {
 	// 503.
 	DispatchPauseFn DispatchPauseFunc
 
+	// ForgeSandboxMintFn and ForgeSandboxEndFn mint and revoke a
+	// sandbox's GitHub tokens. Called on POST /api/v1/forge-tokens and
+	// DELETE /api/v1/forge-tokens?id=, with the control token only.
+	// When nil, those routes answer 503.
+	ForgeSandboxMintFn ForgeSandboxMintFunc
+	ForgeSandboxEndFn  ForgeSandboxEndFunc
+
 	// SupervisorPauseFn pauses and resumes the supervisor. Called on POST
 	// /api/v1/supervisor/pause and /resume. When nil, those routes answer
 	// 503.
@@ -598,6 +605,8 @@ type Server struct {
 	escalateFn          EscalateFunc
 	answerFn            AnswerFunc
 	dispatchPauseFn     DispatchPauseFunc
+	forgeSandboxMintFn  ForgeSandboxMintFunc
+	forgeSandboxEndFn   ForgeSandboxEndFunc
 	supervisorPauseFn   SupervisorPauseFunc
 	platformFaultDoneFn PlatformFaultDoneFunc
 	sessionGrantFn      SessionGrantFunc
@@ -670,6 +679,8 @@ func New(params Params) *Server {
 		escalateFn:          params.EscalateFn,
 		answerFn:            params.AnswerFn,
 		dispatchPauseFn:     params.DispatchPauseFn,
+		forgeSandboxMintFn:  params.ForgeSandboxMintFn,
+		forgeSandboxEndFn:   params.ForgeSandboxEndFn,
 		supervisorPauseFn:   params.SupervisorPauseFn,
 		platformFaultDoneFn: params.PlatformFaultDoneFn,
 		sessionGrantFn:      params.SessionGrantFn,
@@ -733,6 +744,7 @@ func New(params Params) *Server {
 	mux.HandleFunc("/api/v1/refresh", s.controlRoute(scopeOperator, s.handleRefresh))
 	mux.HandleFunc("/api/v1/dispatch/pause", s.controlRoute(scopeOperator, s.handleDispatchPause))
 	mux.HandleFunc("/api/v1/dispatch/resume", s.controlRoute(scopeOperator, s.handleDispatchResume))
+	mux.HandleFunc("/api/v1/forge-tokens", s.handleForgeTokens)
 	mux.HandleFunc("/api/v1/supervisor/pause", s.controlRoute(scopeOperator, s.handleSupervisorPause))
 	mux.HandleFunc("/api/v1/supervisor/resume", s.controlRoute(scopeOperator, s.handleSupervisorResume))
 	mux.HandleFunc("/api/v1/platform-faults/{id}/action-done", s.controlRoute(scopeOperator, s.handlePlatformFaultDone))

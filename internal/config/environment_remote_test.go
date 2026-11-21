@@ -448,3 +448,49 @@ func TestEnvironmentConfig_RemoteForgeCeiling(t *testing.T) {
 		})
 	}
 }
+
+// forge-tokens: The App and the egress gate are named in the workflow,
+// and a malformed entry is refused naming it.
+func TestEnvironmentConfig_RemoteForgeAppAndGate(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := NewServiceConfig(remoteRaw(map[string]any{
+		"forge_app":  map[string]any{"app_id": 424242, "private_key_file": "/srv/sortie/github-app.pem"},
+		"forge_gate": map[string]any{"url": "http://127.0.0.1:7692"},
+	}))
+	if err != nil {
+		t.Fatalf("NewServiceConfig() error = %v", err)
+	}
+	if got := cfg.Environment.Remote.ForgeApp; got == nil || got.AppID != "424242" || got.PrivateKeyFile != "/srv/sortie/github-app.pem" || got.APIURL != "" {
+		t.Errorf("ForgeApp = %+v", got)
+	}
+	if got := cfg.Environment.Remote.ForgeGate; got == nil || got.URL != "http://127.0.0.1:7692" {
+		t.Errorf("ForgeGate = %+v", got)
+	}
+	none, err := NewServiceConfig(remoteRaw(nil))
+	if err != nil || none.Environment.Remote.ForgeApp != nil || none.Environment.Remote.ForgeGate != nil {
+		t.Errorf("with neither: %+v, %+v, %v", none.Environment.Remote.ForgeApp, none.Environment.Remote.ForgeGate, err)
+	}
+
+	for name, tc := range map[string]struct {
+		extra map[string]any
+		field string
+		msg   string
+	}{
+		"no app id":               {map[string]any{"forge_app": map[string]any{"private_key_file": "/k.pem"}}, "environment.remote.forge_app.app_id", "is required"},
+		"a named app id":          {map[string]any{"forge_app": map[string]any{"app_id": "sortie", "private_key_file": "/k.pem"}}, "environment.remote.forge_app.app_id", "numeric"},
+		"a relative key":          {map[string]any{"forge_app": map[string]any{"app_id": "1", "private_key_file": "github-app.pem"}}, "environment.remote.forge_app.private_key_file", "absolute"},
+		"no key":                  {map[string]any{"forge_app": map[string]any{"app_id": "1"}}, "environment.remote.forge_app.private_key_file", "required"},
+		"an unknown key":          {map[string]any{"forge_app": map[string]any{"app_id": "1", "private_key_file": "/k.pem", "private_key": "PEM"}}, "environment.remote.forge_app.private_key", "unknown key"},
+		"a gate with credentials": {map[string]any{"forge_gate": map[string]any{"url": "http://user:pw@127.0.0.1:7692"}}, "environment.remote.forge_gate.url", "without user information"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewServiceConfig(remoteRaw(tc.extra))
+			var cerr *ConfigError
+			if !errors.As(err, &cerr) || cerr.Field != tc.field || !strings.Contains(cerr.Message, tc.msg) {
+				t.Errorf("NewServiceConfig() error = %v, want %s: %s", err, tc.field, tc.msg)
+			}
+		})
+	}
+}

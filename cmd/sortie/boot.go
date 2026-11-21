@@ -15,6 +15,8 @@ import (
 	"github.com/sortie-ai/sortie/internal/dataplane"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/environment"
+	"github.com/sortie-ai/sortie/internal/forgeapp"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/orchestrator"
@@ -85,6 +87,14 @@ type bootResult struct {
 	serverHost      string
 	controlToken    string
 	supervisorToken string
+	// forgeApp is the GitHub App's client, its key read at start; nil
+	// when the workflow names no App.
+	forgeApp *forgeapp.Client
+	// forgeSeal is the key the recorded GitHub tokens are sealed with.
+	forgeSeal [32]byte
+	// forgeGate is the egress gate the attempts' tokens go to; nil when
+	// the workflow names none.
+	forgeGate       forgetoken.Gate
 	supervisorCap   int
 	serverEnabled   bool
 	portIsImplicit  bool
@@ -313,6 +323,12 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 		logger.Info("supervisor token removed from the environment agents inherit", slog.Any("names", removed))
 	}
 
+	forgeApp, forgeSeal, forgeGate, forgeErr := resolveForgeApp(cfg.Environment.Remote, controlToken)
+	if forgeErr != nil {
+		logger.Error("GitHub App configuration error", slog.Any("error", forgeErr))
+		return bootResult{}, 1
+	}
+
 	trackerCtor, err := registry.Trackers.Get(cfg.Tracker.Kind)
 	if err != nil {
 		logger.Error("unknown tracker kind", slog.String("kind", cfg.Tracker.Kind), slog.Any("error", err))
@@ -357,6 +373,9 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 		serverHost:      serverHost,
 		controlToken:    controlToken,
 		supervisorToken: supervisorToken,
+		forgeApp:        forgeApp,
+		forgeSeal:       forgeSeal,
+		forgeGate:       forgeGate,
 		supervisorCap:   supervisorCap,
 		serverEnabled:   serverEnabled,
 		portIsImplicit:  !portFlagSet && !hasServerPortExtension(cfg.ExtensionSection("server")),

@@ -222,6 +222,9 @@ var migration1020SQL string
 //go:embed sql/1021_question_hold_state.sql
 var migration1021SQL string
 
+//go:embed sql/1022_forge_token_sets.sql
+var migration1022SQL string
+
 // migrations lists upstream's migrations, numbered from 1 in upstream's
 // sequence, then the fork's, numbered from 1001. Upstream merges add lower
 // numbers, so a database that already ran fork migrations applies new
@@ -300,4 +303,5 @@ var migrations = []Migration{
 	{Version: 1019, Description: "profile column on supervisor_actions", SQL: migration1019SQL},
 	{Version: 1020, Description: "merge_and_prove: stories merged, proven after deploy, or reverted", SQL: migration1020SQL},
 	{Version: 1021, Description: "state column on platform_fault_holds", SQL: migration1021SQL},
+	{Version: 1022, Description: "forge_token_sets: the GitHub tokens of each attempt and sandbox, revoked at their end", SQL: migration1022SQL},
 }
