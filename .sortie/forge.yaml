@@ -1,0 +1,9 @@
+# What a job on this repository may do on GitHub. The format is
+# docs/forge.schema.json; see "Job GitHub access" in
+# docs/workflow-reference.md. Sortie pushes the issue branch and opens its
+# pull request from its own host, so a job writes no code here.
+version: 1
+access:
+  - repository: ortusnova/sortie
+    permissions: {contents: read, issues: write, pull_requests: write}
+    reason: read the base branch, and comment a live proof's result on the story's pull request or open an issue for a failure
