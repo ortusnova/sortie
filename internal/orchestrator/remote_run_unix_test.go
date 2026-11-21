@@ -31,6 +31,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/dataplane"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/environment"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/registry"
@@ -821,8 +822,27 @@ func runRemoteONS30(t *testing.T, f *gitFixture, prepare func(*fakeWorker), driv
 // applied to the run's config first.
 func runRemoteONS30With(t *testing.T, f *gitFixture, adjust func(*config.ServiceConfig), prepare func(*fakeWorker), drive func(*fakeWorker, context.CancelCauseFunc)) remoteRun {
 	t.Helper()
+	return runRemoteONS30Opts(t, f, remoteRunOpts{adjust: adjust, prepare: prepare, drive: drive})
+}
+
+// remoteRunOpts adjust a run of ONS-30: the config, the worker, how it
+// is driven, and the broker of the attempt's GitHub tokens, nil for none.
+type remoteRunOpts struct {
+	adjust      func(*config.ServiceConfig)
+	prepare     func(*fakeWorker)
+	drive       func(*fakeWorker, context.CancelCauseFunc)
+	forgeTokens func(*remoteWorkers) *forgetoken.Broker
+}
+
+// runRemoteONS30Opts runs ONS-30 as runRemoteONS30 does, under opts.
+func runRemoteONS30Opts(t *testing.T, f *gitFixture, opts remoteRunOpts) remoteRun {
+	t.Helper()
+	adjust, prepare, drive := opts.adjust, opts.prepare, opts.drive
 	upstream := f.upstream()
 	rw := newRemoteWorkers(time.Now)
+	if opts.forgeTokens != nil {
+		rw.forgeTokens = opts.forgeTokens(rw)
+	}
 	const header = "X-Sortie-Worker-Identity"
 	srv := remoteServer(t, rw, header)
 	cfg := baseRunConfig(t)

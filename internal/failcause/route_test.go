@@ -30,6 +30,10 @@ func TestFaultClasses_AreAFixedList(t *testing.T) {
 			{`(?i)authentication failed|bad credentials|invalid (?:username or password|credentials)|could not read username|\| (?:scm|tracker|ci)_auth_error \|`, true},
 			{`\| credential_unverified \|`, true},
 		}},
+		{"github_app", RoutePlatform, []entry{
+			{`\| forge_app_not_installed \|`, true},
+			{`\| forge_app_not_granted \|`, true},
+		}},
 		{"repository_access", RoutePlatform, []entry{
 			{`(?i)permission to \S+ denied|repository not found|\| scm_not_found \|`, true},
 		}},
@@ -98,6 +102,8 @@ func TestRouteOf(t *testing.T) {
 		{"push credentials", "export", errors.New("push: fatal: Authentication failed for 'https://github.com/o/r.git/'"), "credentials", RoutePlatform},
 		{"scm auth", "export", &domain.SCMError{Kind: domain.ErrSCMAuth, Message: "401"}, "credentials", RoutePlatform},
 		{"agent credential", "agent session start", &domain.AgentError{Kind: domain.ErrCredentialUnverified, Message: "sign in"}, "credentials", RoutePlatform},
+		{"App not installed", "workspace seed", classed{"forge_app_not_installed", "GitHub token for owner someone: the GitHub App is not installed on the owner"}, "github_app", RoutePlatform},
+		{"App not granted", "workspace seed", classed{"forge_app_not_granted", "GitHub token for owner ortusnova: the installation does not grant every repository"}, "github_app", RoutePlatform},
 		{"repository access", "export", errors.New("remote: Permission to ortusnova/sortie.git denied to taichi."), "repository_access", RoutePlatform},
 		{"agent missing", "agent session start", &domain.AgentError{Kind: domain.ErrAgentNotFound, Message: "no such command"}, "agent_runtime", RoutePlatform},
 		{"no seed", "workspace seed", errors.New(`flows: bundles: HTTP 404: {"error":{"code":"no_seed"}}`), "workflow_config", RoutePlatform},
@@ -166,3 +172,10 @@ func TestForgeName(t *testing.T) {
 		}
 	}
 }
+
+// classed is an error that names its failure class, as a refused GitHub
+// token mint does.
+type classed struct{ class, msg string }
+
+func (c classed) Error() string        { return c.msg }
+func (c classed) FailureClass() string { return c.class }

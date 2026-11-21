@@ -23,6 +23,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/egress"
 	"github.com/sortie-ai/sortie/internal/environment"
 	"github.com/sortie-ai/sortie/internal/forge"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -48,6 +49,10 @@ type remoteWorkers struct {
 	// runs records each running attempt whose job a worker took, so a
 	// restart re-adopts it; nil records nothing.
 	runs remoteRunStore
+
+	// forgeTokens mints each attempt's GitHub tokens before its job is
+	// queued and revokes them at its end; nil mints none.
+	forgeTokens *forgetoken.Broker
 
 	mu sync.Mutex
 	// process is the context of the process's event loop; once it ends,
@@ -703,8 +708,13 @@ func (*remoteAttempt) Command(context.Context, environment.Workspace, environmen
 }
 
 // AfterCreate hands the job to the matcher, once its seed is built, and
-// waits until the worker that took it opened the stdio stream.
+// waits until the worker that took it opened the stdio stream. The
+// attempt's GitHub tokens are minted and handed to the egress gate
+// first, so no worker is offered a job whose tokens the gate lacks.
 func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace) error {
+	if err := a.acquireForgeTokens(ctx); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	if a.submitted {
 		a.mu.Unlock()
@@ -750,6 +760,23 @@ func (a *remoteAttempt) AfterCreate(ctx context.Context, _ environment.Workspace
 
 	a.logger.Info("remote job queued", slog.String("job", a.job.ID), slog.Int("attempt", a.job.Attempt))
 	return a.waitStdio(ctx, dp)
+}
+
+// acquireForgeTokens mints the attempt's GitHub tokens, one per owner of
+// its run.forge, unless the attempt is adopted, whose tokens the restart
+// kept, or no broker mints any.
+func (a *remoteAttempt) acquireForgeTokens(ctx context.Context) error {
+	a.mu.Lock()
+	submitted, adopted := a.submitted, a.adopt != nil
+	grant := forge.Grant{Owners: a.job.Run.Forge.Owners}
+	a.mu.Unlock()
+	if submitted || adopted || a.workers.forgeTokens == nil || len(grant.Owners) == 0 {
+		return nil
+	}
+	if _, err := a.workers.forgeTokens.Acquire(ctx, a.job.ID, a.job.Attempt, grant); err != nil {
+		return fmt.Errorf("mint the attempt's GitHub tokens: %w", err)
+	}
+	return nil
 }
 
 // waitStdio waits until the worker that holds the job opened the stdio
@@ -1001,6 +1028,9 @@ func (a *remoteAttempt) finish() {
 		return
 	}
 	a.mu.Unlock()
+	if a.workers.forgeTokens != nil {
+		a.workers.forgeTokens.End(context.Background(), a.job.ID, a.job.Attempt)
+	}
 	if recorded && a.workers.runs != nil {
 		if err := a.workers.runs.DeleteRemoteRun(context.Background(), a.issueID); err != nil {
 			a.logger.Warn("remote run record not deleted; the next start drops it", slog.Any("error", err))

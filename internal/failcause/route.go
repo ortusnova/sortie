@@ -98,6 +98,14 @@ var (
 		Action: "Sign the agent runtime in again on {host}",
 		Where:  "{host}, as the user Sortie runs as",
 	}
+	appInstallAction = &ActionTemplate{
+		Action: "Install the GitHub App {host}'s Sortie mints job tokens from on the account the cause names, with the repositories the workflow's forge ceiling grants",
+		Where:  "GitHub, the App's page: Install App, Only select repositories",
+	}
+	appGrantAction = &ActionTemplate{
+		Action: "Give the GitHub App's installation on the owner the cause names the repository, or the App the permission, the job's grant names",
+		Where:  "GitHub, the owner's settings: GitHub Apps, the App, Configure; or the App's permissions",
+	}
 	repositoryAccessAction = &ActionTemplate{
 		Action: "Give {host}'s {forge} account write access to the repository",
 		Where:  "{forge}, the repository's collaborator settings",
@@ -127,6 +135,10 @@ var faultClasses = []FaultClass{
 	{Name: "credentials", Route: RoutePlatform, Signatures: []FaultSignature{
 		sig(`(?i)authentication failed|bad credentials|invalid (?:username or password|credentials)|could not read username|\| (?:scm|tracker|ci)_auth_error \|`, tokenAction),
 		sig(`\| credential_unverified \|`, agentSignInAction),
+	}},
+	{Name: "github_app", Route: RoutePlatform, Signatures: []FaultSignature{
+		sig(`\| forge_app_not_installed \|`, appInstallAction),
+		sig(`\| forge_app_not_granted \|`, appGrantAction),
 	}},
 	{Name: "repository_access", Route: RoutePlatform, Signatures: []FaultSignature{
 		sig(`(?i)permission to \S+ denied|repository not found|\| scm_not_found \|`, repositoryAccessAction),

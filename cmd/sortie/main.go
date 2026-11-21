@@ -32,6 +32,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/environment"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/orchestrator"
@@ -377,6 +378,17 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	if err := store.Migrate(ctx); err != nil {
 		br.logger.Error("failed to migrate database", slog.Any("error", err))
 		return 1
+	}
+
+	var forgeTokens *forgetoken.Broker
+	if br.forgeApp != nil {
+		forgeTokens, err = forgetoken.New(forgetoken.Config{Minter: br.forgeApp, Gate: br.forgeGate, Store: store,
+			SealKey: br.forgeSeal, Logger: br.logger})
+		if err != nil {
+			br.logger.Error("GitHub token broker not started", slog.Any("error", err))
+			return 1
+		}
+		br.logger.Info("GitHub tokens are minted for remote attempts", slog.Bool("egress_gate", br.forgeGate != nil))
 	}
 
 	downloader := pricing.NewDownloader(dbPath, br.logger)
@@ -1058,6 +1070,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		Once:                              br.once,
 		SupervisorToken:                   br.supervisorToken,
 		SCMTokenInspector:                 tokenInspectorOf(sharedSCM),
+		ForgeTokens:                       forgeTokens,
 	})
 	o.RestoreRemoteRuns(ctx)
 
@@ -1105,6 +1118,8 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			EscalateFn:             server.EscalateFunc(o.EscalateFunc()),
 			AnswerFn:               server.AnswerFunc(o.AnswerFunc()),
 			DispatchPauseFn:        server.DispatchPauseFunc(o.DispatchPauseFunc()),
+			ForgeSandboxMintFn:     server.ForgeSandboxMintFunc(o.MintForgeSandboxFunc()),
+			ForgeSandboxEndFn:      server.ForgeSandboxEndFunc(o.EndForgeSandboxFunc()),
 			SupervisorPauseFn:      server.SupervisorPauseFunc(o.SupervisorPauseFunc()),
 			PlatformFaultDoneFn:    server.PlatformFaultDoneFunc(o.PlatformFaultDoneFunc()),
 			SessionGrantFn:         server.SessionGrantFunc(o.SessionGrantFunc()),

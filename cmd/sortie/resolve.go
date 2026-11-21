@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/sortie-ai/sortie/internal/config"
+	"github.com/sortie-ai/sortie/internal/forgeapp"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/logging"
 )
 
@@ -354,4 +357,36 @@ func resolveLogFormat(flagValue string, flagSet bool, loggingSection map[string]
 	}
 
 	return logging.ParseFormat(formatStr)
+}
+
+// resolveForgeApp reads the GitHub App's private key named by
+// environment.remote.forge_app, once, refusing a file another account
+// may read, and returns the App's client, the key that seals the
+// recorded tokens, and the egress gate's client when forge_gate names
+// one. Nothing is returned when the workflow names no App. The gate is
+// called with the control token, which it requires.
+func resolveForgeApp(rc config.RemoteConfig, controlToken string) (*forgeapp.Client, [32]byte, forgetoken.Gate, error) {
+	if rc.ForgeApp == nil {
+		return nil, [32]byte{}, nil, nil
+	}
+	key, err := forgeapp.LoadKey(rc.ForgeApp.PrivateKeyFile)
+	if err != nil {
+		return nil, [32]byte{}, nil, err
+	}
+	client, err := forgeapp.New(forgeapp.Config{AppID: rc.ForgeApp.AppID, Key: key, APIURL: rc.ForgeApp.APIURL})
+	if err != nil {
+		return nil, [32]byte{}, nil, err
+	}
+	var gate forgetoken.Gate
+	if rc.ForgeGate != nil {
+		if controlToken == "" {
+			return nil, [32]byte{}, nil, errors.New("environment.remote.forge_gate needs server.control_token: the egress gate takes the attempts' GitHub tokens only with it")
+		}
+		g, err := forgetoken.NewHTTPGate(rc.ForgeGate.URL, controlToken, nil)
+		if err != nil {
+			return nil, [32]byte{}, nil, err
+		}
+		gate = g
+	}
+	return client, forgeapp.KeyDigest(key), gate, nil
 }

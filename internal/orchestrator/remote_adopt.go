@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/gitsync"
 	"github.com/sortie-ai/sortie/internal/jobtoken"
 	"github.com/sortie-ai/sortie/internal/logging"
@@ -284,6 +285,8 @@ func (o *Orchestrator) recordRemoteEntrySoon(issueID string) {
 // lapses as any lost lease does. The runs are adopted when [Orchestrator.Run]
 // starts.
 func (o *Orchestrator) RestoreRemoteRuns(ctx context.Context) {
+	live := map[string]bool{}
+	defer func() { o.restoreForgeTokens(ctx, live) }()
 	cfg := o.workflowManager.Config()
 	if o.remote == nil || o.remote.runs == nil || !isRemoteKind(cfg.Environment) {
 		return
@@ -305,9 +308,25 @@ func (o *Orchestrator) RestoreRemoteRuns(ctx context.Context) {
 			continue
 		}
 		o.state.Claimed[r.IssueID] = struct{}{}
+		live[forgetoken.AttemptID(r.JobID, r.Attempt)] = true
 		log.Info("remote run restored", slog.String("worker", r.WorkerID), slog.Int("turns_completed", r.TurnsCompleted),
 			slog.Bool("session_ended", r.SessionEnded))
 	}
+}
+
+// restoreForgeTokens reads the GitHub token sets a previous process
+// recorded, revokes those of every attempt it did not restore, and
+// hands the egress gate again those of each attempt it did, live by set
+// ID.
+func (o *Orchestrator) restoreForgeTokens(ctx context.Context, live map[string]bool) {
+	if o.remote == nil || o.remote.forgeTokens == nil {
+		return
+	}
+	if err := o.remote.forgeTokens.Load(ctx); err != nil {
+		o.logger.Error("GitHub token sets not loaded; their tokens expire within the hour", slog.Any("error", err))
+		return
+	}
+	o.remote.forgeTokens.Reconcile(ctx, func(job string, attempt int) bool { return live[forgetoken.AttemptID(job, attempt)] })
 }
 
 // decodeAdoption reads a stored run as a run to adopt.

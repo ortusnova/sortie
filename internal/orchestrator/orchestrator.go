@@ -15,6 +15,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/forgetoken"
 	"github.com/sortie-ai/sortie/internal/logging"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -338,6 +339,10 @@ type OrchestratorParams struct {
 	// SupervisorDir is the directory a supervisor session runs in. Empty
 	// uses a "supervisor" directory beside the database.
 	SupervisorDir string
+
+	// ForgeTokens mints, refreshes and revokes each remote attempt's
+	// GitHub tokens. Nil mints none.
+	ForgeTokens *forgetoken.Broker
 }
 
 // Orchestrator owns the poll-and-dispatch event loop and all runtime state.
@@ -674,6 +679,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	if runs, ok := params.Store.(remoteRunStore); ok {
 		o.remote.runs = runs
 	}
+	o.remote.forgeTokens = params.ForgeTokens
 	if o.preflightParams.EnvironmentFunc == nil {
 		o.preflightParams.EnvironmentFunc = o.environments.resolve
 	}
@@ -931,6 +937,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.prepareReportedModels(ctx)
 	o.activateReconstructedRetries()
 	o.adoptRemoteRuns(ctx)
+	if o.remote != nil && o.remote.forgeTokens != nil {
+		go o.remote.forgeTokens.Run(ctx)
+	}
 	o.superviseOnLoop(ctx, time.Now())
 
 	leaseSweep := time.NewTicker(leaseSweepInterval)
