@@ -467,6 +467,10 @@ func TestEnvironmentConfig_RemoteForgeAppAndGate(t *testing.T) {
 	if got := cfg.Environment.Remote.ForgeGate; got == nil || got.URL != "http://127.0.0.1:7692" {
 		t.Errorf("ForgeGate = %+v", got)
 	}
+	// Without an App, the names are the workflow's to take.
+	if _, err := NewServiceConfig(remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "github-ortusnova", "env": "SORTIE_GITHUB_TOKEN_ORTUSNOVA", "hosts": []any{"api.github.com"}}}})); err != nil {
+		t.Errorf("a github- credential without forge_app: %v", err)
+	}
 	none, err := NewServiceConfig(remoteRaw(nil))
 	if err != nil || none.Environment.Remote.ForgeApp != nil || none.Environment.Remote.ForgeGate != nil {
 		t.Errorf("with neither: %+v, %+v, %v", none.Environment.Remote.ForgeApp, none.Environment.Remote.ForgeGate, err)
@@ -483,6 +487,10 @@ func TestEnvironmentConfig_RemoteForgeAppAndGate(t *testing.T) {
 		"no key":                  {map[string]any{"forge_app": map[string]any{"app_id": "1"}}, "environment.remote.forge_app.private_key_file", "required"},
 		"an unknown key":          {map[string]any{"forge_app": map[string]any{"app_id": "1", "private_key_file": "/k.pem", "private_key": "PEM"}}, "environment.remote.forge_app.private_key", "unknown key"},
 		"a gate with credentials": {map[string]any{"forge_gate": map[string]any{"url": "http://user:pw@127.0.0.1:7692"}}, "environment.remote.forge_gate.url", "without user information"},
+		"a credential named as an owner's token": {map[string]any{"forge_app": map[string]any{"app_id": "1", "private_key_file": "/k.pem"},
+			"credentials": []any{map[string]any{"name": "github-ortusnova", "env": "GH", "hosts": []any{"api.github.com"}}}}, "environment.remote.credentials[0].name", "is taken"},
+		"a credential in an owner's variable": {map[string]any{"forge_app": map[string]any{"app_id": "1", "private_key_file": "/k.pem"},
+			"credentials": []any{map[string]any{"name": "gh", "env": "SORTIE_GITHUB_TOKEN_ORTUSNOVA", "hosts": []any{"api.github.com"}}}}, "environment.remote.credentials[0].env", "is taken"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
