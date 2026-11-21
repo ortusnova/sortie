@@ -57,7 +57,7 @@ var remoteSchemaFields = []FieldDef{
 	{Name: "egress", Type: FieldMap},
 	{Name: "forge_ceiling", Type: FieldMap},
 	{Name: "forge_app", Type: FieldMap, Nested: []FieldDef{
-		{Name: "app_id", Type: FieldString},
+		{Name: "app_id", Type: FieldInt},
 		{Name: "private_key_file", Type: FieldString},
 		{Name: "api_url", Type: FieldString},
 	}},
