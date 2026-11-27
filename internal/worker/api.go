@@ -24,9 +24,10 @@ const Prefix = "/api/v1/workers/"
 // never dials a worker. Every request carries [ProtocolHeader]; the
 // worker's identity is the value of the identityHeader request header,
 // never a path segment or body field. A refused request changes no
-// state.
+// state, except a check-in refused for its deploy_env, which
+// [Matcher.Admit] records.
 //
-//	POST /api/v1/workers/checkin                                  body Declaration; 200 {heartbeat_ms, lease_ms}
+//	POST /api/v1/workers/checkin                                  body Declaration; 200 {heartbeat_ms, lease_ms}, 403 for another deploy_env
 //	POST /api/v1/workers/poll                                     200 Offer or 204
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/heartbeat  optional body Step; 200 {expires}
 //	POST /api/v1/workers/jobs/{job}/attempts/{attempt}/report     body {outcome, reason, machine}; 204
@@ -74,7 +75,23 @@ func Handler(m *Matcher, identityHeader string) http.Handler {
 			reply(w, http.StatusBadRequest, body)
 			return
 		}
-		m.CheckIn(id, d)
+		if err := m.Admit(id, d); err != nil {
+			var envErr *DeployEnvError
+			if !errors.As(err, &envErr) {
+				fail(w, err)
+				return
+			}
+			body := errorBody("deploy_env_mismatch", strings.TrimPrefix(err.Error(), "worker: "))
+			body["expected"] = envErr.Expected
+			if envErr.Declared == "" {
+				body["declared"] = nil
+				body["missing"] = []string{"deploy_env"}
+			} else {
+				body["declared"] = envErr.Declared
+			}
+			reply(w, http.StatusForbidden, body)
+			return
+		}
 		heartbeat, lease := m.Timings()
 		reply(w, http.StatusOK, map[string]int64{"heartbeat_ms": heartbeat.Milliseconds(), "lease_ms": lease.Milliseconds()})
 	}))
@@ -190,6 +207,12 @@ func decodeDeclaration(r *http.Request) (Declaration, []string, []string, error)
 	}
 	if d.Backends == nil {
 		d.Backends = []string{}
+	}
+	if v, ok := raw["deploy_env"]; ok && !isNull(v) {
+		if json.Unmarshal(v, &d.DeployEnv) != nil {
+			invalid = append(invalid, "deploy_env")
+		}
+		d.DeployEnv = cleanText(d.DeployEnv)
 	}
 	decodeActivity(raw, &d)
 	return d, missing, invalid, nil

@@ -256,11 +256,16 @@ func (t jobTokens) Mint(j worker.Job) (map[string]string, error) {
 
 func (t jobTokens) Void(jobID string) { t.issuer.OnLeaseEnd(jobID) }
 
-// applyConfig takes the lease duration of cfg's remote block.
+// applyConfig takes the lease duration and the deployment environment
+// of cfg's remote block.
 func (r *remoteWorkers) applyConfig(cfg config.EnvironmentConfig) {
-	if r != nil && isRemoteKind(cfg) && cfg.Remote.LeaseTTLMS > 0 {
+	if r == nil || !isRemoteKind(cfg) {
+		return
+	}
+	if cfg.Remote.LeaseTTLMS > 0 {
 		r.leaser.SetTTL(time.Duration(cfg.Remote.LeaseTTLMS) * time.Millisecond)
 	}
+	r.matcher.SetDeployEnv(cfg.Remote.DeployEnv)
 }
 
 func isRemoteKind(cfg config.EnvironmentConfig) bool {

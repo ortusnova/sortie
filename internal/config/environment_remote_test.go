@@ -43,6 +43,7 @@ func TestEnvironmentConfig_Remote(t *testing.T) {
 			"name": "anthropic", "env": "ANTHROPIC_API_KEY", "hosts": []any{"api.anthropic.com"}, "header": "x-api-key",
 		}},
 		"lease_ttl_ms": 30000,
+		"deploy_env":   "dev",
 	})
 	raw["worker"] = map[string]any{"identity_header": "X-Forwarded-User"}
 	cfg, err := NewServiceConfig(raw)
@@ -57,6 +58,7 @@ func TestEnvironmentConfig_Remote(t *testing.T) {
 		Credentials:    []RemoteCredential{{Name: "anthropic", Env: "ANTHROPIC_API_KEY", Hosts: []string{"api.anthropic.com"}, Header: "x-api-key"}},
 		Flows:          remoteFlowsWant(),
 		LeaseTTLMS:     30000,
+		DeployEnv:      "dev",
 		Egress:         egress.Empty(),
 	}
 	if cfg.Environment.Kind != EnvironmentKindRemote || !reflect.DeepEqual(cfg.Environment.Remote, want) {
@@ -114,6 +116,9 @@ func TestEnvironmentConfig_RemoteRejects(t *testing.T) {
 		"capability not text": {remoteRaw(map[string]any{"requires": map[string]any{"capabilities": []any{1}}}), "environment.remote.requires.capabilities[0]"},
 		"empty backend":       {remoteRaw(map[string]any{"backend": ""}), "environment.remote.backend"},
 		"zero lease":          {remoteRaw(map[string]any{"lease_ttl_ms": 0}), "environment.remote.lease_ttl_ms"},
+		"empty deploy_env":    {remoteRaw(map[string]any{"deploy_env": ""}), "environment.remote.deploy_env"},
+		"spaced deploy_env":   {remoteRaw(map[string]any{"deploy_env": " dev"}), "environment.remote.deploy_env"},
+		"deploy_env not text": {remoteRaw(map[string]any{"deploy_env": 7}), "environment.remote.deploy_env"},
 		"credential no hosts": {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A"}}}), "environment.remote.credentials[0].hosts"},
 		"credential file":     {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A", "hosts": []any{"h.example"}, "file": "/t"}}}), "environment.remote.credentials[0].file"},
 		"credential command":  {remoteRaw(map[string]any{"credentials": []any{map[string]any{"name": "a", "env": "A", "hosts": []any{"h.example"}, "command": "t"}}}), "environment.remote.credentials[0].command"},
