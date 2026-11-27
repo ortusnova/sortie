@@ -51,6 +51,7 @@ var remoteSchemaFields = []FieldDef{
 		return out
 	}()},
 	{Name: "lease_ttl_ms", Type: FieldInt},
+	{Name: "deploy_env", Type: FieldString},
 	{Name: "repository", Type: FieldMap},
 	{Name: "repositories", Type: FieldSequence},
 	{Name: "default_repository", Type: FieldString},
@@ -104,6 +105,11 @@ type RemoteConfig struct {
 
 	// LeaseTTLMS is how long a lease lasts without a heartbeat.
 	LeaseTTLMS int
+
+	// DeployEnv is environment.remote.deploy_env: the deployment
+	// environment a worker must declare at check-in. Empty admits a
+	// worker whatever it declares.
+	DeployEnv string
 
 	// Repository is the host-owned repository a job's workspace is
 	// seeded from and whose issue branch comes back from the worker as
@@ -271,6 +277,14 @@ func buildRemoteConfig(value any, worker map[string]any) (RemoteConfig, error) {
 		return RemoteConfig{}, &ConfigError{Field: remoteField + ".image", Message: "must not be an empty string"}
 	}
 	cfg.Image = image
+	deployEnv, present, err := requireStringField(m, "deploy_env", remoteField+".deploy_env")
+	if err != nil {
+		return RemoteConfig{}, err
+	}
+	if present && (deployEnv == "" || strings.TrimSpace(deployEnv) != deployEnv) {
+		return RemoteConfig{}, &ConfigError{Field: remoteField + ".deploy_env", Message: fmt.Sprintf("must be a non-empty name without surrounding spaces, got %q; remove the key to admit every worker", deployEnv)}
+	}
+	cfg.DeployEnv = deployEnv
 	if cfg.Credentials, err = parseRemoteCredentials(m["credentials"]); err != nil {
 		return RemoteConfig{}, err
 	}

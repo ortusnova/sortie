@@ -77,6 +77,9 @@ type Declaration struct {
 	// host it reaches that other workers' egress refuses; nil when it
 	// says nothing more.
 	Capabilities []string `json:"capabilities,omitzero"`
+	// DeployEnv is the deployment environment the worker serves; empty
+	// when it names none.
+	DeployEnv string `json:"deploy_env,omitempty"`
 }
 
 // has reports whether the declaration includes capability c: its OS,
@@ -464,6 +467,9 @@ type State struct {
 	Workers []Worker    `json:"workers"`
 	Queue   []Queued    `json:"queue"`
 	Leases  []LeaseView `json:"leases"`
+	// RefusedWorkers lists the workers whose last check-in was refused
+	// for its deployment environment.
+	RefusedWorkers []RefusedWorker `json:"refused_workers"`
 }
 
 // Matcher holds queued jobs and hands each to a worker that polls and
@@ -491,6 +497,14 @@ type Matcher struct {
 	recovering bool
 	// onResume records each job whose attempt a worker resumed.
 	onResume func(jobID string) error
+	// deployEnv is the deployment environment a worker must declare to
+	// check in; empty admits any.
+	deployEnv string
+	// refused holds, by worker ID, each worker whose last check-in was
+	// refused for its deployment environment.
+	refused map[string]RefusedWorker
+	// onRefuse is told of each worker newly refused.
+	onRefuse func(RefusedWorker)
 }
 
 // endedAttempt is an attempt that ended and why.
@@ -507,7 +521,8 @@ func NewMatcher(leaser Leaser, now func() time.Time, tokens Tokens) *Matcher {
 	}
 	return &Matcher{leaser: leaser, now: now, tokens: tokens,
 		workers: map[string]*Worker{}, leased: map[string]Job{}, ends: map[string]chan Outcome{},
-		granted: map[string]chan string{}, steps: map[string]Step{}, endedJobs: map[string]endedAttempt{}}
+		granted: map[string]chan string{}, steps: map[string]Step{}, endedJobs: map[string]endedAttempt{},
+		refused: map[string]RefusedWorker{}}
 }
 
 // Recovering marks the matcher as restarted: until [Matcher.Recovered],
@@ -617,10 +632,13 @@ func before(a, b Job) bool {
 // CheckIn records a worker's declaration, which replaces the previous
 // one and what the matcher counted since: a worker declares what it has
 // free after every machine it holds, the ones of jobs taken here
-// included.
+// included. A declaration of another deployment environment is refused
+// as [Matcher.Admit] refuses it, and the state lists the refusal.
 func (m *Matcher) CheckIn(id string, d Declaration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	_ = m.Admit(id, d)
+}
+
+func (m *Matcher) checkInLocked(id string, d Declaration) {
 	m.workers[id] = &Worker{ID: id, Declaration: d, LastCheckIn: m.now(), Available: Capacity{
 		RunSlots: d.RunSlots - d.Running, CPU: d.Free.CPU, MemGiB: d.Free.MemGiB, DiskGiB: d.Free.DiskGiB}}
 }
@@ -745,13 +763,16 @@ func place(workers []Worker, jobs []Job, poller string) []int {
 // charging a run slot and the job's resources until its next check-in:
 // a job another worker without a capability the job does not need can
 // take now is left to that worker. It returns false when no job is the
-// worker's or the worker is gone, and [ErrUnknownWorker] before the
-// worker's first check-in.
+// worker's, the worker is gone or its check-in was refused, and
+// [ErrUnknownWorker] before the worker's first check-in.
 func (m *Matcher) Poll(workerID string) (Offer, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w, ok := m.workers[workerID]
 	if !ok {
+		if _, refused := m.refused[workerID]; refused {
+			return Offer{}, false, nil
+		}
 		return Offer{}, false, ErrUnknownWorker
 	}
 	if m.gone(w) {
@@ -1038,7 +1059,7 @@ func (m *Matcher) ExpireLeases() []string {
 func (m *Matcher) Snapshot() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := State{Workers: m.workersLocked(), Queue: []Queued{}, Leases: []LeaseView{}}
+	s := State{Workers: m.workersLocked(), Queue: []Queued{}, Leases: []LeaseView{}, RefusedWorkers: m.refusedLocked()}
 	for _, j := range m.pending {
 		s.Queue = append(s.Queue, Queued{Job: j, QueuedAt: j.QueuedAt, Waiting: waiting(j, s.Workers)})
 	}

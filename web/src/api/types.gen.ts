@@ -205,6 +205,7 @@ export interface Declaration {
   used?: Free;
   unmanaged?: Unmanaged[];
   capabilities?: string[];
+  deploy_env?: string;
 }
 
 export interface DispatchPausedResponse {
@@ -751,6 +752,13 @@ export interface RefreshResponse {
   outcome_text: string;
 }
 
+export interface RefusedWorker {
+  id: string;
+  expected: string;
+  declared: string;
+  last_refused: string;
+}
+
 export interface Report {
   generated_at: string;
   workflow_path: string;
@@ -1276,6 +1284,7 @@ export interface State {
   workers: Worker[] | null;
   queue: Queued[] | null;
   leases: LeaseView[] | null;
+  refused_workers: RefusedWorker[] | null;
 }
 
 export interface StateCounts {

@@ -361,3 +361,33 @@ func TestRemoteJobTokensVoidOnStop(t *testing.T) {
 		t.Fatal("a token outlived the stopped run")
 	}
 }
+
+// environment.remote.deploy_env reaches the matcher with the workflow:
+// set, a worker of another environment is refused; unset again, it is
+// admitted.
+func TestRemoteDeployEnvFromTheWorkflow(t *testing.T) {
+	t.Parallel()
+	c := &remoteClock{time.Unix(0, 0)}
+	rw := newRemoteWorkers(c.now)
+	cfg := remoteCfg()
+	cfg.Environment.Remote.DeployEnv = "dev"
+	rw.applyConfig(cfg.Environment)
+	other := remoteHost()
+	other.DeployEnv = "test-b"
+	var envErr *worker.DeployEnvError
+	if err := rw.matcher.Admit("p1", other); !errors.As(err, &envErr) || envErr.Expected != "dev" || envErr.Declared != "test-b" {
+		t.Fatalf("Admit(test-b) = %v, want a refusal naming dev and test-b", err)
+	}
+	own := remoteHost()
+	own.DeployEnv = "dev"
+	if err := rw.matcher.Admit("taichi", own); err != nil {
+		t.Fatalf("Admit(dev) = %v", err)
+	}
+	if s := rw.matcher.Snapshot(); len(s.Workers) != 1 || s.Workers[0].ID != "taichi" || len(s.RefusedWorkers) != 1 {
+		t.Fatalf("state %+v", s)
+	}
+	rw.applyConfig(remoteCfg().Environment)
+	if err := rw.matcher.Admit("p1", other); err != nil {
+		t.Fatalf("Admit(test-b) without deploy_env = %v", err)
+	}
+}

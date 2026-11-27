@@ -877,6 +877,9 @@
           },
           "type": "array"
         },
+        "deploy_env": {
+          "type": "string"
+        },
         "free": {
           "$ref": "#/$defs/Free"
         },
@@ -3442,6 +3445,30 @@
         "requested_at",
         "operations",
         "outcome_text"
+      ],
+      "type": "object"
+    },
+    "RefusedWorker": {
+      "properties": {
+        "declared": {
+          "type": "string"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "last_refused": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "expected",
+        "declared",
+        "last_refused"
       ],
       "type": "object"
     },
@@ -6073,6 +6100,19 @@
             }
           ]
         },
+        "refused_workers": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RefusedWorker"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "workers": {
           "anyOf": [
             {
@@ -6090,7 +6130,8 @@
       "required": [
         "workers",
         "queue",
-        "leases"
+        "leases",
+        "refused_workers"
       ],
       "type": "object"
     },

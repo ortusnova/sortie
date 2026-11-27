@@ -21,6 +21,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/pricing"
 	"github.com/sortie-ai/sortie/internal/prompt"
+	"github.com/sortie-ai/sortie/internal/worker"
 	"github.com/sortie-ai/sortie/internal/workflow"
 )
 
@@ -676,6 +677,11 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	}
 	o.environments = newEnvironmentResolver(params.DBPath, workflowPath, logger)
 	o.remote = newRemoteWorkers(time.Now)
+	o.remote.matcher.OnRefuse(func(r worker.RefusedWorker) {
+		logger.Warn("worker check-in refused: it serves another deployment environment",
+			slog.String("worker", r.ID), slog.String("expected_deploy_env", r.Expected),
+			slog.String("declared_deploy_env", r.Declared))
+	})
 	if runs, ok := params.Store.(remoteRunStore); ok {
 		o.remote.runs = runs
 	}
